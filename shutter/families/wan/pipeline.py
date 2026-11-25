@@ -459,6 +459,9 @@ class WanPipeline:
         self.timings["denoise_s"] = round(time.time() - t2, 1)
         self.timings["seconds_per_step"] = round((time.time() - t2) / max(1, len(timesteps)), 2)
         emb_cache.clear()
+        # drop this frame's references too, or the DiT (and its cross K/V) outlive finish() and stay in memory
+        # through the decode at the steps that free it
+        model = emb = kv = rcs = None  # noqa: F841
         self._mark("release")
         models.finish(keep_warm)
         self.check_cancelled()
