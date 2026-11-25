@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--negative-prompt", default="")
     ap.add_argument("--vae-tile", action="store_true",
                     help="tiled VAE decode at every step (less memory; recorded as a separate measurement)")
+    ap.add_argument("--encode-once", action="store_true",
+                    help="encode the prompts once in their own process and give every step the same embeddings "
+                         "(the engine caches them too); saves reading the 11 GB text encoder per step on small Macs")
     ap.add_argument("--image", default=None, help="image for image-to-video builds")
     ap.add_argument("--out", type=Path, default=Path("~/shutter-test/wan"))
     ap.add_argument("--measured", type=Path, default=None, help="measured.json to update (default: Shuttrr's)")
@@ -229,6 +232,33 @@ def frames_hash(frames) -> str:
     return h.hexdigest()
 
 
+def encode_once(spec: dict[str, Any]) -> dict[str, Any]:
+    """--encode-once: the prompt and negative prompt as the pipeline encodes them, saved as float32 .npz."""
+    import mlx.core as mx
+    import numpy as np
+
+    from shutter.adapters.wan import WanAdapter
+    from shutter.families.wan.pipeline import NEG_PROMPT, WanPipeline
+    from shutter.types import JobRequest
+    if spec.get("cpu"):
+        mx.set_default_device(mx.cpu)
+    if hasattr(mx, "reset_peak_memory"):
+        mx.reset_peak_memory()
+    t0 = time.time()
+    build = Path(spec["build"])
+    ad = WanAdapter(spec["model_id"], build)
+    s = ad.settings_for(JobRequest(model=spec["model_id"], prompt=spec["prompt"],
+                                   negative_prompt=spec.get("negative_prompt", ""), width=64, height=64))
+    pipe = WanPipeline(build, ad.manifest)
+    pos = pipe.encode_prompt(s.prompt)
+    neg = pipe.encode_prompt(s.negative_prompt or NEG_PROMPT)
+    out = Path(spec["out_file"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out, prompt=np.array(pos.astype(mx.float32)), negative=np.array(neg.astype(mx.float32)))
+    return {"rung": "encode", "ok": True, "peak_bytes": int(mx.get_peak_memory()), "seconds": round(time.time() - t0, 2),
+            "file": str(out)}
+
+
 def run_one(spec: dict[str, Any]) -> dict[str, Any]:
     """Run one memory step in this process and return its numbers. `spec`: build, model_id, height, width, frames,
     steps, seed, prompt, negative_prompt, image, rung, out_dir, npy, cache_limit_gb, cpu, prompt_embeds."""
@@ -372,6 +402,16 @@ def check(a: argparse.Namespace, runner: Optional[Callable[[dict[str, Any], floa
     machine, mlx = machine_info(), mlx_version()
     report: dict[str, Any] = {"build": str(build), "model_id": a.model_id, "label": man.get("label"),
                               "machine": machine, "mlx": mlx, "sizes": {}}
+    if a.encode_once and not a.prompt_embeds:
+        log("encoding the prompts once")
+        r = runner({"build": str(build), "model_id": a.model_id, "prompt": a.prompt, "rung": "encode",
+                    "negative_prompt": a.negative_prompt, "cpu": a.cpu, "encode_only": True,
+                    "out_file": str(out_root / "prompt_embeds.npz")}, a.timeout)
+        if not r.get("ok"):
+            raise SystemExit(f"encoding the prompts failed: {r.get('error')} {r.get('log', '')}")
+        log(f"prompts encoded: peak {r['peak_bytes'] / GB:.2f} GB, {r['seconds']:.1f} s")
+        report["prompt_encode"] = {"peak_bytes": r["peak_bytes"], "seconds": r["seconds"]}
+        a.prompt_embeds = r["file"]
     for size_text in [x.strip() for x in a.sizes.split(",") if x.strip()]:
         h, w = parse_size(size_text)
         results = []
@@ -422,7 +462,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     a = build_parser().parse_args(argv)
     if a.child:
         spec = json.loads(Path(a.child).read_text())
-        res = run_one(spec)
+        res = encode_once(spec) if spec.get("encode_only") else run_one(spec)
         print(RESULT_MARK + json.dumps(res), flush=True)
         return 0
     if not (Path(a.build).expanduser() / "shuttrr.json").exists():

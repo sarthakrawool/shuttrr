@@ -141,3 +141,22 @@ def test_memory_level_floor(wc, monkeypatch):
     assert "59 (below 78)" in wc.memory_level_problem()
     assert wc.memory_level_problem(40) is None and wc.memory_level_problem(0) is None
     assert wc.build_parser().parse_args(["b", "--model-id", "x", "--min-memory-level", "40"]).min_memory_level == 40
+
+
+def test_encode_once_runs_first_and_feeds_every_step(tmp_path, wc):
+    build = make_build(tmp_path, None)
+    seen = []
+
+    def runner(spec, timeout):
+        seen.append(spec)
+        if spec.get("encode_only"):
+            return {"rung": "encode", "ok": True, "peak_bytes": wc.GB, "seconds": 1.0, "file": spec["out_file"]}
+        return {"rung": spec["rung"], "ok": True, "peak_bytes": wc.GB, "seconds": 2.0, "hash": "h", "frames": 5,
+                "steps": 2, "size": [16, 16]}
+    a = wc.build_parser().parse_args([str(build), "--model-id", "tiny", "--sizes", "16x16", "--rungs",
+                                      "resident,stream_tight", "--encode-once", "--no-record",
+                                      "--out", str(tmp_path / "o")])
+    rep = wc.check(a, runner=runner, log=lambda s: None)
+    assert seen[0]["encode_only"] and [s["rung"] for s in seen[1:]] == ["resident", "stream_tight"]
+    assert all(s["prompt_embeds"] == str(tmp_path / "o" / "prompt_embeds.npz") for s in seen[1:])
+    assert rep["prompt_encode"]["seconds"] == 1.0 and rep["sizes"]["16x16"]["compare"]["identical"]
