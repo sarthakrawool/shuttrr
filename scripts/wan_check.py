@@ -76,8 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cache-limit-gb", type=float, default=2.0, help="MLX buffer cache limit (as the adapter)")
     ap.add_argument("--gpulock", default=None, help="lock script to run under, e.g. ~/longcat-mlx/speed/gpulock.sh")
     ap.add_argument("--lock-file", default=None, help="Shuttrr's GPU lock file (default: from Shuttrr's config)")
-    ap.add_argument("--lock-dirs", default=None, help="colon-separated shared lock folders (default: from config, "
-                    "or the gpulock.sh ones on a Mac); empty string for none")
+    ap.add_argument("--lock-dirs", default=None, help="colon-separated shared lock folders (default: the config's "
+                    "gpu_lock_dirs, as the engine; e.g. ~/studio-gpu.lock.d for gpulock.sh); empty string for none")
     ap.add_argument("--no-lock", action="store_true", help="take no lock (only when nothing else can use the GPU)")
     ap.add_argument("--min-memory-level", type=int, default=MIN_MEMORY_LEVEL,
                     help=f"refuse to start below this kern.memorystatus_level (default {MIN_MEMORY_LEVEL}, as gpulock.sh "
@@ -139,7 +139,7 @@ class Locks:
     """Shuttrr's flock file plus the shared mkdir folders, taken all or nothing (what the engine takes)."""
 
     def __init__(self, lock_file: Optional[str], lock_dirs: Optional[list[str]], take_dirs: bool = True):
-        from shutter.core.config import DEFAULT_GPU_LOCK_DIRS_MAC, Config
+        from shutter.core.config import Config
         cfg = None
         if lock_file is None or lock_dirs is None:
             try:
@@ -148,7 +148,9 @@ class Locks:
                 cfg = Config()
         self.lock_file = lock_file if lock_file is not None else cfg.gpu_lock_path
         if lock_dirs is None:
-            lock_dirs = list(cfg.gpu_lock_dirs or (DEFAULT_GPU_LOCK_DIRS_MAC if sys.platform == "darwin" else []))
+            # exactly what the engine takes: the configured folders, none when the config lists none (gpulock.sh's
+            # folders belong to the Mac Studio's tools; on another Mac taking them only leaves folders behind)
+            lock_dirs = list(cfg.gpu_lock_dirs or [])
         self.lock_dirs = lock_dirs if take_dirs else []
         self._flock = None
         self._dirs = None
