@@ -12,16 +12,17 @@ file or a fine-tune. `shutter download` does the same for the models in the cata
 
 | Model | Task | Video model in 8-bit | Built folder | Download (original, approx.) | Smallest Mac (estimate) |
 |---|---|---|---|---|---|
-| Wan 2.1 T2V 1.3B (`wan2.1-t2v-1.3b`) | text to video, 480p | 1.4 GB | ~13 GB | ~17 GB | 8 GB |
+| Wan 2.1 T2V 1.3B (`wan2.1-t2v-1.3b`) | text to video, 480p | 1.4 GB | ~13 GB | ~17 GB | 10 GB |
 | Wan 2.2 TI2V 5B (`wan2.2-ti2v-5b`) | text to video, or image to video, 720p | 5.0 GB | ~22 GB | ~34 GB | 10 GB |
-| Wan 2.2 T2V A14B (`wan2.2-t2v-a14b`) | text to video, two 14B experts | 2 x 14.3 GB | ~40 GB | ~126 GB | 9 GB |
-| Wan 2.2 I2V A14B (`wan2.2-i2v-a14b`) | image to video, two 14B experts | 2 x 14.3 GB | ~41 GB | ~126 GB | 9 GB |
+| Wan 2.2 T2V A14B (`wan2.2-t2v-a14b`) | text to video, two 14B experts | 2 x 14.3 GB | ~40 GB | ~126 GB | 10 GB |
+| Wan 2.2 I2V A14B (`wan2.2-i2v-a14b`) | image to video, two 14B experts | 2 x 14.3 GB | ~41 GB | ~126 GB | 10 GB |
 | Wan 2.1 T2V 14B | text to video | 14.3 GB | ~26 GB | — | — |
 
 The built sizes come from `WanShape.dit_bytes(8)` in `shutter/families/wan/spec.py`, plus 11 GB for the text
 encoder and the VAE. The smallest Mac is the lowest memory size that passes the family's memory check
 (`shutter.families.family("wan").check_memory`) at the lowest memory step and the smallest size (320 x 512,
-17 frames), with 4 GB kept free. **These are formulas, not measurements.** At the lowest step a 14B expert
+17 frames), with 4 GB kept free. **These are formulas, not measurements**, except that the Wan 2.1 VAE's decode
+term is calibrated to the measurements below (it is the largest stage for the 1.3B). At the lowest step a 14B expert
 streams from the SSD two blocks at a time, so it fits in little memory but runs slowly. Larger videos need more
 memory. The catalog shows these numbers, and `shutter inspect` does the same check for any checkpoint.
 

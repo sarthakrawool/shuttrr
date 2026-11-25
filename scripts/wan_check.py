@@ -431,6 +431,9 @@ def check(a: argparse.Namespace, runner: Optional[Callable[[dict[str, Any], floa
                 for line in r.get("log", []):
                     log("    " + line)
             results.append(r)
+            # keep what is finished if the run is stopped later (records are written per size, below)
+            out_root.mkdir(parents=True, exist_ok=True)
+            (out_root / "report.json").write_text(json.dumps(dict(report, running={f"{h}x{w}": results}), indent=1))
         cmp = compare(results)
         ok = [r for r in results if r.get("ok")]
         # the generated size after alignment (what the adapter looks measurements up by)
