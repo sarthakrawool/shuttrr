@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Shuttrr does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. In Shuttrr, open **Server** and press **Copy Diagnostics**, then paste it below.
+        It holds the engine check, your Mac model, chip, memory, macOS, versions and the last 100 log lines.
+        Your home folder is written as `~`. Read it before posting and remove anything you do not want public.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: "I pressed Load on LongCat Video Avatar and…"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Shuttrr
+        2. …
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the output of Copy Diagnostics (Server page), or run `~/.shutter/venv/bin/shutter --json doctor` in Terminal.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - Shuttrr app (main window)
+        - Menu bar panel
+        - First-run setup
+        - Command line (shutter …)
+        - HTTP API / another app (ComfyUI, scripts)
+        - Other
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, the request you sent, model and settings.

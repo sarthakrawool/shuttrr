@@ -647,6 +647,10 @@ struct Job: Decodable, Identifiable, Sendable {
 
     var state: JobState { JobState(rawValue: stateRaw) ?? .unknown }
 
+    /// A Load from the Models page (params._action = "load"): it runs through the queue, but it is not a request,
+    /// so the Requests list and its counts leave it out. The model's row shows its progress instead.
+    var isModelOperation: Bool { request.params["_action"]?.stringValue == "load" }
+
     /// Path of the finished file (adapters must put it in result["output"]).
     var outputPath: String? {
         for k in ["output", "output_path", "path"] {

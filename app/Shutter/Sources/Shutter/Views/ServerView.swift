@@ -8,11 +8,13 @@ struct ServerView: View {
     @EnvironmentObject private var engine: EngineProcess
 
     @AppStorage(APIClient.baseURLKey) private var engineURL = APIClient.defaultBaseURL
-    @AppStorage(EngineProcess.commandKey) private var daemonCommand = EngineProcess.defaultCommand
     @AppStorage(EngineProcess.autoStartKey) private var autoStart = true
     @State private var copied: String?
     @State private var restarting = false
     @State private var showLog = false
+    @State private var diagnostics: DiagState = .idle
+
+    enum DiagState { case idle, working, copied }
 
     var body: some View {
         ScrollView {
@@ -54,6 +56,34 @@ struct ServerView: View {
                     hint("Shuttrr only stops or restarts an engine it started itself. Models you load with Load stay in memory until you unload them.")
                 }
 
+                section("Help") {
+                    KVGroup {
+                        KVRow(label: "Diagnostics", first: true) {
+                            HStack {
+                                Text("Copies the engine check, this Mac's model, chip, memory, macOS, versions and the last 100 log lines, ready to paste into a bug report. Your home folder shows as ~.")
+                                    .foregroundStyle(Theme.Palette.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Theme.Space.s3)
+                                Button(diagnosticsTitle) { copyDiagnostics() }
+                                    .buttonStyle(.kit(.line, small: true))
+                                    .disabled(diagnostics == .working)
+                            }
+                        }
+                        KVRow(label: "Report a problem") {
+                            HStack {
+                                Text("Opens the issue form on GitHub. Paste the diagnostics there.")
+                                    .foregroundStyle(Theme.Palette.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Theme.Space.s3)
+                                Link(destination: Releases.newIssue) {
+                                    Text("Open GitHub Issues")
+                                }
+                                .buttonStyle(.kit(.line, small: true))
+                            }
+                        }
+                    }
+                }
+
                 section("Address and command") {
                     KVGroup {
                         KVRow(label: "Address", first: true) {
@@ -62,28 +92,30 @@ struct ServerView: View {
                                 .onSubmit { store.refreshNow() }
                         }
                         KVRow(label: "Engine command") {
-                            TextField("", text: $daemonCommand, prompt: Text(EngineProcess.defaultCommand))
+                            Text(engine.command)
                                 .font(Theme.Fonts.mono)
-                                .kitField()
+                                .foregroundStyle(Theme.Palette.ink2)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
                         }
-                        KVRow(label: "Defaults") {
+                        KVRow(label: "Default address") {
                             HStack {
-                                Text("\(APIClient.defaultBaseURL) and \(EngineProcess.defaultCommand)")
+                                Text(APIClient.defaultBaseURL)
                                     .font(Theme.Fonts.mono)
                                     .foregroundStyle(Theme.Palette.muted)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Spacer(minLength: Theme.Space.s3)
-                                Button("Reset to Defaults") {
+                                Button("Reset to Default") {
                                     engineURL = APIClient.defaultBaseURL
-                                    daemonCommand = EngineProcess.defaultCommand
                                     store.refreshNow()
                                 }
                                 .buttonStyle(.kit(.line, small: true))
                             }
                         }
                     }
-                    hint("The command runs in a login shell when Shuttrr starts the engine.")
+                    hint("Shuttrr runs the Python engine (shutter serve) in a login shell when it starts the engine.")
                 }
 
                 section("For other apps") {
@@ -136,6 +168,26 @@ struct ServerView: View {
             .padding(.bottom, Theme.Space.s6)
         }
         .sheet(isPresented: $showLog) { FullLogSheet() }
+    }
+
+    private var diagnosticsTitle: String {
+        switch diagnostics {
+        case .idle: return "Copy Diagnostics"
+        case .working: return "Collecting…"
+        case .copied: return "Copied"
+        }
+    }
+
+    private func copyDiagnostics() {
+        diagnostics = .working
+        Task { @MainActor in
+            let text = await Diagnostics.collect(engineVersion: store.system?.version)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            diagnostics = .copied
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if diagnostics == .copied { diagnostics = .idle }
+        }
     }
 
     @ViewBuilder private var controls: some View {

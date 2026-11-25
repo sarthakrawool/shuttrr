@@ -360,6 +360,8 @@ def cmd_download(args: argparse.Namespace) -> int:
         return 1
     if not args.quiet:
         print(f"\ninstalled in {done['dir']}")
+        if done.get("verified_detail"):
+            print(f"Checked: {done['verified_detail']}.")
         for n in done.get("notes") or []:
             print(n)
     return 0
@@ -372,6 +374,116 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     mark = {True: "ok  ", False: "FAIL", None: "note"}
     _print(args, {"checks": rows}, "\n".join(f"{mark[r['ok']]}  {r['check']}: {r['detail']}" for r in rows))
     return 1 if any(r["ok"] is False for r in rows) else 0
+
+
+def _engine_pids(port: int) -> list[int]:
+    """Process ids of running Shuttrr engines: whatever listens on the engine port, plus `shutter serve` processes."""
+    import subprocess
+
+    pids: set[int] = set()
+    for cmd in (["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], ["pgrep", "-f", "shutter(\\.cli)? serve"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        pids.update(int(x) for x in out.split() if x.isdigit())
+    pids.discard(os.getpid())
+    return sorted(pids)
+
+
+def stop_engine(port: int, timeout: float = 10.0) -> list[int]:
+    """Stop running engines (SIGTERM, then SIGKILL after `timeout`). Returns the pids that were running."""
+    import signal
+
+    pids = _engine_pids(port)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    end = time.time() + timeout
+    alive = list(pids)
+    while alive and time.time() < end:
+        time.sleep(0.2)
+        alive = [p for p in alive if _alive(p)]
+    for pid in alive:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def uninstall(home: str, *, keep_models: bool = False, port: int = 8484) -> dict[str, Any]:
+    """Stop the engine and delete the Shuttrr home folder. With keep_models, <home>/models stays.
+    Returns {"stopped": [pids], "removed": [paths], "kept": [paths]}."""
+    import shutil
+    from pathlib import Path
+
+    root = Path(os.path.expanduser(home)).resolve()
+    if root == Path.home().resolve() or len(root.parts) < 3:
+        raise ValueError(f"refusing to delete {root}: it does not look like a Shuttrr folder")
+    stopped = stop_engine(port)
+    removed: list[str] = []
+    kept: list[str] = []
+    if not root.exists():
+        return {"stopped": stopped, "removed": removed, "kept": kept}
+    for child in sorted(root.iterdir()):
+        if keep_models and child.name == "models":
+            kept.append(str(child))
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                pass
+        removed.append(str(child))
+    if not kept:
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+    return {"stopped": stopped, "removed": removed, "kept": kept}
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    cfg = Config.load()
+    home = os.path.expanduser(cfg.home)
+    what = f"{home} (engine, settings, job history" + (")" if args.keep_models else ", downloaded models)")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("shutter: uninstall needs --yes when it cannot ask", file=sys.stderr)
+            return 2
+        ans = input(f"This stops the Shuttrr engine and deletes {what}. Continue? [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Nothing was removed.")
+            return 1
+    try:
+        res = uninstall(home, keep_models=args.keep_models, port=cfg.port)
+    except ValueError as e:
+        print(f"shutter: {e}", file=sys.stderr)
+        return 2
+    models_dir = cfg.extra.get("models_dir")
+    if args.json:
+        print(json.dumps({**res, "home": home}, indent=2))
+    else:
+        if res["stopped"]:
+            print(f"Stopped the engine ({', '.join(map(str, res['stopped']))}).")
+        print(f"Removed {home}" + (f", kept {res['kept'][0]}" if res["kept"] else "") + ".")
+        if models_dir:
+            print(f"Models in {models_dir} were not touched.")
+        print("To remove the app too, drag Shuttrr.app to the Trash.")
+    return 0
 
 
 # ---------------------------------------------------------------- parser
@@ -443,6 +555,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--quiet", action="store_true", help="no progress output")
     s.set_defaults(func=cmd_download)
     sub.add_parser("doctor", help="check that this Mac is ready").set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("uninstall", help="stop the engine and delete ~/.shutter (asks first)")
+    s.add_argument("--keep-models", action="store_true", help="keep ~/.shutter/models")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.set_defaults(func=cmd_uninstall)
 
     s = sub.add_parser("init", help="write a default ~/.shutter/config.json")
     s.add_argument("--force", action="store_true")

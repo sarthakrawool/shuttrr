@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
 
@@ -8,6 +9,11 @@ struct SettingsView: View {
 
     @State private var launchAtLogin = false
     @State private var loginError: String?
+    @AppStorage(UpdateChecker.enabledKey) private var checkUpdates = true
+    @State private var showUninstall = false
+    @State private var keepModels = true
+    @State private var uninstalling = false
+    @State private var uninstallResult: (ok: Bool, message: String)?
 
     var body: some View {
         ScrollView {
@@ -29,6 +35,26 @@ struct SettingsView: View {
                     }
                 }
 
+                section("Updates") {
+                    KVGroup {
+                        KVRow(label: "Check for updates", first: true) {
+                            HStack {
+                                Text("Once a day, ask GitHub whether a newer Shuttrr is out. Nothing is downloaded.")
+                                    .foregroundStyle(Theme.Palette.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Theme.Space.s3)
+                                Toggle("", isOn: $checkUpdates)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .tint(Theme.Palette.violet)
+                                    .onChange(of: checkUpdates) { _, on in UpdateChecker.shared.enabledChanged(on) }
+                            }
+                        }
+                        KVRow("Version", Releases.appVersion)
+                    }
+                    UpdateAvailableRow()
+                }
+
                 section("Keyboard") {
                     KVGroup {
                         KVRow(label: "New request", first: true) { keys(["⌘", "N"]) }
@@ -39,6 +65,21 @@ struct SettingsView: View {
                     }
                 }
 
+                section("Uninstall") {
+                    KVGroup {
+                        KVRow(label: "Remove Shuttrr's files", first: true) {
+                            HStack {
+                                Text("Stops the engine and deletes ~/.shutter: the engine, settings, job history and, if you choose, downloaded models.")
+                                    .foregroundStyle(Theme.Palette.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Theme.Space.s3)
+                                Button("Uninstall Shuttrr…") { uninstallResult = nil; showUninstall = true }
+                                    .buttonStyle(.kit(.line, small: true))
+                            }
+                        }
+                    }
+                }
+
             }
             .padding(.horizontal, Theme.Space.s6)
             .padding(.top, Theme.Space.s5)
@@ -46,6 +87,47 @@ struct SettingsView: View {
         }
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+        .sheet(isPresented: $showUninstall) { uninstallSheet }
+    }
+
+    @ViewBuilder private var uninstallSheet: some View {
+        if let result = uninstallResult {
+            ConfirmSheet(title: result.ok ? "Shuttrr's files are gone" : "Not everything was removed",
+                         message: result.message + " To finish, quit Shuttrr and drag Shuttrr.app to the Trash.",
+                         confirmTitle: "Quit Shuttrr",
+                         onCancel: { showUninstall = false },
+                         onConfirm: {
+                             QuitConfirm.shared.skipNext = true
+                             NSApp.terminate(nil)
+                         })
+        } else {
+            ConfirmSheet(title: "Uninstall Shuttrr?",
+                         message: "This stops the engine and deletes ~/.shutter. Requests that are running stop. It cannot be undone.",
+                         confirmTitle: uninstalling ? "Removing…" : "Uninstall", destructive: true, busy: uninstalling,
+                         onCancel: { showUninstall = false },
+                         onConfirm: { uninstall() }) {
+                Toggle(isOn: $keepModels) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep downloaded models").font(Theme.Fonts.row).foregroundStyle(Theme.Palette.ink)
+                        Text("They stay in ~/.shutter/models, so a reinstall does not download them again.")
+                            .font(Theme.Fonts.meta).foregroundStyle(Theme.Palette.muted)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .disabled(uninstalling)
+            }
+        }
+    }
+
+    private func uninstall() {
+        uninstalling = true
+        Task { @MainActor in
+            let r = await Uninstaller.run(keepModels: keepModels, engine: engine)
+            try? await SMAppService.mainApp.unregister()
+            UserDefaults.standard.removeObject(forKey: SetupRunner.onboardingDoneKey)   // a reinstall starts at the welcome window
+            uninstalling = false
+            uninstallResult = r
         }
     }
 

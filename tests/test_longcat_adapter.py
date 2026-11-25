@@ -582,3 +582,40 @@ def test_real_roi_accepts_what_the_adapter_passes(real_gen, tmp_path):
     crop = np.full((3, 64, 128, 3), 200, np.uint8)
     out = roi.composite(crop, plate, 64, 32)
     assert out.shape == (3, 64, 256, 3) and out[0, 0, 0, 0] == 50 and out[0, 0, 128, 0] == 200
+
+
+# ---- Load on a small Mac: the estimate is sized for the 480p plate when there is no start image
+
+
+def _load_req(**params):
+    return JobRequest(model="lc", params={"_action": "load", **params})
+
+
+def test_small_mac_load_estimate_uses_480p():
+    small = L.load_plan_request(_load_req(), total_bytes=32 * GB)
+    assert small.params["size"] == L.SMALL_MAC_LOAD_SIZE
+    assert (L.resolve_render(small).plate_height, L.resolve_render(small).plate_width) == (480, 832)
+    # the original request is not changed
+    assert "size" not in _load_req().params
+
+
+def test_big_mac_or_image_or_size_keeps_the_full_plan():
+    assert L.load_plan_request(_load_req(), total_bytes=64 * GB).params.get("size") is None
+    assert L.load_plan_request(_load_req(), total_bytes=48 * GB).params.get("size") is None
+    with_image = JobRequest(model="lc", inputs={"image": "/tmp/x.png"}, params={"_action": "load"})
+    assert L.load_plan_request(with_image, total_bytes=16 * GB) is with_image
+    sized = _load_req(size="704x1312")
+    assert L.load_plan_request(sized, total_bytes=16 * GB) is sized
+    not_load = JobRequest(model="lc")
+    assert L.load_plan_request(not_load, total_bytes=16 * GB) is not_load
+    p = L.resolve_render(_load_req()); assert (p.plate_height, p.plate_width) == L.FULL_HW
+
+
+def test_adapter_load_estimate_is_sized_for_480p_on_a_small_mac(monkeypatch):
+    ad = L.LongCatAvatarAdapter("lc", Path("/nonexistent"))
+    monkeypatch.setattr(L, "_total_memory", lambda: 64 * GB)
+    big = ad.estimate(_load_req())
+    monkeypatch.setattr(L, "_total_memory", lambda: 32 * GB)
+    small = ad.estimate(_load_req())
+    assert "704x1312" in big.note and "480x832" in small.note
+    assert small.peak <= big.peak   # equal when both step down to the same streamed rung

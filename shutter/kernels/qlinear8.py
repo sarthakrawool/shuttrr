@@ -41,11 +41,21 @@ def metal_available() -> bool:
 
 # ------------------------------------------------------------------------------------------- reference
 def dequantize_ref(w: mx.array, scales: mx.array, biases: mx.array, group_size: int = GROUP) -> mx.array:
-    """Explicit 8-bit affine dequantisation from the uint32 packing (same values as mx.dequantize)."""
+    """Explicit 8-bit affine dequantisation from the uint32 packing (bit-identical to mx.dequantize on the
+    default device).
+
+    The two MLX backends round differently (MLX 0.32): the Metal kernel computes scale * q + bias in fp32 and
+    rounds once to the scales' dtype (as this file's kernel does); the CPU backend multiplies and adds in the
+    scales' dtype, rounding after each op. For bf16 scales the results differ by 1 bf16 ulp in places."""
     out, packed = w.shape
     k = packed * 4
-    q = w.view(mx.uint8).reshape(out, k // group_size, group_size).astype(scales.dtype)
-    return (q * scales[..., None] + biases[..., None]).reshape(out, k)
+    q = w.view(mx.uint8).reshape(out, k // group_size, group_size)
+    s, b = scales[..., None], biases[..., None]
+    if mx.default_device().type == mx.DeviceType.cpu:
+        wd = q.astype(scales.dtype) * s + b
+    else:
+        wd = (q.astype(mx.float32) * s.astype(mx.float32) + b.astype(mx.float32)).astype(scales.dtype)
+    return wd.reshape(out, k)
 
 
 def reference(x, w, scales, biases, bias=None, group_size: int = GROUP):

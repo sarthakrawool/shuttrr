@@ -103,3 +103,55 @@ def test_cli_catalog_and_doctor(cfg, capsys):
     assert "not downloaded" in capsys.readouterr().out
     cli.main(["--json", "doctor"])
     assert "checks" in json.loads(capsys.readouterr().out)
+
+
+# ---- checks after a download, and the disk-space rule
+
+
+def _listing(dest):
+    import hashlib
+    out = []
+    for root, _d, files in os.walk(dest):
+        for n in files:
+            p = Path(root) / n
+            rel = str(p.relative_to(dest))
+            if rel.startswith(".cache"):
+                continue
+            out.append({"path": rel, "size": p.stat().st_size,
+                        "sha256": hashlib.sha256(p.read_bytes()).hexdigest() if p.suffix == ".bin" else None})
+    return out
+
+
+def test_download_verifies_checksums(cfg, tmp_path):
+    ref = tmp_path / "ref"
+    fake_fetch(None, ref)
+    done = cat.download(MID, cfg, fetch=fake_fetch, files_of=lambda r: _listing(ref), poll_s=0.01)
+    assert done["verified"] == "sha256"
+
+
+def test_download_with_a_bad_file_fails_and_removes_it(cfg, tmp_path):
+    ref = tmp_path / "ref"
+    fake_fetch(None, ref)
+    files = _listing(ref)
+    bad = next(f for f in files if f["sha256"])
+    bad["sha256"] = "0" * 64
+    with pytest.raises(cat.DownloadError, match="did not match"):
+        cat.download(MID, cfg, fetch=fake_fetch, files_of=lambda r: files, poll_s=0.01)
+    dest = cat.models_home(cfg) / cat.CATALOG[MID]["folder"]
+    assert not (dest / bad["path"]).exists()
+    assert MID not in Config.load(cfg.path).models
+
+
+def test_offline_download_says_how_it_was_checked(cfg):
+    def offline(repo):
+        raise OSError("offline")
+    done = cat.download(MID, cfg, fetch=fake_fetch, files_of=offline, total_of=lambda r: 31, poll_s=0.01)
+    assert done["verified"] == "files" and "could not be reached" in done["verified_detail"]
+
+
+def test_disk_check_keeps_five_gb_spare(cfg, monkeypatch):
+    import collections
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(cat.shutil, "disk_usage", lambda p: usage(0, 0, 4 * GB))
+    with pytest.raises(cat.DownloadError, match="5 GB to spare"):
+        cat.download(MID, cfg, fetch=fake_fetch, total_of=lambda r: 31, poll_s=0.01)

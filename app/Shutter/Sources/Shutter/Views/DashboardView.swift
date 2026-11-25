@@ -62,6 +62,7 @@ struct DashboardView: View {
     @State private var showingNewJob = false
     @State private var newJobModel: String?
     @FocusState private var searchFocused: Bool
+    @ObservedObject private var quit = QuitConfirm.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -126,6 +127,12 @@ struct DashboardView: View {
         .sheet(isPresented: $showingNewJob) {
             NewJobSheet(initialModel: newJobModel)
                 .environmentObject(store)
+        }
+        .sheet(isPresented: Binding(get: { quit.asking }, set: { if !$0 && quit.asking { quit.reply(false) } })) {
+            ConfirmSheet(title: "A request is still running. Quit and stop it?",
+                         message: "Quitting Shuttrr also stops its engine, so the request stops where it is.",
+                         confirmTitle: "Quit", destructive: true,
+                         onCancel: { quit.reply(false) }, onConfirm: { quit.reply(true) })
         }
         .onChange(of: query) { _, newValue in
             if !newValue.isEmpty { section = .queue }
@@ -310,6 +317,7 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 0)
+            UpdateAvailableRow()
         }
         .padding(.vertical, Theme.Space.s4)
         .padding(.horizontal, Theme.Space.s3)
@@ -322,9 +330,10 @@ struct SidebarView: View {
         let on = section == s      // the selected row is accent-filled: its count turns white
         switch s {
         case .queue:
-            let active = sys.queue.queued + sys.queue.waitingMemory + sys.queue.running
+            // counted from the request list, which leaves out Loads from the Models page
+            let active = store.jobs.filter { $0.state == .queued || $0.state == .waitingMemory || $0.state == .running }.count
             guard active > 0 else { return nil }
-            let running = sys.queue.running > 0
+            let running = store.runningJob != nil
             return Text("\(active)")
                 .font(Theme.Fonts.monoMedium)
                 .foregroundColor(on ? Theme.Palette.onAccent : (running ? Theme.Palette.good : Theme.Palette.muted))

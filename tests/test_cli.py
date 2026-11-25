@@ -145,3 +145,29 @@ def test_settings_end_to_end(live, capsys):
     assert cli.main(["--url", url, "--json", "submit", "--model", "dummy", "--mode", "fast"]) == 0
     v = json.loads(capsys.readouterr().out)
     assert v["request"]["params"] == {"mode": "fast", "efficiency": 1.0}
+
+
+def test_uninstall_removes_home_and_can_keep_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "stop_engine", lambda port, timeout=10.0: [])
+    home = tmp_path / "shutter-home"
+    (home / "models" / "m").mkdir(parents=True)
+    (home / "models" / "m" / "w.bin").write_bytes(b"1")
+    (home / "venv" / "bin").mkdir(parents=True)
+    (home / "config.json").write_text("{}")
+    res = cli.uninstall(str(home), keep_models=True)
+    assert sorted(p.name for p in home.iterdir()) == ["models"] and res["kept"]
+    res = cli.uninstall(str(home))
+    assert not home.exists() and res["removed"]
+
+
+def test_uninstall_refuses_the_home_folder(monkeypatch):
+    import os
+    monkeypatch.setattr(cli, "stop_engine", lambda port, timeout=10.0: [])
+    with pytest.raises(ValueError):
+        cli.uninstall(os.path.expanduser("~"))
+
+
+def test_uninstall_needs_yes_without_a_terminal(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SHUTTER_HOME", str(tmp_path / "h"))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert cli.main(["uninstall"]) == 2

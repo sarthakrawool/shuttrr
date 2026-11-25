@@ -124,7 +124,7 @@ final class EngineStore: ObservableObject {
             let sys = try await api.system()
             let list = try await api.jobs(limit: 50)
             system = sys
-            jobs = list
+            jobs = list.filter { !$0.isModelOperation }
             failures = 0
             if connection != .connected {
                 connection = .connected

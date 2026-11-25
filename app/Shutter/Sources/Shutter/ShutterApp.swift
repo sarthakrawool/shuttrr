@@ -178,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // A regular app: Dock icon and app switcher, as well as the menu bar icon.
         NSApp.setActivationPolicy(.regular)
         store.start()
+        UpdateChecker.shared.checkIfDue()      // at most once a day, only when "Check for updates" is on
         let needsOnboarding = SetupRunner.needsOnboarding
             || ProcessInfo.processInfo.environment["SHUTTER_ONBOARDING_PAGE"] != nil
         // SwiftUI may open the Window scenes at launch; Shutter lives in the menu bar, so close the dashboard
@@ -240,20 +241,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Quitting Shuttrr stops its engine too: the one this app started, and a Shuttrr engine left on the app's port
     /// by a previous run or started by hand. A running request asks first.
+    /// The question is the app's own sheet in the main window (QuitConfirm), answered with terminateLater.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if store.hasActiveJob {
+        let confirm = QuitConfirm.shared
+        if store.hasActiveJob && !confirm.skipNext {
+            guard !confirm.asking else { return .terminateCancel }
+            confirm.answer = { [weak self] quit in
+                if quit { self?.stopEngines() }
+                NSApp.reply(toApplicationShouldTerminate: quit)
+            }
+            confirm.asking = true
             NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.messageText = "A request is still running. Quit and stop it?"
-            alert.informativeText = "Quitting Shuttrr also stops its engine, so the request stops where it is."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Quit")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+            OnboardingOpener.shared.open(AppDelegate.dashboardID)
+            return .terminateLater
         }
+        stopEngines()
+        return .terminateNow
+    }
+
+    private func stopEngines() {
         engine.stopAndWait(seconds: 5)
         EngineStopper.stopShuttrrEngine(onPortOf: APIClient.current().base, seconds: 5)
-        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

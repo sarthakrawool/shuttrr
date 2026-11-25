@@ -30,6 +30,7 @@ query chunk, so the saving depends on how fast MLX's SDPA runs 64-row query tile
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
@@ -41,6 +42,23 @@ except Exception:  # pragma: no cover - exercised only without MLX
 
 __all__ = ["block_sparse_attention", "dense_reference", "chunk_layout", "keep_count", "to_chunks", "from_chunks",
            "make_inputs", "pattern", "quality", "quality_table", "selftest", "UPSTREAM_SPARSITY", "UPSTREAM_CHUNK"]
+
+
+def _keep_fp32_exact():
+    """MLX 0.32 on GPUs with neural accelerators (Apple M5, `nax` kernels) runs float32 matmul and float32
+    mx.fast.scaled_dot_product_attention as TF32 by default (MLX_ENABLE_TF32 defaults to 1): ~1e-3 relative
+    error, e.g. a 64x128 @ 128x64 fp32 matmul off by ~0.03 at |y| ~ 40. Every fp32 reference / exactness claim
+    here assumes real fp32, so turn TF32 off process-wide unless the user set MLX_ENABLE_TF32 themselves.
+    It has to be the process-wide setting: the value is read when a graph is evaluated (not built), and an
+    mx.compile'd function is evaluated outside any scope we could open. bf16 / fp16 work is unaffected."""
+    cfg = getattr(mx, "config", None)
+    if cfg is not None and hasattr(cfg, "update") and "MLX_ENABLE_TF32" not in os.environ:
+        cfg.update("MLX_ENABLE_TF32", 0)
+
+
+if mx is not None:
+    _keep_fp32_exact()
+
 
 UPSTREAM_SPARSITY = 0.9375          # LongCat-Video dit/config.json bsa_params
 UPSTREAM_CHUNK = (4, 4, 4)

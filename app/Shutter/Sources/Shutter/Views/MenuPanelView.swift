@@ -627,8 +627,11 @@ private struct GlassRequests: View {
     /// "2 queued · 1 failed": only the counts that are not zero.
     private var summary: String {
         var parts: [String] = []
-        if queue.queued > 0 { parts.append("\(queue.queued) queued") }
-        if queue.waitingMemory > 0 { parts.append("\(queue.waitingMemory) waiting") }
+        // from the request list, which leaves out Loads from the Models page
+        let queued = store.jobs.filter { $0.state == .queued }.count
+        let waiting = store.jobs.filter { $0.state == .waitingMemory }.count
+        if queued > 0 { parts.append("\(queued) queued") }
+        if waiting > 0 { parts.append("\(waiting) waiting") }
         if queue.failed > 0 { parts.append("\(queue.failed) failed") }
         if parts.isEmpty, let t = store.system?.throughput, t.finished > 0 {
             parts.append("\(t.finished) done this hour")

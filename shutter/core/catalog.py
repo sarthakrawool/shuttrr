@@ -185,12 +185,69 @@ def _hf_total(repo: str) -> int:
     return sum(int(s.size or 0) for s in info.siblings)
 
 
+def _hf_files(repo: str) -> list[dict[str, Any]]:
+    """Hugging Face's file list for `repo`: [{"path", "size", "sha256"}]; sha256 is None for small non-LFS files."""
+    from huggingface_hub import HfApi
+    info = HfApi().model_info(repo, files_metadata=True)
+    out = []
+    for s in info.siblings:
+        lfs = getattr(s, "lfs", None)
+        sha = getattr(lfs, "sha256", None) if lfs is not None and not isinstance(lfs, dict) else (lfs or {}).get("sha256")
+        out.append({"path": s.rfilename, "size": int(s.size or 0) if s.size is not None else None, "sha256": sha})
+    return out
+
+
+DISK_HEADROOM = 5 * GB   # free space a download leaves on top of the files it still has to fetch
+
+
+def _sha256(path: Path, on_bytes: Optional[Callable[[int], None]] = None) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(16 * 1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+            if on_bytes:
+                on_bytes(len(chunk))
+    return h.hexdigest()
+
+
+def verify_files(folder: Path, files: Optional[list[dict[str, Any]]], *, hash_files: bool = True,
+                 on_bytes: Optional[Callable[[int], None]] = None) -> tuple[list[str], str]:
+    """Check a finished download against Hugging Face's file list. Returns (bad paths, how it was checked):
+    "sha256" when every LFS file's checksum matched, "sizes" when only sizes could be checked, "files" when no
+    list was available (offline), in which case only the model's own check_files were looked at."""
+    if not files:
+        return [], "files"
+    bad: list[str] = []
+    hashed = False
+    for f in files:
+        p = folder / f["path"]
+        try:
+            size = p.stat().st_size
+        except OSError:
+            bad.append(f["path"])
+            continue
+        if f.get("size") is not None and size != int(f["size"]):
+            bad.append(f["path"])
+            continue
+        if hash_files and f.get("sha256"):
+            hashed = True
+            if _sha256(p, on_bytes) != f["sha256"]:
+                bad.append(f["path"])
+    return bad, ("sha256" if hashed else "sizes")
+
+
 def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[str] = None,
              on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
              fetch: Optional[Callable[[str, Path], None]] = None,
-             total_of: Optional[Callable[[str], int]] = None, poll_s: float = 1.0) -> dict[str, Any]:
-    """Fetch `model_id` into the models folder, then register it. Blocks until it is done. `fetch` and
-    `total_of` exist for tests. Raises DownloadError with a plain sentence when it cannot start or fails."""
+             total_of: Optional[Callable[[str], int]] = None, poll_s: float = 1.0,
+             files_of: Optional[Callable[[str], list[dict[str, Any]]]] = None) -> dict[str, Any]:
+    """Fetch `model_id` into the models folder, check it against Hugging Face's file list, then register it.
+    Blocks until it is done. `fetch`, `total_of` and `files_of` exist for tests (with `total_of` alone no file
+    list is fetched). Raises DownloadError with a plain sentence when it cannot start or fails."""
     if model_id not in CATALOG:
         raise DownloadError(f"unknown model '{model_id}'. Available: {', '.join(CATALOG)}")
     cfg = cfg or Config.load()
@@ -200,16 +257,27 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
     if prior and prior.get("state") == "downloading" and int(prior.get("pid", 0)) != os.getpid():
         raise DownloadError(f"{e['name']} is already downloading")
     dest.mkdir(parents=True, exist_ok=True)
+    files: Optional[list[dict[str, Any]]] = None
+    if files_of is not None or total_of is None:
+        try:
+            files = list((files_of or _hf_files)(e["repo"]))
+        except Exception:
+            files = None   # offline or Hugging Face unreachable: sizes are checked against nothing, said below
     try:
-        total = int((total_of or _hf_total)(e["repo"])) or int(e["size_gb"] * GB)
+        if total_of is not None:
+            total = int(total_of(e["repo"]))
+        else:
+            total = sum(int(f.get("size") or 0) for f in files or [])
+        total = total or int(e["size_gb"] * GB)
     except Exception:
         total = int(e["size_gb"] * GB)
     have = folder_bytes(dest)
     free = shutil.disk_usage(dest).free
-    need = max(0, total - have) + 3 * GB
+    need = max(0, total - have) + DISK_HEADROOM
     base = dict(pid=os.getpid(), dir=str(dest), total_bytes=total, started=time.time())
     if free < need:
-        msg = (f"not enough free disk space: {e['name']} needs {need / GB:.0f} GB more, "
+        msg = (f"not enough free disk space: {e['name']} needs {need / GB:.0f} GB free "
+               f"(what is left to download plus {DISK_HEADROOM // GB} GB to spare), "
                f"this disk has {free / GB:.0f} GB free")
         _write_state(cfg, model_id, state="failed", done_bytes=have, error=msg, **base)
         raise DownloadError(msg)
@@ -258,8 +326,33 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
         msg = "the download finished but files are missing. Start it again to fetch the rest"
         _write_state(cfg, model_id, state="failed", done_bytes=folder_bytes(dest), error=msg, **base)
         raise DownloadError(msg)
+    # Check every file against Hugging Face's list. Files that do not match are deleted so a restart fetches them.
+    checked = [0]
+
+    def hashed(n: int) -> None:
+        checked[0] += n
+        _write_state(cfg, model_id, state="downloading", phase="verifying", done_bytes=total,
+                     verified_bytes=checked[0], **base)
+
+    _write_state(cfg, model_id, state="downloading", phase="verifying", done_bytes=total, verified_bytes=0, **base)
+    bad, how = verify_files(dest, files, on_bytes=hashed)
+    if bad:
+        for rel in bad:
+            try:
+                (dest / rel).unlink()
+            except OSError:
+                pass
+        msg = (f"{len(bad)} downloaded file{'s' if len(bad) != 1 else ''} did not match Hugging Face's list "
+               f"(first: {bad[0]}). They were removed. Start the download again to fetch them")
+        _write_state(cfg, model_id, state="failed", done_bytes=folder_bytes(dest), error=msg, **base)
+        raise DownloadError(msg)
     preset = register(cfg, model_id, dest)
-    done = dict(state="done", done_bytes=total, notes=preset["notes"], **base)
+    verified = {"sha256": "every file's size and checksum match Hugging Face's list",
+                "sizes": "every file's size matches Hugging Face's list (no checksums were published)",
+                "files": "Hugging Face could not be reached to check the files, so only the model's main "
+                         "files were checked to be there"}[how]
+    done = dict(state="done", done_bytes=total, notes=preset["notes"], verified=how, verified_detail=verified,
+                **base)
     _write_state(cfg, model_id, **done)
     if on_progress:
         on_progress(done)

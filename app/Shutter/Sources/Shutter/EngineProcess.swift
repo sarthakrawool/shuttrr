@@ -37,7 +37,10 @@ final class EngineProcess: ObservableObject {
     var command: String {
         let s = UserDefaults.standard.string(forKey: Self.commandKey) ?? ""
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? Self.defaultCommand : t
+        // v0.1 runs only the Python engine (`shutter serve`). A command saved by an older build is kept only when it
+        // starts that engine; anything else (such as the Rust daemon, shutterd) falls back to the default.
+        let python = (t.contains("shutter serve") || t.contains("shutter.cli serve")) && !t.contains("shutterd")
+        return python ? t : Self.defaultCommand
     }
 
     var pid: Int32? { process?.processIdentifier }

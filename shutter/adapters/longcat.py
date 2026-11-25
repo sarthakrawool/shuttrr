@@ -230,6 +230,33 @@ def _truthy(v) -> bool:
     return bool(v)
 
 
+SMALL_MAC_BYTES = 48 * GB   # under this, a Load with no start image is sized for the 480p plate, not 704x1312
+SMALL_MAC_LOAD_SIZE = "480x832"
+
+
+def _total_memory() -> int:
+    try:
+        from shutter.core.memory import default_probe
+        return int(default_probe().sample().total)
+    except Exception:
+        return 0
+
+
+def load_plan_request(request: JobRequest, total_bytes: Optional[int] = None) -> JobRequest:
+    """The request a Load is estimated with. A Load carries no start image, so the plan would default to the
+    704x1312 class; on a Mac with under 48 GB that over-asks for memory, so the estimate uses the 480p plate
+    (16:9, 480x832) instead. Requests with an image or an explicit size, and bigger Macs, are unchanged."""
+    p = request.params or {}
+    if p.get("_action") != "load" or (request.inputs or {}).get("image") or p.get("size") or p.get("image_size"):
+        return request
+    total = _total_memory() if total_bytes is None else int(total_bytes)
+    if not 0 < total < SMALL_MAC_BYTES:
+        return request
+    out = request.copy()
+    out.params = {**p, "size": SMALL_MAC_LOAD_SIZE}
+    return out
+
+
 def resolve_render(request: JobRequest, image_size: Optional[tuple[int, int]] = None,
                    options: Optional[dict[str, Any]] = None) -> RenderPlan:
     """Pure: the concrete render for a request. `image_size` = (W, H) of the start image (16:9 assumed if None).
@@ -1175,6 +1202,7 @@ class LongCatAvatarAdapter(Adapter):
         """The estimate of the rung this job will run at: fast mode starts at `resident` and steps down the
         ladder only as far as needed to fit `budget = available - headroom`; low_memory starts at the slider's
         rung. When nothing fits, the lowest rung's estimate is returned and the guard makes the job wait."""
+        request = load_plan_request(request)
         plan = self.resolve(request)
         from shutter.adapters.longcat_speed import parse_speed
 

@@ -81,6 +81,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
 
 echo "==> bundling the engine sources"
 ENGINE_DIR="$APP/Contents/Resources/engine"
