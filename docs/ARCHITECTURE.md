@@ -104,6 +104,27 @@ All shared data types live in `shutter/types.py`; the adapter contract in
   loading each block's weights into one or two reusable module shells. Output must be
   bit-identical to the fully loaded stack (tested on MLX CPU).
 
+### Families (shutter/families)
+- A family is a set of checkpoints that share one architecture (Wan today). Shuttrr supports
+  a family, not a list of files: any checkpoint whose tensors have the family's shapes runs,
+  fine-tunes and other people's builds included. Anything else is refused with a reason,
+  before anything is loaded. `shutter.families.inspect(path)` returns a `Checkpoint`
+  (family, variant, task, parts, missing parts, notes, problems). `shutter inspect` prints it.
+- A family declares its **parts** and nothing about memory. A `Part` (families/base.py)
+  says which files hold a component (denoiser, text encoder, decoder, tokenizer), how its
+  tensors are named, how many repeated blocks it has, and how big a block is.
+- The engine owns the memory steps, and works on parts rather than models:
+  `core/parts.py` turns part sizes plus a stage's working memory into a peak for each
+  memory step (resident, split, staged, stream_wide, stream_tight). `core/stream.py` streams any
+  part's block stack from the SSD. `core/text_encode.py` runs a T5-style prompt encoder one block
+  at a time. So a new family gets all five steps without new memory code. It only provides
+  its part sizes and per-stage working memory (for Wan: families/wan/spec.py).
+- `Family.check_memory(ckpt, total_bytes)` gives the reasons a Mac cannot run a checkpoint
+  even at the lowest step. The catalog, `shutter inspect` and `shutter download` use it.
+- Each family brings its own converter into a Shuttrr build (`shutter convert`, for Wan
+  families/wan/convert.py) and an adapter that runs the build (adapters/wan.py).
+  docs/WAN.md covers what runs and what is refused.
+
 ### core/engine.py
 - `Engine(config)`: owns store, bus, guard, pool, cache, registry and the worker thread.
   `submit(JobRequest) -> Job`, `cancel(id)`, `get(id)`, `list()`, `system()`, `start()`,

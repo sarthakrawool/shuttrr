@@ -16,51 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-def encode_ids(umt5: Any, weights: dict[str, Any], ids: Any, mask: Any, mx: Any,
-               on_block: Optional[Callable[[int, int], None]] = None) -> Any:
-    """`umt5(ids, mask=mask)` with lazily loaded `weights` ({name: array}), evaluating and dropping one block at a
-    time. `umt5` is a fresh UMT5EncoderModel; it is emptied by this call."""
-    if getattr(umt5, "pos_embedding", None) is not None:
-        raise NotImplementedError("shared position bias (plain T5) is not handled; umT5 has one per block")
-
-    def take(prefix: str) -> list[tuple[str, Any]]:
-        names = [k for k in weights if k.startswith(prefix)]
-        return [(k, weights.pop(k)) for k in names]
-
-    with mx.stream(mx.cpu):
-        table = weights.pop("token_embedding.weight")
-        x = table[ids]
-        mx.eval(x)
-        del table
-        mx.clear_cache()
-        n = len(umt5.blocks)
-        for i in range(n):
-            rows = take(f"blocks.{i}.")
-            if not rows:
-                raise ValueError(f"text encoder weights have no blocks.{i}.*")
-            umt5.load_weights(rows, strict=False)
-            block = umt5.blocks[i]
-            mx.eval(block.parameters())
-            x = block(x, mask=mask, pos_bias=None)
-            mx.eval(x)
-            umt5.blocks[i] = None
-            del block, rows
-            mx.clear_cache()
-            if on_block is not None:
-                on_block(i + 1, n)
-        umt5.load_weights(take("norm."), strict=False)
-        x = umt5.norm(x)
-        mx.eval(x)
-    return x
-
-
-def lazy_weights(folder: Path, index_name: str, mx: Any) -> dict[str, Any]:
-    """Every tensor of a sharded safetensors folder, not yet read (MLX reads a tensor when it is evaluated)."""
-    idx = json.loads((Path(folder) / index_name).read_text())
-    out: dict[str, Any] = {}
-    for shard in sorted(set(idx["weight_map"].values())):
-        out.update(mx.load(str(Path(folder) / shard)))
-    return out
+# The block-by-block encode itself is family-neutral and lives in shutter/core/text_encode.py.
+from shutter.core.text_encode import encode_ids, lazy_weights  # noqa: E402,F401  (re-exported)
 
 
 def make_encode_prompt(gen_mod: Any, on_block: Optional[Callable[[int, int], None]] = None) -> Callable:

@@ -5,13 +5,11 @@ import time
 import urllib.request
 
 import pytest
-import uvicorn
 
 from shutter import cli
 from shutter.core.config import Config
 from shutter.core.engine import Engine
 from shutter.core.memory import FakeProbe
-from shutter.server.api import create_app
 
 
 def test_parse_submit_args():
@@ -70,6 +68,9 @@ def free_port():
 
 @pytest.fixture
 def live(tmp_path):
+    uvicorn = pytest.importorskip("uvicorn")
+    from shutter.server.api import create_app
+
     cfg = Config(home=str(tmp_path / "home"), memory_poll_s=0.01, busy_process_pattern=None)
     eng = Engine(cfg, probe=FakeProbe(), protected=[], watch_interval_s=0, sample_interval_s=0.01)
     eng.start()
@@ -171,3 +172,128 @@ def test_uninstall_needs_yes_without_a_terminal(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SHUTTER_HOME", str(tmp_path / "h"))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert cli.main(["uninstall"]) == 2
+
+
+# ---------------------------------------------------------------- inspect / convert (no daemon)
+
+
+def _tiny_repo(root):
+    import numpy as np
+
+    from tests import wan_fixtures as F
+    F.save_st(root / "diffusion_pytorch_model.safetensors", F.official_dit_weights())
+    F.save_st(root / "text_encoder" / "model.safetensors", F.t5_weights())
+    F.write_tokenizer_stub(root / "google" / "umt5-xxl")
+    F.save_st(root / "Wan2.1_VAE.safetensors", {"conv2.weight": np.zeros((16, 16, 1, 1, 1), np.float32),
+                                                "decoder.conv1.weight": np.ones((8, 16, 3, 3, 3), np.float32)})
+    return root
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    pytest.importorskip("mlx.core")
+    import mlx.core as mx
+    mx.set_default_device(mx.cpu)
+    from shutter.core import catalog
+    monkeypatch.setenv("SHUTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(catalog, "total_memory", lambda: 16 * 1024**3)
+    return tmp_path / "home"
+
+
+def test_parse_lora_spec(tmp_path):
+    from shutter.families.wan.sources import parse_lora
+    assert parse_lora("a.safetensors:0.8") == ("a.safetensors", 0.8)
+    assert parse_lora("a.safetensors") == ("a.safetensors", 1.0)
+    assert parse_lora("/x/odd:name/a.safetensors") == ("/x/odd:name/a.safetensors", 1.0)
+    assert parse_lora("/x/odd:name/a.safetensors:-0.5") == ("/x/odd:name/a.safetensors", -0.5)
+    assert parse_lora("a.safetensors:nan") == ("a.safetensors:nan", 1.0)
+    f = tmp_path / "l.safetensors"
+    f.write_bytes(b"x")
+    a = cli.build_parser().parse_args(["convert", "src", "out", "--lora", f"{f}:0.8", "--lora", str(f),
+                                       "--bits", "4", "--add", "my-wan"])
+    assert a.lora == [(str(f), 0.8), (str(f), 1.0)] and a.bits == 4 and a.add == "my-wan"
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["convert", "src", "out", "--lora", str(tmp_path / "missing.safetensors")])
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["convert", "src", "out", "--bits", "6"])
+
+
+def test_inspect_tiny_repo(home, tmp_path, capsys):
+    repo = _tiny_repo(tmp_path / "repo")
+    assert cli.main(["inspect", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "Wan-architecture model (3 blocks, width 256)" in out and "text to video" in out
+    assert "convert it first" in out and "video model" in out and "text encoder" in out and "VAE" in out
+    assert "this Mac  can run it (16.0 GB" in out and "verdict   ready to convert" in out
+    assert cli.main(["--json", "inspect", str(repo)]) == 0
+    d = json.loads(capsys.readouterr().out)
+    assert d["ok"] and d["family"] == "wan" and d["this_mac"]["fits"] is True and "dit" in d["parts"]
+
+
+def test_inspect_bare_file_and_problems(home, tmp_path, capsys):
+    import numpy as np
+
+    from tests import wan_fixtures as F
+    f = tmp_path / "ft.safetensors"
+    F.save_st(f, F.to_comfy(F.official_dit_weights()))
+    assert cli.main(["inspect", str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "missing   text encoder, VAE, tokenizer" in out
+    bad = tmp_path / "clip.safetensors"
+    F.save_st(bad, F.official_dit_weights(extra={"img_emb.proj.1.weight": np.zeros((256, 1280), np.float32)}))
+    assert cli.main(["inspect", str(bad)]) == 1
+    out = capsys.readouterr().out
+    assert "problem   Not supported" in out and "CLIP" in out and "verdict   cannot run" in out
+    other = tmp_path / "other.safetensors"
+    F.save_st(other, {"foo.weight": np.zeros((2, 2), np.float32)})
+    assert cli.main(["inspect", str(other)]) == 1
+    assert "not a model Shuttrr recognises" in capsys.readouterr().out
+    assert cli.main(["inspect", str(tmp_path / "nope")]) == 1
+
+
+def test_convert_add_registers_build(home, tmp_path, capsys):
+    from shutter.families import inspect
+
+    repo = _tiny_repo(tmp_path / "repo")
+    out = tmp_path / "build"
+    assert cli.main(["convert", str(repo), str(out), "--add", "my-wan"]) == 0
+    assert "Added my-wan" in capsys.readouterr().out
+    cfg = Config.load()
+    assert cfg.models["my-wan"] == {"adapter": "wan", "dir": str(out.resolve())}
+    ck = inspect(out)
+    assert ck.ok and not ck.needs_conversion
+    # a build folder is refused the second time, with the reason
+    assert cli.main(["convert", str(repo), str(out)]) == 2
+    assert "already holds a build" in capsys.readouterr().err
+
+
+def test_convert_finds_missing_parts_in_installed_models(home, tmp_path, capsys):
+    """A bare fine-tune takes the text encoder and tokenizer from an installed build, the VAE from LongCat."""
+    import shutil
+
+    from tests import wan_fixtures as F
+    repo = _tiny_repo(tmp_path / "repo")
+    models = home / "models"
+    assert cli.main(["convert", str(repo), str(models / "wan-built")]) == 0
+    lc = models / "LongCat-Video-Avatar"
+    (lc / "vae").mkdir(parents=True)
+    shutil.copy(repo / "Wan2.1_VAE.safetensors", lc / "vae" / "model.safetensors")
+    capsys.readouterr()
+    f = tmp_path / "ft.safetensors"
+    F.save_st(f, F.to_comfy(F.official_dit_weights(seed=5)))
+    lora = tmp_path / "style.safetensors"
+    F.save_st(lora, F.lora_weights())
+    assert cli.main(["convert", str(f), str(tmp_path / "ft-build"), "--lora", f"{lora}:0.5"]) == 0
+    out = capsys.readouterr().out
+    assert "Using the text encoder from" in out and "wan-built" in out
+    assert f"Using the VAE from {lc}" in out
+    man = json.loads((tmp_path / "ft-build" / "shuttrr.json").read_text())
+    assert man["loras_merged"] == [{"file": "style.safetensors", "strength": 0.5}]
+
+
+def test_convert_main_lora_strength(tmp_path, monkeypatch):
+    from shutter.families.wan import convert as C
+    seen = {}
+    monkeypatch.setattr(C, "convert", lambda src, out, **kw: seen.update(kw))
+    assert C.main(["s", "o", "--lora", "a.safetensors:0.8", "--lora", "b.safetensors"]) == 0
+    assert seen["loras"] == [("a.safetensors", 0.8), ("b.safetensors", 1.0)]

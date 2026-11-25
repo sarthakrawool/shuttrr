@@ -324,14 +324,19 @@ def cmd_catalog(args: argparse.Namespace) -> int:
         d = r["download"] or {}
         if r["installed"]:
             state = "installed"
-        elif d.get("state") == "downloading":
-            state = f"downloading {d.get('done_bytes', 0) / GB:.1f} of {d.get('total_bytes', 0) / GB:.1f} GB"
+        elif d.get("state") in ("downloading", "converting"):
+            state = f"{d['state']} {d.get('done_bytes', 0) / GB:.1f} of {d.get('total_bytes', 0) / GB:.1f} GB"
         elif d.get("state") in ("failed", "stopped", "cancelled"):
             state = f"{d['state']}" + (f": {d['error']}" if d.get("error") else "")
         else:
             state = "not downloaded"
-        lines.append(f"{r['id']:<28} {r['size_bytes'] / GB:>5.1f} GB  {state}")
+        approx = "~" if r.get("size_approximate") else " "
+        lines.append(f"{r['id']:<28}{approx}{r['size_bytes'] / GB:>5.1f} GB  {state}")
         lines.append(f"{'':<28} {r['name']}. {r['summary']}")
+        if r.get("needs_conversion") and not r["installed"]:
+            lines.append(f"{'':<28} Downloads the original weights, then converts them on this Mac "
+                         f"(about {r['built_size_bytes'] / GB:.0f} GB when built). Needs {r['min_memory_bytes'] / GB:.0f} GB "
+                         f"of memory" + ("" if r.get("fits_this_mac", True) else "; too big for this Mac") + ".")
     _print(args, {"models": rows}, "\n".join(lines))
     return 0
 
@@ -346,12 +351,13 @@ def cmd_download(args: argparse.Namespace) -> int:
     last = [0.0]
 
     def show(s: dict[str, Any]) -> None:
-        if args.quiet or time.time() - last[0] < 2 and s.get("state") == "downloading":
+        if args.quiet or time.time() - last[0] < 2 and s.get("state") in ("downloading", "converting"):
             return
         last[0] = time.time()
         total = s.get("total_bytes") or 1
         done = s.get("done_bytes", 0)
-        print(f"\r{done / GB:6.1f} of {total / GB:.1f} GB  {100 * done / total:5.1f}%", end="", flush=True)
+        what = "converting " if s.get("state") == "converting" else ""
+        print(f"\r{what}{done / GB:6.1f} of {total / GB:.1f} GB  {100 * done / total:5.1f}%", end="", flush=True)
 
     try:
         done = catalog.download(args.model, folder=args.dir, on_progress=show)
@@ -364,6 +370,167 @@ def cmd_download(args: argparse.Namespace) -> int:
             print(f"Checked: {done['verified_detail']}.")
         for n in done.get("notes") or []:
             print(n)
+    return 0
+
+
+TASKS = {"t2v": "text to video", "i2v": "image to video", "ti2v": "text or image to video", "lora": "LoRA"}
+PART_NAMES = {"dit": "video model", "dit_high": "video model, high-noise expert",
+              "dit_low": "video model, low-noise expert", "text_encoder": "text encoder", "vae": "VAE",
+              "tokenizer": "tokenizer", "lora": "LoRA", "vae_encoder": "VAE encoder"}
+
+
+def _part_name(n: str) -> str:
+    return PART_NAMES.get(n, n.replace("_", " "))
+
+
+def _this_mac(ck: Any) -> dict[str, Any]:
+    """Can this Mac run `ck` at the lowest memory step? {"total_bytes", "fits" (True/False/None), "reasons"}."""
+    from shutter.core.catalog import total_memory
+    from shutter.families import family
+
+    total = total_memory()
+    out: dict[str, Any] = {"total_bytes": total, "fits": None, "reasons": []}
+    if not total or ck.task == "lora" or "dim" not in (ck.config or {}):
+        return out
+    try:
+        reasons = family(ck.family).check_memory(ck, total)
+    except Exception as e:  # a half-recognised checkpoint: say we could not tell
+        out["reasons"] = [f"could not work out its memory ({type(e).__name__})"]
+        return out
+    out["fits"] = not reasons
+    out["reasons"] = reasons
+    return out
+
+
+def inspect_text(ck: Any, mac: dict[str, Any]) -> str:
+    title = ck.label or "Unrecognised Wan checkpoint"
+    lines = [title]
+    kind = [x for x in (ck.variant, TASKS.get(ck.task, ck.task)) if x]
+    if kind:
+        lines[0] += f"  ({', '.join(kind)})"
+    lines.append(f"path      {ck.path}")
+    if ck.task == "lora":
+        lines.append("format    a LoRA: give it with --lora to `shutter convert`, or add it to a request")
+    elif ck.needs_conversion:
+        lines.append("format    original weights: convert it first (shutter convert PATH OUT)")
+    else:
+        lines.append("format    a Shuttrr build: runs as it is")
+    if ck.parts:
+        lines.append("parts")
+        for name, p in ck.parts.items():
+            size = (_gb(p.total_bytes) if p.total_bytes >= GB // 10 else f"{p.total_bytes / 1024**2:.1f} MB") \
+                if p.total_bytes else ""
+            extra = []
+            if p.n_blocks and p.role != "text_encoder":
+                extra.append(f"{p.n_blocks} blocks")
+            if p.quant:
+                extra.append(f"{p.quant.get('bits')}-bit")
+            elif p.dtype:
+                extra.append(p.dtype.lower())
+            if p.layout and p.layout != "shuttrr":
+                extra.append(f"{p.layout} layout")
+            lines.append(f"  {_part_name(name):<32} {size:>9}  {', '.join(extra)}".rstrip())
+    if ck.missing:
+        lines.append("missing   " + ", ".join(_part_name(m) for m in ck.missing)
+                     + " (shutter convert finds them in an installed Wan or LongCat model, or name them with "
+                       "--text-encoder / --vae / --tokenizer)")
+    for n in ck.notes:
+        lines.append(f"note      {n}")
+    for pr in ck.problems:
+        lines.append(f"problem   {pr}")
+    total = mac.get("total_bytes") or 0
+    if mac.get("fits") is True:
+        lines.append(f"this Mac  can run it ({_gb(total)} of memory)")
+    elif mac.get("fits") is False:
+        lines.append(f"this Mac  cannot run it: {' '.join(mac['reasons'])}")
+    elif ck.task != "lora":
+        lines.append("this Mac  " + (mac["reasons"][0] if mac.get("reasons") else "memory could not be checked"))
+    if ck.problems:
+        lines.append("verdict   cannot run, for the reasons above")
+    elif mac.get("fits") is False:
+        lines.append("verdict   supported, but too big for this Mac")
+    elif ck.task == "lora":
+        lines.append("verdict   usable as a LoRA")
+    else:
+        lines.append("verdict   ready to " + ("convert" if ck.needs_conversion else "run"))
+    return "\n".join(lines)
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    from shutter.families import inspect
+
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        print(f"shutter: {path} does not exist", file=sys.stderr)
+        return 1
+    try:
+        ck = inspect(path)
+    except (OSError, ValueError) as e:
+        print(f"shutter: could not read {path}: {e}", file=sys.stderr)
+        return 1
+    if ck is None:
+        msg = "not a model Shuttrr recognises (supported families: Wan 2.1 / 2.2)"
+        _print(args, {"path": path, "recognised": False, "problems": [msg]}, f"{path}: {msg}")
+        return 1
+    mac = _this_mac(ck)
+    data = ck.to_dict()
+    data.update(recognised=True, this_mac=mac)
+    _print(args, data, inspect_text(ck, mac))
+    return 0 if ck.ok else 1
+
+
+def parse_lora(s: str) -> tuple[str, float]:
+    from shutter.families.wan.sources import parse_lora as parse
+
+    path, strength = parse(s)
+    if not os.path.isfile(os.path.expanduser(path)):
+        raise argparse.ArgumentTypeError(f"LoRA file not found: {path}")
+    return os.path.expanduser(path), strength
+
+
+def cmd_convert(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from shutter.core import catalog
+    from shutter.families import inspect
+    from shutter.families.wan import sources
+    from shutter.families.wan.convert import ConvertError, convert
+
+    source = Path(os.path.expanduser(args.source))
+    out = Path(os.path.expanduser(args.out))
+    given = {"text_encoder": args.text_encoder, "vae": args.vae, "tokenizer": args.tokenizer}
+    given = {k: Path(os.path.expanduser(v)) for k, v in given.items() if v}
+    cfg = Config.load()
+    log = sys.stderr if args.json else sys.stdout
+
+    def report(line: str) -> None:
+        print(line, file=log, flush=True)
+
+    ck = inspect(source) if source.exists() else None
+    if ck is not None and ck.needs_conversion and ck.task != "lora":
+        todo = [n for n in sources.needed(ck) if n not in given]
+        if todo:
+            dirs = sources.candidate_dirs(catalog._model_roots(cfg), exclude=[source, out])
+            found = sources.find_parts(ck, dirs, names=todo)
+            for name, d in found.items():
+                report(f"Using the {_part_name(name)} from {d}")
+            given.update(found)
+    try:
+        man = convert(source, out, bits=args.bits or None, loras=args.lora or None,
+                      text_encoder=given.get("text_encoder"), vae=given.get("vae"),
+                      tokenizer=given.get("tokenizer"), report=report)
+    except ConvertError as e:
+        print(f"shutter: {e}", file=sys.stderr)
+        if ck is not None and "vae" in sources.needed(ck) and "vae" not in given:
+            print("The VAE has to come from the original model (Wan2.1_VAE.pth or Wan2.2_VAE.pth) or ComfyUI's "
+                  "wan_2.1_vae / wan2.2_vae .safetensors: name it with --vae. A Shuttrr build keeps its VAE in a "
+                  "converted form that cannot be converted again.", file=sys.stderr)
+        return 2
+    if args.add:
+        catalog.register_build(cfg, args.add, out, adapter="wan")
+        report(f"Added {args.add} to {cfg.path}. Restart the engine (or the app) to use it.")
+    if args.json:
+        print(json.dumps(man, indent=2))
     return 0
 
 
@@ -560,6 +727,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-models", action="store_true", help="keep ~/.shutter/models")
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
     s.set_defaults(func=cmd_uninstall)
+
+    s = sub.add_parser("inspect", help="say what a model folder or file is, and whether this Mac can run it")
+    s.add_argument("path", help="a folder (Hugging Face repo, Shuttrr build) or a .safetensors file")
+    s.set_defaults(func=cmd_inspect)
+
+    s = sub.add_parser("convert", help="convert a Wan checkpoint into Shuttrr's 8-bit low-memory build")
+    s.add_argument("source", help="folder or .safetensors file (see `shutter inspect`)")
+    s.add_argument("out", help="empty folder for the build")
+    s.add_argument("--bits", type=int, default=8, choices=[8, 4, 0], help="8 (default), 4, or 0 to keep bf16")
+    s.add_argument("--lora", action="append", type=parse_lora, default=[], metavar="FILE[:STRENGTH]",
+                   help="LoRA merged into the build before quantizing (repeatable; strength defaults to 1)")
+    s.add_argument("--text-encoder", metavar="DIR", help="folder with the umT5 text encoder")
+    s.add_argument("--vae", metavar="FILE", help="the Wan VAE (.safetensors or .pth), or a folder holding it")
+    s.add_argument("--tokenizer", metavar="DIR", help="folder with the umT5 tokenizer")
+    s.add_argument("--add", metavar="MODEL_ID", help="also add the build to ~/.shutter/config.json under this id")
+    s.set_defaults(func=cmd_convert)
 
     s = sub.add_parser("init", help="write a default ~/.shutter/config.json")
     s.add_argument("--force", action="store_true")

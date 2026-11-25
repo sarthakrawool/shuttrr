@@ -391,7 +391,7 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         if mid not in cat.CATALOG:
             return _err(404, f"unknown model '{mid}'")
         st = cat.read_state(engine.config, mid)
-        if not (st and st.get("state") == "downloading"):
+        if not (st and st.get("state") in cat.RUNNING):      # downloading, or converting a Wan download
             env = dict(os.environ, SHUTTER_HOME=str(engine.config.home))
             log = open(os.path.join(engine.config.home, "download.log"), "ab")
             subprocess.Popen([sys.executable, "-m", "shutter.cli", "download", mid, "--quiet"], env=env,
@@ -399,7 +399,7 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
             for _ in range(20):                          # let it write its first progress line
                 await asyncio.sleep(0.1)
                 st = cat.read_state(engine.config, mid)
-                if st and st.get("pid") and st.get("state") in ("downloading", "failed", "done"):
+                if st and st.get("pid") and st.get("state") in cat.RUNNING + ("failed", "done"):
                     break
         return JSONResponse(await asyncio.to_thread(_catalog), status_code=202)
 
