@@ -152,14 +152,59 @@ real part sizes and the activation formulas in `shutter/families/wan/spec.py`.
 
 ## Checked on
 
-These Macs have produced a correct video with each model, and their peak memory was measured.
+These Macs have produced a correct video with each model, and their peak memory was measured with
+`scripts/wan_check.py` (one fresh process per memory step; peak = MLX peak memory of that process). Prompt: "A red fox
+running through fresh snow in a pine forest, morning light, cinematic", seed 42, guidance 5, shift 5, UniPC.
 
-| Model | Mac | Memory | Step | Peak | Time | Date |
-|---|---|---|---|---|---|---|
-| | | | | | | |
+| Model | Mac | Memory | Size | Step | Peak | Time | s / step | Date |
+|---|---|---|---|---|---|---|---|---|
+| Wan 2.1 T2V 1.3B | MacBook Pro M5 (Mac17,2), macOS 27.2.1, MLX 0.32.5 | 16 GB | 320x512, 33 frames, 20 steps | resident | 6.23 GB | 166 s | 6.2 | 2026-11-26 |
+| | | | | split | 6.23 GB | 153 s | 6.0 | |
+| | | | | staged | 4.61 GB | 163 s | 6.5 | |
+| | | | | stream_wide | 4.67 GB | 169 s | 6.2 | |
+| | | | | stream_tight | 4.67 GB | 160 s | 6.6 | |
+| | | | 480x832, 33 frames, 30 steps, tiled decode | staged | 6.93 GB | 676 s | ~20 | 2026-11-26 |
 
-The table is empty because nothing has been measured on a Mac yet. A build's `shuttrr.json` has a `checked_on`
-list, and the catalog shows it (`checked_on` in `/v1/catalog`). An empty list means not yet measured.
+* All five steps at 320x512 gave bit-identical frames (same SHA-256), and the video is a coherent fox running
+  through snow. The 480x832 clip (staged) is coherent too.
+* The prompt encode (umT5, one block at a time) peaks at 2.0 GB and takes 8-10 s; it is inside each step's time.
+* At 1.3B the denoise is small (1.4 GB streamed, 3.0 GB resident at 320x512; 2.4 GB streamed at 480x832 x 33): the
+  VAE decode is the largest stage. 480x832 untiled needs about 9.7 GB for the decode alone.
+* Not done on this 16 GB Mac, which had about 9 GB free with other apps open: 480x832 x 81 frames (stopped twice by a
+  swap watchdog during the denoise) and the stream_wide / stream_tight steps at 480x832 x 33 (stopped the same way).
+  These need a Mac with more free memory, or fewer apps open.
+* Times were taken while other heavy jobs (ffmpeg, Python scans) ran on the same Mac; treat them as upper bounds.
+* Through the engine API (`shutter serve`, `shutter submit --wait`): 320x512, 17 frames, 12 steps, mode fast ->
+  resident, 54 s, peak 6.4 GB (estimate 7.7 GB), no swap growth.
+
+A build's `shuttrr.json` has a `checked_on` list (wan_check appends to it), and the catalog shows it (`checked_on`
+in `/v1/catalog`); the catalog entry for a model that is not installed carries the checks above.
+
+### Measuring on a small Mac
+
+```
+python scripts/wan_check.py BUILD --model-id ID --sizes 320x512 --frames 33 --steps 20 \
+    --encode-once --min-memory-level 40 [--vae-tile]
+```
+
+* `--encode-once` encodes the prompts once in their own process and gives every step the same embeddings (the engine
+  caches them the same way). Without it each step reads the 11 GB text encoder again, which on 16 GB pushes other
+  apps into swap at the start of every step. The frames are the same.
+* `--min-memory-level` (default 78, gpulock.sh's value for a big Mac): a 16 GB Mac with a browser open sits near 60.
+* `--vae-tile` measures with the tiled decode; such measurements are kept apart (the adapter only uses them for
+  tiled requests).
+* The lock folders are the config's `gpu_lock_dirs` (as the engine); a stop (SIGTERM) releases them.
+* `report.json` is written after every step, so a stopped run keeps the steps that finished.
+
+### VAE decode memory
+
+The Wan 2.1 VAE decodes one latent frame at a time. As vendored it built the graph for every frame before running
+any of it, and each layer's cache entry (`x[:, :, -2:]`) was a view that kept the layer's whole output alive: 12.2 GB
+at 320x512 x 33 frames. Shuttrr now evaluates per latent frame, per decoder layer and per conv time step, copies the
+cache entries out of their parents and gathers each conv's frames one window at a time (`shutter/families/wan/model/
+vae.py`). The operations and layouts are unchanged, so the frames are bit-identical (checked on the real model and in
+`tests/test_wan_family.py`, on the CPU and on Metal). Peak: 12.2 -> 4.2 GB at 320x512; about 9.7 GB at 480x832
+(6.1 GB tiled). The decode estimate in `spec.py` is calibrated to these numbers.
 
 ## Credits
 

@@ -214,7 +214,8 @@ def test_wan_rows(cfg, monkeypatch):
         r = rows[mid]
         e = cat.CATALOG[mid]
         assert r["kind"] == "video" and r["source"] == repo and e["source_repo"] == repo and e["adapter"] == "wan"
-        assert r["needs_conversion"] and r["checked_on"] == [] and r["size_approximate"] and not r["installed"]
+        assert r["needs_conversion"] and r["size_approximate"] and not r["installed"]
+        assert (r["checked_on"] != []) == (mid == "wan2.1-t2v-1.3b")        # only the 1.3B is measured so far
         assert r["built_size_bytes"] < r["size_bytes"]
         assert r["dir"].endswith(f"{mid}-shuttrr-8bit")
     # the smallest Mac comes from the family memory check: one GB less fails it

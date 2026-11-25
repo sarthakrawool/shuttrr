@@ -56,6 +56,17 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
         "summary": "Short video clips from a text prompt. The smallest Wan model: quick, and fits most Macs.",
         "source_repo": "Wan-AI/Wan2.1-T2V-1.3B", "source_size_gb": 17,
         "shape": dict(dim=1536, in_dim=16, out_dim=16, ffn_dim=8960, num_layers=30),
+        # measured with scripts/wan_check.py (docs/WAN.md, "Checked on"); an installed build reads its own list
+        "checked_on": [
+            {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+             "size": "320x512", "frames": 33, "steps": 20, "identical": True,
+             "peaks_gb": {"resident": 6.23, "split": 6.23, "staged": 4.61, "stream_wide": 4.67, "stream_tight": 4.67},
+             "seconds": {"resident": 166, "split": 153, "staged": 163, "stream_wide": 169, "stream_tight": 160}},
+            {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+             "size": "480x832", "frames": 33, "steps": 30, "vae_tile": True,
+             "peaks_gb": {"staged": 6.93}, "seconds": {"staged": 676},
+             "stopped": ["stream_wide", "stream_tight"]},
+        ],
     },
     "wan2.2-ti2v-5b": {
         "name": "Wan 2.2 Text and Image to Video 5B",
@@ -121,7 +132,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "size_gb": src["source_size_gb"], "size_approximate": True,
             "built_size_gb": built,
             "min_memory_gb": min_gb,
-            "checked_on": [],          # Macs it was measured on; empty until it is
+            "checked_on": list(src.get("checked_on", [])),   # Macs it was measured on; empty until it is
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
             "check_files": ["shuttrr.json", "text_encoder", "tokenizer", "vae"],
