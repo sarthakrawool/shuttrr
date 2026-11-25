@@ -278,3 +278,19 @@ def test_memory_steps_order_for_a14b():
     assert peaks["resident"] > peaks["split"] >= peaks["staged"] > peaks["stream_wide"] > peaks["stream_tight"]
     # one 8-bit expert of 14B is about 15 GB
     assert 13 * P.GB < ps[0].total < 17 * P.GB
+
+
+def test_vae_low_memory_decode_is_the_same(monkeypatch):
+    """The decode evaluates per frame / layer / conv step and gathers conv windows frame by frame (to bound memory
+    at 480p); the frames are exactly those of the plain lazy decode."""
+    from shutter.families.wan.model import vae as V
+    mx.random.seed(3)
+    m = V.WanVAE(z_dim=16)
+    from mlx.utils import tree_flatten, tree_unflatten
+    m.update(tree_unflatten([(k, mx.random.normal(v.shape) * 0.05) for k, v in tree_flatten(m.parameters())]))
+    lat = mx.random.normal((1, 16, 3, 4, 6))                   # 3 latent frames -> 9 frames of 32x48
+    monkeypatch.setattr(V, "_EVAL_AREA", 10**12)                # off: the plain path
+    plain = np.array(m.decode(lat))
+    monkeypatch.setattr(V, "_EVAL_AREA", 1)                     # on for every layer
+    low = np.array(m.decode(lat))
+    assert plain.shape == (1, 3, 9, 32, 48) and np.array_equal(plain, low)

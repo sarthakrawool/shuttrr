@@ -8,6 +8,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 CACHE_T = 2
+_EVAL_AREA = 128 * 128   # Shuttrr: frames at least this big are evaluated one time step at a time in a conv
 
 # Per-channel normalization statistics for z_dim=16
 VAE_MEAN = [
@@ -48,6 +49,15 @@ VAE_STD = [
 ]
 
 
+def _compact_cache(feat_cache: list) -> None:
+    """Shuttrr: a cache entry is `x[:, :, -2:]`, a view that keeps the whole of `x` (every frame of that layer's
+    output) alive until the next chunk. Copy each entry into its own buffer so only the two kept frames stay.
+    Same values; only memory changes."""
+    for k, c in enumerate(feat_cache):
+        if isinstance(c, mx.array):
+            feat_cache[k] = mx.contiguous(c)
+
+
 class CausalConv3d(nn.Module):
     """3D convolution with causal temporal padding."""
 
@@ -84,6 +94,8 @@ class CausalConv3d(nn.Module):
     def __call__(self, x: mx.array, cache_x: mx.array = None) -> mx.array:
         """x: [B, C, T, H, W] (channel-first)"""
         b, c, t, h, w = x.shape
+        if h * w >= _EVAL_AREA and self.kernel_size[0] > 1:
+            return self._call_framewise(x, cache_x)
 
         causal_pad = self._causal_pad_t
         if cache_x is not None and causal_pad > 0:
@@ -110,6 +122,38 @@ class CausalConv3d(nn.Module):
         out = self._conv3d(x)
         return out.transpose(0, 4, 1, 2, 3)  # [B, O, T', H', W']
 
+    def _call_framewise(self, x: mx.array, cache_x: mx.array = None) -> mx.array:
+        """Shuttrr: the same convolution as __call__, without first building the padded, transposed copy of every
+        frame. Each output time step gathers only its kt input frames (from the cache, x, or causal zeros), lays
+        them out exactly as __call__ would ([B, H, W, kt*C]) and is evaluated before the next one. The conv2d
+        inputs are the same values in the same layout, so the output is the same; at 480x832 this saves about two
+        full copies of the layer's input per conv."""
+        b, c, t, h, w = x.shape
+        kt, kh, kw = self.kernel_size
+        st, sh, sw = self.stride
+        frames = []                                   # the virtual time axis of __call__: [zeros][cache][x]
+        causal_pad = self._causal_pad_t
+        if cache_x is not None and causal_pad > 0:
+            frames += [cache_x[:, :, i] for i in range(cache_x.shape[2])]
+            causal_pad = max(0, causal_pad - cache_x.shape[2])
+        zero = mx.zeros((b, c, h, w), dtype=x.dtype) if causal_pad > 0 else None
+        frames = [zero] * causal_pad + frames + [x[:, :, i] for i in range(t)]
+        t_all = len(frames)
+        t_out = (t_all - kt) // st + 1
+        w_2d = self.weight.transpose(0, 2, 3, 1, 4).reshape(self.weight.shape[0], kh, kw, kt * c)
+        pad = [(0, 0), (0, 0), (0, 0), (self._pad_h, self._pad_h), (self._pad_w, self._pad_w)]
+        outputs = []
+        for t_i in range(t_out):
+            win = mx.stack(frames[t_i * st: t_i * st + kt], axis=1)          # [B, kt, C, H, W]
+            if self._pad_h > 0 or self._pad_w > 0:
+                win = mx.pad(win, pad)
+            hp, wp = win.shape[3], win.shape[4]
+            win = win.transpose(0, 3, 4, 1, 2).reshape(b, hp, wp, kt * c)   # [B, H, W, kt*C]
+            out_2d = mx.conv2d(win, w_2d, stride=(sh, sw)) + self.bias
+            mx.eval(out_2d)
+            outputs.append(out_2d)
+        return mx.stack(outputs, axis=1).transpose(0, 4, 1, 2, 3)
+
     def _conv3d(self, x: mx.array) -> mx.array:
         """3D conv via sliding window + 2D conv per time step.
         x: [B, T, H, W, C_in] -> [B, T_out, H_out, W_out, C_out]
@@ -129,6 +173,10 @@ class CausalConv3d(nn.Module):
             window = x[:, t_start : t_start + kt]
             window = window.transpose(0, 2, 3, 1, 4).reshape(b, h, w, kt * c_in)
             out_2d = mx.conv2d(window, w_2d, stride=(sh, sw)) + self.bias
+            if t_out > 1 and h * w >= _EVAL_AREA:
+                # Shuttrr: run each time step before building the next one, so only one step's conv workspace
+                # is alive at a time (same operations, only an evaluation point added)
+                mx.eval(out_2d)
             outputs.append(out_2d)
         return mx.stack(outputs, axis=1)
 
@@ -429,6 +477,9 @@ class Decoder3d(nn.Module):
         for layer in self.upsamples:
             if feat_cache is not None and isinstance(layer, (ResidualBlock, Resample)):
                 x = layer(x, feat_cache=feat_cache, feat_idx=feat_idx)
+                # Shuttrr: run each layer before building the next (same operations; bounds the live graph)
+                _compact_cache(feat_cache)
+                mx.eval(x, *[c for c in feat_cache if isinstance(c, mx.array)])
             else:
                 x = layer(x)
 
@@ -589,6 +640,9 @@ class WanVAE(nn.Module):
                 chunk = x[:, :, 1 + 4 * (i - 1) : 1 + 4 * i]
 
             chunk_out = self.encoder(chunk, feat_cache=feat_cache, feat_idx=feat_idx)
+            # evaluate as it goes (Shuttrr), as in decode: same operations, bounded memory
+            _compact_cache(feat_cache)
+            mx.eval(chunk_out, *[c for c in feat_cache if isinstance(c, mx.array)])
 
             if out is None:
                 out = chunk_out
@@ -636,14 +690,21 @@ class WanVAE(nn.Module):
 
         x = self.conv2(z)
 
-        num_slots = self._count_decoder_cache_slots()
-        feat_cache = [None] * num_slots
-        out = None
+        return mx.clip(self._decode_frames(x), -1, 1)
+
+    def _decode_frames(self, x: mx.array) -> mx.array:
+        """One latent frame at a time, evaluated as it goes (Shuttrr): without the per-frame eval MLX builds the
+        graph for every frame before running any of it and holds all of their intermediates (12 GB at 320x512 x 33
+        frames). Same operations, same order, so the same output; only the evaluation points are added."""
+        feat_cache = [None] * self._count_decoder_cache_slots()
+        outs = []
         for i in range(x.shape[2]):
             feat_idx = [0]
             chunk = self.decoder(x[:, :, i : i + 1], feat_cache=feat_cache, feat_idx=feat_idx)
-            out = chunk if out is None else mx.concatenate([out, chunk], axis=2)
-        return mx.clip(out, -1, 1)
+            _compact_cache(feat_cache)
+            mx.eval(chunk, *[c for c in feat_cache if isinstance(c, mx.array)])
+            outs.append(chunk)
+        return outs[0] if len(outs) == 1 else mx.concatenate(outs, axis=2)
 
     def _count_decoder_cache_slots(self) -> int:
         """Count CausalConv3d that participate in chunked decoding cache."""
@@ -699,16 +760,7 @@ class WanVAE(nn.Module):
         z_denorm = z / inv_std + mean
 
         def tile_decode(tile_latents, **kwargs):
-            x = self.conv2(tile_latents)
-            feat_cache = [None] * self._count_decoder_cache_slots()
-            out = None
-            for i in range(x.shape[2]):
-                feat_idx = [0]
-                chunk = self.decoder(
-                    x[:, :, i : i + 1], feat_cache=feat_cache, feat_idx=feat_idx
-                )
-                out = chunk if out is None else mx.concatenate([out, chunk], axis=2)
-            return mx.clip(out, -1, 1)
+            return mx.clip(self._decode_frames(self.conv2(tile_latents)), -1, 1)
 
         return decode_with_tiling(
             decoder_fn=tile_decode,

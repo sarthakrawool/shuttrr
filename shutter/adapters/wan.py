@@ -139,7 +139,8 @@ class WanAdapter(Adapter):
             peak = e["peak"] + lora_bytes
             note = f"wan {rid}: worst stage {e['worst']} ~{peak / GB:.1f} GB"
             m = M.measured_for(self.model_id, size, rid, data)
-            if m and m.get("frames", s.frames) == s.frames:
+            # a measurement counts only for the same frames and the same decode (tiled peaks are lower)
+            if m and m.get("frames", s.frames) == s.frames and bool(m.get("vae_tile", False)) == bool(s.vae_tile):
                 peak = int(m["peak_bytes"]) + lora_bytes
                 note = f"wan {rid}: measured {m['peak_bytes'] / GB:.1f} GB at {size}"
             out[rid] = MemoryEstimate(peak=int(peak), steady=int(e["steady"]), disk_scratch=int(1 * GB), note=note)

@@ -27,6 +27,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--prompt", default="A red fox trots through fresh snow at dawn, soft light, cinematic.")
     ap.add_argument("--negative-prompt", default="")
+    ap.add_argument("--vae-tile", action="store_true",
+                    help="tiled VAE decode at every step (less memory; recorded as a separate measurement)")
     ap.add_argument("--image", default=None, help="image for image-to-video builds")
     ap.add_argument("--out", type=Path, default=Path("~/shutter-test/wan"))
     ap.add_argument("--measured", type=Path, default=None, help="measured.json to update (default: Shuttrr's)")
@@ -242,7 +245,8 @@ def run_one(spec: dict[str, Any]) -> dict[str, Any]:
     req = JobRequest(model=spec["model_id"], prompt=spec["prompt"], negative_prompt=spec.get("negative_prompt", ""),
                      width=spec["width"], height=spec["height"], frames=spec.get("frames"),
                      steps=spec.get("steps"), seed=int(spec["seed"]),
-                     inputs={"image": spec["image"]} if spec.get("image") else None)
+                     inputs={"image": spec["image"]} if spec.get("image") else None,
+                     params={"vae_tile": True} if spec.get("vae_tile") else {})
     s = ad.settings_for(req)
     pipe_cls = WanPipeline
     if spec.get("prompt_embeds"):
@@ -374,7 +378,7 @@ def check(a: argparse.Namespace, runner: Optional[Callable[[dict[str, Any], floa
                     "steps": a.steps, "seed": a.seed, "prompt": a.prompt, "negative_prompt": a.negative_prompt,
                     "image": a.image, "rung": rung, "out_dir": str(out_root / f"{h}x{w}" / rung),
                     "npy": not a.no_npy, "cache_limit_gb": a.cache_limit_gb, "cpu": a.cpu,
-                    "prompt_embeds": a.prompt_embeds}
+                    "prompt_embeds": a.prompt_embeds, "vae_tile": a.vae_tile}
             log(f"{h}x{w} {rung}: running")
             r = runner(spec, a.timeout)
             if r.get("ok"):
@@ -392,11 +396,14 @@ def check(a: argparse.Namespace, runner: Optional[Callable[[dict[str, Any], floa
         frames = ok[0]["frames"] if ok else a.frames
         steps = ok[0]["steps"] if ok else a.steps
         entry = checked_on_entry(sz, frames, steps, results, cmp, machine, mlx)
+        if a.vae_tile:
+            entry["vae_tile"] = True
         if not a.no_record and ok:
             for r in ok:
                 M.record_measurement(a.model_id, sz, r["rung"], peak_bytes=r["peak_bytes"], seconds=r["seconds"],
                                      identical=cmp["same"].get(r["rung"]), path=a.measured,
-                                     extra={"frames": frames, "steps": steps, "hash": r["hash"][:16]})
+                                     extra={"frames": frames, "steps": steps, "hash": r["hash"][:16],
+                                            **({"vae_tile": True} if a.vae_tile else {})})
             append_checked_on(build, entry)
         report["sizes"][sz] = {"results": results, "compare": cmp, "checked_on": entry}
         log(f"{sz}: {'all steps give the same frames' if cmp['identical'] else 'NOT identical: ' + json.dumps(cmp['same'])}")
@@ -436,6 +443,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if bad:
         print(f"unknown memory step {bad[0]!r}; the steps are {', '.join(RUNGS)}", file=sys.stderr)
         return 2
+    # a stop (kill / Ctrl-C) must still release the locks below and stop the running step: turn SIGTERM / SIGHUP
+    # into SystemExit, so the `finally` runs and subprocess.run kills its child
+    def _stop(signum, frame):
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop)
     locks = None
     if not a.no_lock:
         # --cpu is the tests' tiny CPU run: the machine's memory level says nothing about it

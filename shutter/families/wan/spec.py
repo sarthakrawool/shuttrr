@@ -142,10 +142,14 @@ def stage_needs(cfg: dict[str, Any], height: int, width: int, frames: int, *, cf
     latents = cfg["vae_z_dim"] * g["t"] * g["h"] * g["w"] * 4 * 4    # latents, noise, prediction, scheduler state
     text = B * 512 * cfg["text_dim"] * 4
     # decode: the Wan VAEs decode one latent frame at a time with a cache; the largest activations are at full
-    # resolution (96 channels x 4 frames, float32), a few copies. Tiling caps the spatial size at 512 px.
+    # resolution (96 channels x 4 frames, float32): the layer's input and output, the norm, the two-frame caches of
+    # every full-resolution conv, and one conv step's workspace. Measured with the 2.1 VAE on an M5 (MLX 0.32.5):
+    # 4.2 GB at 320x512, 9.7 GB at 480x832 (about 27 KB a pixel, 18 such copies). The 2.2 VAE (48 channels) is
+    # not measured yet and keeps the older 6 copies. Tiling caps the size at 512 px.
     hh, ww = (min(height, 512), min(width, 512)) if tiled_decode else (height, width)
     frames_out = 1 + 4 * (g["t"] - 1)
-    decode = int(hh * ww * 96 * 4 * 4 * 6) + frames_out * height * width * 3 * 4
+    copies = 18 if cfg["vae_z_dim"] == 16 else 6
+    decode = int(hh * ww * 96 * 4 * 4 * copies) + frames_out * height * width * 3 * 4
     encode = 512 * 4096 * 4 * 6
     return StageNeeds(encode=encode, image=decode // 2, denoise=per_block + resid + cross + rope,
                       decode=decode, carried=latents + text)
