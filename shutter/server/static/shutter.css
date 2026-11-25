@@ -1,0 +1,260 @@
+/* ============================================================
+   shutter.css: Shutter-specific rules on top of the kit
+   (kit/tokens.css, kit/base.css, kit/macui.css are unmodified copies).
+   Only kit tokens: --space-*, --text-*, --m-* / --mac-* colours.
+   The page IS the app window, so the scene fills the viewport.
+   ============================================================ */
+
+html, body { height: 100%; }
+body.mac-scene { margin: 0; background: var(--m-window); color: var(--m-ink); overflow: hidden; }
+[hidden] { display: none !important; }
+
+/* Real controls with the kit's look: reset native button/input styling */
+button.mac-btn, button.mac-nav, .mac-seg > button, button.sh-plain {
+  font: inherit; color: inherit; border: 0; margin: 0; background: none; cursor: default; text-align: left;
+}
+button.mac-btn--ink { background: var(--m-ink); color: var(--m-window); }
+button.mac-btn--line { background: var(--m-window); color: var(--m-ink); }
+button.mac-btn--fill { background: var(--m-fill); color: var(--m-ink); }
+button.mac-btn:active { transform: scale(0.98); }
+button:disabled { opacity: 0.45; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .sh-row:focus-visible {
+  outline: 2px solid var(--m-ink-2); outline-offset: 1px;
+}
+.mac-seg > button { display: inline-flex; align-items: center; height: 28px; padding: 0 var(--space-3); border-radius: 6px; color: var(--m-ink); }
+.mac-seg > button.is-on { background: var(--m-ink); color: var(--m-window); }
+
+/* Chrome is not selectable text; data is */
+.mac-sidebar, .mac-toolbar, .mac-statusbar, .mac-table th, .mac-btn, .mac-seg, .mac-title, .mac-h, .sh-label, .sh-legend { -webkit-user-select: none; user-select: none; }
+.mac-table td { -webkit-user-select: text; user-select: text; }
+
+/* ---------- Window layout: sidebar runs full height, main scrolls ---------- */
+.sh-app { height: 100vh; }
+.sh-app > .mac-sidebar { overflow-y: auto; }
+.sh-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100vh; }
+.sh-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.sh-scroll > .mac-main { padding-top: var(--space-5); padding-bottom: var(--space-6); }
+.mac-nav { width: 100%; }
+.mac-nav.is-on { background: var(--m-fill); }
+.sh-brand-icon { width: 24px; height: 24px; border-radius: 6px; background: var(--m-ink); color: var(--m-window); }
+.mac-main > div:empty { display: none; }
+.sh-brand-icon .mac-i { width: 14px; height: 14px; }
+.mac-sidebar__label { margin-top: var(--space-2); }
+
+/* Toolbar: search + filter left, engine status right */
+.sh-tools { display: flex; align-items: center; gap: var(--space-3); min-width: 0; flex: 1 1 auto; }
+.sh-tools .mac-seg { flex: none; }
+.mac-search { width: 280px; flex: 0 1 280px; min-width: 144px; height: 32px; border-radius: 8px; }
+.mac-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; padding: 0; background: transparent; font: inherit; color: var(--m-ink); }
+.mac-search input::placeholder { color: var(--m-muted); }
+.mac-search:focus-within { border-color: var(--m-ink-2); }
+.sh-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--m-muted); }
+.sh-dot--good { background: var(--mac-good); }
+.sh-dot--bad { background: var(--mac-danger); }
+.mac-toolbar__meta { white-space: nowrap; flex: none; }
+
+/* ---------- Queue table ---------- */
+.sh-table { table-layout: auto; }
+.sh-table td { height: 48px; }
+.sh-table tr:nth-child(even) td { background: transparent; }
+.sh-table td.sh-job { width: 100%; max-width: 0; }
+.sh-cell { display: flex; flex-direction: column; min-width: 0; }
+.sh-cell > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-table .mac-row__title { font-weight: 500; }
+.sh-table .num { color: var(--m-ink-2); }
+.sh-table .is-muted { color: var(--m-muted); }
+.sh-table th.sh-act, .sh-table td.sh-act { width: 1%; text-align: right; }
+.sh-row { cursor: default; }
+.sh-table tr.is-selected td .mac-row__title, .sh-table tr.is-selected td .mac-row__sub,
+.sh-table tr.is-selected td .num, .sh-table tr.is-selected td .is-muted { color: var(--mac-window); }
+.sh-table tr.is-selected .sh-prog { background: var(--mac-accent-soft); }
+.sh-table tr.is-selected .sh-prog > i { background: var(--mac-window); }
+.sh-table tr.is-selected .sh-badge { box-shadow: 0 0 0 1px var(--mac-window); }
+.sh-mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+
+/* State badges: red/green only for failed/running; everything else is quiet */
+.sh-badge { background: var(--m-fill); color: var(--m-ink-2); font-weight: 500; }
+.sh-badge--wait { background: var(--m-window); color: var(--m-ink); box-shadow: 0 0 0 1px var(--m-line-strong); }
+.sh-badge--muted { color: var(--m-muted); }
+.sh-status { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+
+/* Progress: ink on a grey track (blue is reserved for the selected row) */
+.sh-prog { display: block; width: 48px; height: 4px; border-radius: 2px; background: var(--m-fill); overflow: hidden; flex: none; }
+.sh-prog > i { display: block; height: 100%; background: var(--m-ink); border-radius: 2px; }
+.sh-prog--wide { width: 100%; height: 6px; border-radius: 3px; }
+.sh-pct { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); font-variant-numeric: tabular-nums; min-width: 32px; }
+
+/* ---------- Memory ---------- */
+.sh-membar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--m-fill); }
+.sh-membar > i { display: block; height: 100%; }
+.sh-membar .u { background: var(--m-ink); }
+.sh-membar .h { background: var(--m-muted); }
+.sh-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-legend b { color: var(--m-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+.sh-key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: var(--space-1); vertical-align: 0; }
+.sh-key.u { background: var(--m-ink); } .sh-key.h { background: var(--m-muted); } .sh-key.f { background: var(--m-fill); box-shadow: inset 0 0 0 1px var(--m-line-strong); }
+.sh-memline { display: flex; flex-direction: column; gap: var(--space-2); }
+.mac-stat--plain { border-radius: 12px; }
+.sh-stat__val { font-size: var(--text-base); line-height: 22px; font-weight: 500; color: var(--m-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mac-stat__big { font-variant-numeric: tabular-nums; }
+.mac-stat--plain .mac-stat__meta { color: var(--m-muted); margin-top: auto; white-space: normal; }
+.mac-scene--dark .sh-sheet { background: var(--macd-chrome); }
+.mac-scene--dark .sh-sheet .sh-input { background: var(--macd-window); }
+
+/* Blocking banner: one 24px focal per screen, so the banner line is 16px */
+.sh-banner { gap: var(--space-4); padding: var(--space-4) var(--space-5); }
+.sh-banner .mac-banner__icon { width: 40px; height: 40px; }
+.sh-banner .mac-banner__icon .mac-i { width: 18px; height: 18px; }
+.sh-banner .mac-banner__big { font-size: var(--text-base); line-height: 22px; font-weight: 600; }
+.sh-banner .mac-banner__sub { font-size: var(--text-xs); line-height: var(--lh-mac-sm); }
+.sh-banner .mac-banner__actions { flex-direction: row; justify-content: flex-end; }
+button.mac-btn--onbanner { background: var(--mac-window); color: var(--mac-ink); }
+.mac-scene--dark .mac-banner { box-shadow: 0 0 0 1px var(--m-line-strong); background: var(--macd-chrome); }
+.mac-scene--dark .mac-banner__icon { background: var(--m-fill); }
+
+/* Key/value groups (Memory services, Settings) */
+.sh-kv { display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: center; min-height: 40px; gap: var(--space-4); border-top: 1px solid var(--m-line); }
+.sh-kv:first-child { border-top: 0; }
+.sh-kv > span:first-child { color: var(--m-muted); }
+.sh-kv > span:last-child { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.mac-group { gap: 0; padding: var(--space-1) var(--space-4); }
+.sh-section { display: flex; flex-direction: column; gap: var(--space-3); }
+.sh-hint { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-hint code, .sh-empty code { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--m-ink-2); }
+.sh-neg { color: var(--mac-danger); }
+.mac-scene--dark .sh-neg { color: var(--macd-danger); }
+
+/* Empty states */
+.sh-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); padding: var(--space-6) var(--space-5); border: 1px dashed var(--m-line-strong); border-radius: 12px; color: var(--m-ink-2); }
+.sh-empty__title { font-size: var(--text-base); line-height: 22px; font-weight: 500; color: var(--m-ink); }
+
+/* Status bar at the bottom of the window */
+.mac-statusbar { flex: none; gap: var(--space-4); background: var(--m-window); }
+.mac-statusbar .mac-hints { height: auto; padding: 0; border: 0; gap: var(--space-4); }
+.mac-statusbar .mac-kbdtext { font-size: var(--text-xs); line-height: var(--lh-mac-sm); }
+.mac-statusbar .mac-kbd { height: 18px; min-width: 18px; }
+.sh-statusinfo { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; -webkit-user-select: text; user-select: text; }
+
+/* ---------- New job sheet ---------- */
+.sh-scrim { position: fixed; inset: 0; z-index: 10; display: flex; justify-content: center; align-items: flex-start; padding: var(--space-8) var(--space-4) var(--space-4); background: rgba(0, 0, 0, 0.18); overflow-y: auto; }
+.mac-scene--dark .sh-scrim { background: rgba(0, 0, 0, 0.45); }
+.sh-sheet { width: 560px; max-width: 100%; display: flex; flex-direction: column; }
+.sh-sheet__head { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-5) var(--space-5) 0; }
+.sh-form { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-5); }
+.sh-f { display: flex; flex-direction: column; gap: var(--space-2); grid-column: span 6; min-width: 0; }
+.sh-f--half { grid-column: span 3; } .sh-f--third { grid-column: span 2; }
+.sh-label { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-input { width: 100%; height: 32px; padding: 0 var(--space-3); border-radius: 8px; border: 1px solid var(--m-line-strong); background: var(--m-window); font: inherit; color: var(--m-ink); }
+.sh-input::placeholder { color: var(--m-muted); }
+textarea.sh-input { height: 72px; padding: var(--space-2) var(--space-3); resize: vertical; }
+select.sh-input { padding-right: var(--space-6); }
+.sh-input:focus { outline: 2px solid var(--m-ink-2); outline-offset: -1px; border-color: transparent; }
+.sh-form .mac-seg { align-self: flex-start; padding: 2px; border-radius: 8px; }
+.sh-sheet__foot { display: flex; align-items: center; gap: var(--space-3); height: 64px; padding: 0 var(--space-5); border-top: 1px solid var(--m-line); }
+.sh-sheet__foot .mac-hints { flex: 1; height: auto; padding: 0; border: 0; }
+.sh-err { padding: 0 var(--space-5); color: var(--mac-danger); }
+.mac-scene--dark .sh-err { color: var(--macd-danger); }
+
+/* ---------- Mode: Fast | Low memory with the efficiency slider ----------
+   Motion (kit rule 8): fade + rise 8 px, 450-650 ms, cubic-bezier(0.22, 1, 0.36, 1); hovers 150 ms.
+   The thumb snaps with a short spring (slight overshoot), 320 ms. */
+.sh-mode { --ease: cubic-bezier(0.22, 1, 0.36, 1); --spring: cubic-bezier(0.34, 1.4, 0.64, 1); --thumb-r: 10px;
+  display: flex; flex-direction: column; border: 1px solid var(--m-line); border-radius: 12px; background: var(--m-window); }
+.sh-mode__head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3) var(--space-4); min-height: 56px; padding: var(--space-3) var(--space-4); }
+.sh-mode__head .mac-h { flex: none; }
+.sh-seg { flex: none; padding: 2px; border-radius: 8px; }
+.sh-seg > button, #f-mode > button, #f-framing > button { transition: background-color 150ms ease, color 150ms ease; }
+.mac-seg > button:not(.is-on):hover { background: var(--m-line); }
+.sh-mode__note { flex: 1 1 240px; min-width: 0; font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+
+/* reveal: height (grid 0fr -> 1fr) + fade + 8 px rise, so the page below moves smoothly, never jumps */
+.sh-mode__reveal { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden;
+  transition: grid-template-rows 550ms var(--ease), opacity 450ms var(--ease), visibility 0s linear 550ms; }
+.sh-mode__reveal.is-open { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows 550ms var(--ease), opacity 550ms var(--ease) 60ms, visibility 0s; }
+.sh-mode__clip { min-height: 0; overflow: hidden; }
+.sh-mode__body { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4); border-top: 1px solid var(--m-line);
+  transform: translateY(8px); transition: transform 550ms var(--ease); }
+.sh-mode__reveal.is-open .sh-mode__body { transform: none; }
+.no-anim, .no-anim * { transition: none !important; }
+
+.sh-mode__top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); }
+.sh-rung { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1; }
+.sh-rung__label { font-size: var(--text-base); line-height: 22px; font-weight: 500; color: var(--m-ink); }
+.sh-rung__detail { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); max-width: 64ch; }
+.sh-xf { display: inline-grid; vertical-align: top; }
+.sh-xf__in { grid-area: 1 / 1; transition: opacity 240ms var(--ease, ease), transform 240ms var(--ease, ease); }
+.sh-xf__in.is-entering { opacity: 0; transform: translateY(4px); transition: none; }
+.sh-xf__in.is-leaving { opacity: 0; transform: translateY(-4px); }
+
+.sh-readout { display: flex; gap: var(--space-5); flex: none; }
+.sh-readout__cell { display: flex; flex-direction: column; min-width: 96px; }
+.sh-readout__label { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); white-space: nowrap; }
+.sh-readout__val { font-size: var(--text-base); line-height: 22px; font-weight: 500; color: var(--m-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sh-readout__meta { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-tag { display: inline-flex; align-items: center; height: 16px; padding: 0 var(--space-1); border-radius: 4px; box-shadow: inset 0 0 0 1px var(--m-line-strong); font-size: var(--text-xs); line-height: 16px; color: var(--m-muted); }
+
+/* memory strip: this setting's peak against the Mac's total; the line marks where headroom starts */
+.sh-strip { display: flex; flex-direction: column; gap: var(--space-2); }
+.sh-strip__track { position: relative; height: 8px; border-radius: 4px; background: var(--m-fill); }
+.sh-strip__fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 4px; background: var(--m-ink); transition: width 500ms var(--ease), background-color 150ms ease; }
+.sh-strip__fill.is-over { background: var(--mac-danger); }
+.sh-strip__line { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--m-muted); transition: left 500ms var(--ease); }
+.sh-strip__legend { display: flex; justify-content: space-between; gap: var(--space-4); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-strip__legend b { color: var(--m-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* slider: 5 detents, ink fill (blue stays for the selected row), white thumb */
+.sh-slider { position: relative; height: 28px; touch-action: none; cursor: default; border-radius: 14px; outline: none; }
+.sh-slider:focus-visible { outline: none; }
+.sh-slider:focus-visible .sh-slider__thumb { box-shadow: 0 0 0 1px var(--m-line-strong), 0 0 0 3px var(--m-window), 0 0 0 5px var(--m-ink-2); }
+.sh-slider__track { position: absolute; left: var(--thumb-r); right: var(--thumb-r); top: 12px; height: 4px; border-radius: 2px; background: var(--m-fill); }
+.sh-slider__fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: var(--m-ink); transition: width 320ms var(--spring); }
+.sh-slider__ticks { position: absolute; inset: 0; pointer-events: none; }
+.sh-slider__tick { position: absolute; top: 10px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--m-window); box-shadow: inset 0 0 0 1.5px var(--m-line-strong); transition: background-color 200ms var(--ease), box-shadow 200ms var(--ease); }
+.sh-slider__tick.is-past { background: var(--m-ink); box-shadow: none; }
+.sh-slider__thumb { position: absolute; top: 4px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: var(--mac-window);
+  box-shadow: 0 0 0 1px var(--m-line-strong), 0 1px 3px rgba(0, 0, 0, 0.18); transition: left 320ms var(--spring), transform 150ms ease; }
+.sh-slider:hover .sh-slider__thumb, .sh-slider.is-dragging .sh-slider__thumb { transform: scale(1.05); }
+.sh-slider__ends { display: flex; justify-content: space-between; gap: var(--space-4); margin-top: calc(-1 * var(--space-2)); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-scene--dark .sh-mode { background: var(--m-window); }
+.mac-scene--dark .sh-slider__thumb { background: var(--macd-ink-2); }
+
+/* selected job detail */
+.sh-detail { margin-top: var(--space-2); }
+.sh-stages td { height: 40px; }
+
+/* New job sheet: mode override */
+.sh-f--four { grid-column: span 4; } .sh-f--two { grid-column: span 2; }
+#f-mode { align-self: flex-start; }
+select.sh-input:disabled { color: var(--m-muted); background: var(--m-fill); }
+
+/* ---------- Narrow windows: never shrink text, hide extra columns ---------- */
+@media (max-width: 899px) {
+  .mac-hide-sm { display: none !important; }
+}
+@media (max-width: 720px) {
+  /* the kit hides the sidebar on phones; this is a desktop window, keep navigation */
+  .sh-app.mac-split { grid-template-columns: 184px minmax(0, 1fr); }
+  .sh-app > .mac-sidebar { display: flex; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button.mac-btn:active { transform: none; }
+  .sh-mode *, .sh-mode__reveal { transition: none !important; }
+  .sh-mode__body { transform: none; }
+}
+@media (max-width: 899px) { .sh-mode__top { flex-direction: column; gap: var(--space-3); } }
+
+/* model downloads (set-up card on the queue page, Download a model on the models page) */
+.sh-setup { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); border: 1px solid var(--m-line-strong); border-radius: 14px; background: var(--mac-window); }
+.sh-setup__head { display: flex; flex-direction: column; gap: var(--space-1); }
+.sh-setup__title { font-family: var(--font-display, inherit); font-size: var(--text-xl, 22px); line-height: 28px; color: var(--m-ink); }
+.sh-setup__sub { font-size: var(--text-sm, 13px); line-height: 20px; color: var(--m-ink-2); }
+.sh-get { display: flex; align-items: flex-start; gap: var(--space-5); padding: var(--space-4) var(--space-5); border: 1px solid var(--m-line); border-radius: 12px; }
+.sh-get + .sh-get { margin-top: var(--space-3); }
+.sh-get__main { display: flex; flex-direction: column; gap: var(--space-2); flex: 1 1 auto; min-width: 0; }
+.sh-get__name { font-size: var(--text-base); line-height: 22px; font-weight: 600; color: var(--m-ink); }
+.sh-get__sub { font-size: var(--text-sm, 13px); line-height: 20px; color: var(--m-ink-2); }
+.sh-get__meta { font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.sh-get__note { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-ink-2); }
+.sh-get__note.sh-neg { color: var(--mac-danger); }
+.sh-get__act { flex: none; }
+@media (max-width: 640px) { .sh-get { flex-direction: column; gap: var(--space-3); } }

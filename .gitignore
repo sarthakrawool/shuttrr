@@ -1,0 +1,26 @@
+# Local snapshots and scratch
+_snapshot.tgz
+_uikit.tgz
+work/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Build output
+app/build/
+app/Shutter/.build/
+app/Shutter/.swiftpm/
+daemon/target/
+.build/
+
+# Model weights and generated media
+models/
+outputs/
+*.safetensors
+*.gguf
+
+.DS_Store

@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Shuttrr</title>
+<!-- Built from the Mac UI kit (static/kit/*) + static/shutter.css, themed by static/brand.css (the personal-brand look). Offline: no external hosts. -->
+<link rel="stylesheet" href="/static/kit/tokens.css">
+<link rel="stylesheet" href="/static/kit/base.css">
+<link rel="stylesheet" href="/static/kit/macui.css">
+<style>
+.sh-act--load{width:190px}
+.sh-actrow{display:inline-flex;gap:8px;align-items:center;justify-content:flex-end}
+.sh-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.sh-dot--good{background:#5E7A45}
+.sh-warn{color:#A8660A}
+.sh-loading{font-size:13px;color:#4F4F54}
+.sh-more{position:relative;display:inline-block}
+.sh-more>summary{list-style:none}
+.sh-more>summary::-webkit-details-marker{display:none}
+.sh-more__btn{width:28px;height:28px;border-radius:50%;border:1px solid rgba(11,11,12,.22);background:#fff;display:grid;place-items:center;cursor:pointer;font-weight:600;line-height:1;user-select:none}
+.sh-more__menu{position:absolute;right:0;top:34px;z-index:20;min-width:170px;background:#fff;border:1px solid rgba(11,11,12,.12);border-radius:10px;box-shadow:0 8px 24px rgba(11,11,12,.12);padding:4px;display:flex;flex-direction:column}
+.sh-more__menu button{all:unset;padding:7px 10px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap}
+.sh-more__menu button:hover{background:rgba(11,11,12,.06)}
+.sh-more__menu button[disabled]{opacity:.4;cursor:default}
+.sh-fail{background:#F9E4DF;border:1px solid rgba(194,65,45,.35);border-radius:18px;padding:18px 20px;margin:0 0 16px}
+.sh-fail__title{font-family:Fraunces,Georgia,serif;font-size:17px;font-weight:600;color:#0B0B0C;margin-bottom:6px}
+.sh-fail__body{font-size:13px;color:#0B0B0C;line-height:1.45}
+.sh-fail__help{font-size:13px;color:#4F4F54;margin-top:4px}
+.sh-fail__act{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:12px}
+</style>
+<link rel="stylesheet" href="/static/shutter.css">
+<link rel="stylesheet" href="/static/brand.css">
+</head>
+<body class="mac-scene">
+
+<div class="mac-split sh-app">
+  <nav class="mac-sidebar" aria-label="Sections">
+    <div class="mac-sidebar__brand"><span class="mac-thumb mac-thumb--app sh-brand-icon"><i class="mac-i mac-i--video"></i></span>Shuttrr</div>
+    <button class="mac-nav" data-view="queue"><i class="mac-i mac-i--list"></i>Queue<span class="mac-nav__count" id="n-queue"></span></button>
+    <button class="mac-nav" data-view="models"><i class="mac-i mac-i--apps"></i>Models<span class="mac-nav__count" id="n-models"></span></button>
+    <button class="mac-nav" data-view="memory"><i class="mac-i mac-i--chart"></i>Memory<span class="mac-nav__count" id="n-memory"></span></button>
+    <button class="mac-nav" data-view="settings"><i class="mac-i mac-i--more"></i>Settings</button>
+    <div id="n-failed-wrap" hidden>
+      <div class="mac-sidebar__sep"></div>
+      <button class="mac-nav" data-filter-jump="failed"><i class="mac-i mac-i--bell"></i>Failed<span class="mac-nav__count mac-nav__count--red" id="n-failed"></span></button>
+    </div>
+  </nav>
+
+  <div class="sh-col">
+    <div class="mac-toolbar">
+      <div class="sh-tools">
+        <label class="mac-search"><i class="mac-i mac-i--search"></i><input id="search" type="search" placeholder="Search requests" aria-label="Search requests" autocomplete="off" spellcheck="false"><span class="mac-kbds"><span class="mac-kbd mac-kbd--fill">/</span></span></label>
+        <div class="mac-seg" id="filter" role="group" aria-label="Filter requests">
+          <button data-filter="all" class="is-on">All</button><button data-filter="active">Active</button><button data-filter="finished">Finished</button><button data-filter="failed">Failed</button>
+        </div>
+      </div>
+      <div class="mac-toolbar__meta" id="engine"><span class="sh-dot"></span><span>Connecting…</span></div>
+    </div>
+
+    <div class="sh-scroll">
+      <!-- QUEUE -->
+      <div class="mac-main" data-panel="queue">
+        <div class="mac-row-between">
+          <div><div class="mac-title">Queue</div><div class="mac-subtitle" id="q-sub">&nbsp;</div></div>
+          <div class="row"><button class="mac-btn mac-btn--line" id="pausebtn">Pause queue</button><button class="mac-btn mac-btn--ink" data-act="new">New request</button></div>
+        </div>
+        <div id="q-banner"></div>
+        <div id="q-setup"></div>
+
+        <!-- MODE: static DOM (never re-rendered with innerHTML) so its motion survives live updates -->
+        <section class="sh-mode" id="mode" aria-labelledby="mode-h">
+          <div class="sh-mode__head">
+            <div class="mac-h" id="mode-h">Mode</div>
+            <div class="mac-seg sh-seg" id="mode-seg" role="radiogroup" aria-labelledby="mode-h">
+              <button type="button" role="radio" data-mode="fast" aria-checked="true" class="is-on">Fast</button><button type="button" role="radio" data-mode="low_memory" aria-checked="false">Low memory</button>
+            </div>
+            <div class="sh-mode__note" id="mode-note" aria-live="polite"><span class="sh-xf" id="mode-note-a"><span class="sh-xf__in">Uses the fastest settings that fit in free memory</span></span></div>
+          </div>
+          <div class="sh-mode__reveal" id="mode-reveal" aria-hidden="true">
+            <div class="sh-mode__clip">
+              <div class="sh-mode__body">
+                <div class="sh-mode__top">
+                  <div class="sh-rung" aria-hidden="true">
+                    <div class="sh-rung__label"><span class="sh-xf" id="rung-label"></span></div>
+                    <div class="sh-rung__detail"><span class="sh-xf" id="rung-detail"></span></div>
+                  </div>
+                  <div class="sh-readout" aria-live="off">
+                    <div class="sh-readout__cell"><span class="sh-readout__label">Memory <span class="sh-tag" id="ro-mem-tag" hidden>estimate</span></span><span class="sh-readout__val" id="ro-mem">–</span><span class="sh-readout__meta">peak</span></div>
+                    <div class="sh-readout__cell"><span class="sh-readout__label">Time <span class="sh-tag" id="ro-time-tag" hidden>estimate</span></span><span class="sh-readout__val" id="ro-time">–</span><span class="sh-readout__meta">vs Fast</span></div>
+                  </div>
+                </div>
+                <div class="sh-strip" id="strip" role="img" aria-label="Peak memory of this setting">
+                  <div class="sh-strip__track"><i class="sh-strip__fill" id="strip-fill"></i><i class="sh-strip__line" id="strip-line"></i></div>
+                  <div class="sh-strip__legend"><span id="strip-peak">Peak –</span><span id="strip-head">&nbsp;</span></div>
+                </div>
+                <div class="sh-slider" id="slider" role="slider" tabindex="0" aria-labelledby="mode-h" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.5" aria-valuetext="">
+                  <div class="sh-slider__track"><i class="sh-slider__fill" id="slider-fill"></i></div>
+                  <div class="sh-slider__ticks" id="slider-ticks"></div>
+                  <i class="sh-slider__thumb" id="slider-thumb"></i>
+                </div>
+                <div class="sh-slider__ends"><span>Faster</span><span id="mode-measured">&nbsp;</span><span>Less memory</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="sh-memline" id="q-mem"></div>
+        <div id="q-table"></div>
+        <div id="q-detail"></div>
+      </div>
+
+      <!-- MODELS -->
+      <div class="mac-main" data-panel="models" hidden>
+        <div><div class="mac-title">Models</div><div class="mac-subtitle" id="m-sub">&nbsp;</div></div>
+        <div class="sh-section">
+          <div class="mac-h">Loaded <span class="mac-count" id="m-loaded-n">0</span><span class="mac-seeall"><button class="mac-btn mac-btn--line mac-btn--sm" id="unloadall">Unload all</button></span></div>
+          <div id="m-loaded"></div>
+          <div class="sh-hint" id="m-gpu"></div>
+        </div>
+        <div class="sh-section">
+          <div class="mac-h">Available <span class="mac-count" id="m-avail-n">0</span></div>
+          <div id="m-loadfail"></div>
+          <div id="m-avail"></div>
+        </div>
+        <div class="sh-section" id="m-get-wrap" hidden>
+          <div class="mac-h">Download a model</div>
+          <div id="m-get"></div>
+        </div>
+      </div>
+
+      <!-- MEMORY -->
+      <div class="mac-main" data-panel="memory" hidden>
+        <div><div class="mac-title">Memory</div><div class="mac-subtitle" id="mem-sub">&nbsp;</div></div>
+        <div id="mem-banner"></div>
+        <div class="mac-stats" id="mem-stats"></div>
+        <div class="sh-memline" id="mem-bar"></div>
+        <div class="sh-section">
+          <div class="mac-h">Protected services</div>
+          <div class="mac-group" id="mem-protected"></div>
+          <div class="sh-hint">Video requests never start while a protected service has a model loaded.</div>
+        </div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="mac-main" data-panel="settings" hidden>
+        <div><div class="mac-title">Settings</div><div class="mac-subtitle">Read from the running engine. To change them, edit <span class="sh-mono">config.json</span> in the Shuttrr home folder and restart the engine.</div></div>
+        <div class="sh-section"><div class="mac-h">Engine</div><div class="mac-group" id="s-engine"></div></div>
+        <div class="sh-section"><div class="mac-h">Memory guard</div><div class="mac-group" id="s-guard"></div></div>
+        <div class="sh-section"><div class="mac-h">GPU lock</div><div class="mac-group" id="s-gpu"></div></div>
+        <div class="sh-section"><div class="mac-h">Keyboard</div>
+          <div class="mac-group">
+            <div class="sh-kv"><span>New request</span><span><span class="mac-kbd">N</span></span></div>
+            <div class="sh-kv"><span>Search requests</span><span><span class="mac-kbd">/</span></span></div>
+            <div class="sh-kv"><span>Submit the new request</span><span class="mac-kbds"><span class="mac-kbd">⌘</span><span class="mac-kbd">return</span></span></div>
+            <div class="sh-kv"><span>Close the sheet, clear search or selection</span><span><span class="mac-kbd">esc</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mac-statusbar">
+      <span class="sh-statusinfo" id="status">&nbsp;</span>
+      <span class="mac-hints">
+        <span class="mac-hint"><span class="mac-kbd mac-kbd--fill">N</span><span class="mac-kbdtext">New request</span></span>
+        <span class="mac-hint"><span class="mac-kbd mac-kbd--fill">/</span><span class="mac-kbdtext">Search</span></span>
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- NEW JOB SHEET -->
+<div class="sh-scrim" id="sheet" hidden>
+  <form class="mac-window sh-sheet" id="newjob" role="dialog" aria-modal="true" aria-labelledby="sheet-title" novalidate>
+    <div class="sh-sheet__head"><div class="mac-h" id="sheet-title">New request</div><div class="mac-subtitle">Queued requests start when memory allows. Paths are files on this Mac.</div></div>
+    <div class="sh-form">
+      <label class="sh-f"><span class="sh-label">Model</span><select class="sh-input" name="model" id="f-model"></select></label>
+      <label class="sh-f"><span class="sh-label">Prompt</span><textarea class="sh-input" name="prompt" placeholder="Optional. What should happen in the shot"></textarea></label>
+      <label class="sh-f sh-f--half"><span class="sh-label">Image path</span><input class="sh-input" name="image" placeholder="~/Pictures/start.png" autocomplete="off" spellcheck="false"></label>
+      <label class="sh-f sh-f--half"><span class="sh-label">Audio path</span><input class="sh-input" name="audio" placeholder="~/Music/voice.wav" autocomplete="off" spellcheck="false"></label>
+      <div class="sh-f sh-f--four"><span class="sh-label" id="jmode-l">Mode for this request</span>
+        <div class="mac-seg" id="f-mode" role="radiogroup" aria-labelledby="jmode-l"><button type="button" role="radio" data-jmode="" class="is-on" aria-checked="true">Use default</button><button type="button" role="radio" data-jmode="fast" aria-checked="false">Fast</button><button type="button" role="radio" data-jmode="low_memory" aria-checked="false">Low memory</button></div>
+        <span class="sh-hint" id="f-mode-hint">&nbsp;</span>
+      </div>
+      <label class="sh-f sh-f--two" id="f-rung-wrap"><span class="sh-label">Memory setting</span><select class="sh-input" name="rung" id="f-rung" disabled></select></label>
+      <label class="sh-f sh-f--half"><span class="sh-label">Seed</span><input class="sh-input" name="seed" type="number" value="42" step="1"></label>
+      <label class="sh-f sh-f--half"><span class="sh-label">Priority</span><input class="sh-input" name="priority" type="number" value="0" step="1"></label>
+    </div>
+    <div class="sh-err" id="err" role="alert"></div>
+    <div class="sh-sheet__foot">
+      <span class="mac-hints"><span class="mac-hint"><span class="mac-kbd mac-kbd--fill">esc</span><span class="mac-kbdtext">Cancel</span></span><span class="mac-hint"><span class="mac-kbds"><span class="mac-kbd mac-kbd--fill">⌘</span><span class="mac-kbd mac-kbd--fill">return</span></span><span class="mac-kbdtext">Submit</span></span></span>
+      <button type="button" class="mac-btn mac-btn--line" data-act="close">Cancel</button>
+      <button type="submit" class="mac-btn mac-btn--ink" id="submitbtn">Add to queue</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var qs = new URLSearchParams(location.search);
+  var key = qs.get("key") || "";
+  try { if (key) localStorage.setItem("shutterKey", key); else key = localStorage.getItem("shutterKey") || ""; } catch (e) {}
+
+  var jobs = {}, sys = null, models = [], est = {}, conn = "connecting", offline = "";
+  var view = "queue", filter = "all", query = "", selected = null, jmode = "";
+  var catalog = [], catalogRestart = false, catalogAt = 0;
+  var settings = null;  // GET /v1/settings: {mode, efficiency, rung, ladder, measured_for}
+  var LIVE = { queued: 1, waiting_memory: 1, running: 1 };
+  var LABEL = { queued: "Queued", waiting_memory: "Waiting", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- helpers ----------
+  function api(method, path, body) {
+    var h = { "Accept": "application/json" };
+    if (key) h["Authorization"] = "Bearer " + key;
+    if (body !== undefined) h["Content-Type"] = "application/json";
+    return fetch(path, { method: method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok) { var er = new Error(d.error || ("HTTP " + r.status)); er.body = d; throw er; }
+          return d;
+        });
+      });
+  }
+  function gb(n) { return (n / 1073741824).toFixed(1) + " GB"; }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function clock(s) { if (s == null || !isFinite(s)) return "–"; s = Math.max(0, Math.round(s));
+    var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+    return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (x < 10 ? "0" : "") + x; }
+  function dur(s) { if (s == null) return ""; s = Math.round(s); return s < 90 ? s + " s" : Math.round(s / 60) + " min"; }
+  function mid(s, n) { s = String(s || ""); if (s.length <= n) return s; var a = Math.ceil((n - 1) * 0.6); return s.slice(0, a) + "…" + s.slice(s.length - (n - 1 - a)); }
+  function base(p) { return String(p || "").split("/").pop(); }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function now() { return Date.now() / 1000; }
+  function memParts(s) {
+    var m = s.memory, head = s.guard.headroom_bytes, used = m.total - m.available;
+    return { total: m.total, used: used, head: Math.min(head, m.available), headCfg: head,
+             free: Math.max(0, m.available - head), swap: m.swap_used, pressure: m.pressure };
+  }
+  function blockers() { return sys ? sys.guard.protected.filter(function (p) { return p.busy; }) : []; }
+
+  // ---------- shared pieces ----------
+  function memBar(s) {
+    var p = memParts(s), pct = function (v) { return (100 * v / p.total).toFixed(2) + "%"; };
+    return '<div class="sh-membar" role="img" aria-label="' + esc("Used " + gb(p.used) + ", headroom " + gb(p.head) + ", free for models " + gb(p.free)) + '">' +
+      '<i class="u" style="width:' + pct(p.used) + '"></i><i class="h" style="width:' + pct(p.head) + '"></i></div>' +
+      '<div class="sh-legend"><span><i class="sh-key u"></i>Used <b>' + gb(p.used) + '</b></span><span><i class="sh-key h"></i>Reserve <b>' + gb(p.head) +
+      '</b></span><span><i class="sh-key f"></i>Free for models <b>' + gb(p.free) + '</b></span><span>Swap <b>' + gb(p.swap) + '</b></span></div>';
+  }
+  function banner() {
+    if (offline) return bannerHtml("refresh", "Cannot reach the engine", offline + ". Start it with “shutter serve”; this window reconnects by itself.", "");
+    var b = blockers();
+    if (b.length) return bannerHtml("pause", "Video requests are waiting for a protected service",
+      esc(b[0].name) + ": " + esc(b[0].busy) + (b.length > 1 ? " (+" + (b.length - 1) + " more)" : ""), "");
+    if (sys && sys.queue.paused) return bannerHtml("pause", "The queue is paused", "Running requests finish; nothing new starts until you resume.",
+      '<button class="mac-btn mac-btn--onbanner" data-act="resume">Resume queue</button>');
+    return "";
+  }
+  function bannerHtml(icon, big, sub, actions) {
+    return '<div class="mac-banner sh-banner" role="status"><span class="mac-banner__icon"><i class="mac-i mac-i--' + icon + '"></i></span>' +
+      '<div><div class="mac-banner__big">' + big + '</div><div class="mac-banner__sub">' + sub + '</div></div>' +
+      (actions ? '<div class="mac-banner__actions">' + actions + "</div>" : "") + "</div>";
+  }
+  function empty(title, body, action) {
+    return '<div class="sh-empty"><div class="sh-empty__title">' + title + '</div><div>' + body + "</div>" + (action || "") + "</div>";
+  }
+
+  // ---------- engine status + sidebar ----------
+  function renderChrome() {
+    var e = $("engine");
+    if (offline) e.innerHTML = '<span class="sh-dot sh-dot--bad"></span><span>Engine <b>offline</b></span>';
+    else if (sys) e.innerHTML = '<span class="sh-dot sh-dot--good"></span><span>Engine <b>' + (conn === "live" ? "live" : conn) + "</b></span>" +
+      '<span class="mac-hide-sm">v' + esc(sys.version) + "</span>" + (sys.queue.paused ? '<span class="mac-hide-sm">Queue paused</span>' : "");
+    if (!sys) return;
+    var q = sys.queue, active = q.queued + q.waiting_memory + q.running, nq = $("n-queue");
+    nq.textContent = active ? active : "";
+    nq.className = "mac-nav__count" + (q.running ? " mac-nav__count--green" : "");
+    $("n-models").textContent = sys.pool.entries.length || "";
+    $("n-memory").textContent = gb(memParts(sys).free);
+    $("n-failed").textContent = q.failed;
+    $("n-failed-wrap").hidden = !q.failed;
+    var pb = $("pausebtn"); pb.textContent = q.paused ? "Resume queue" : "Pause queue"; pb.dataset.paused = q.paused ? "1" : "";
+  }
+
+  // ---------- queue ----------
+  function sortedJobs() {
+    var rank = { running: 0, waiting_memory: 1, queued: 2 };
+    return Object.keys(jobs).map(function (k) { return jobs[k]; }).sort(function (a, b) {
+      var ra = a.state in rank ? rank[a.state] : 3, rb = b.state in rank ? rank[b.state] : 3;
+      if (ra !== rb) return ra - rb;
+      if (ra < 3) return (b.request.priority - a.request.priority) || (a.created_at - b.created_at);
+      return (b.finished_at || b.created_at) - (a.finished_at || a.created_at);
+    });
+  }
+  function visibleJobs() {
+    var q = query.toLowerCase();
+    return sortedJobs().filter(function (j) {
+      if (filter === "active" && !LIVE[j.state]) return false;
+      if (filter === "finished" && !(j.state === "done" || j.state === "cancelled")) return false;
+      if (filter === "failed" && j.state !== "failed") return false;
+      if (!q) return true;
+      return [j.id, j.request.model, j.request.prompt, j.state, j.message].join(" ").toLowerCase().indexOf(q) >= 0;
+    });
+  }
+  function detail(j) {
+    if (j.state === "running") return (j.stage || "Starting") + (j.eta_s ? " · " + dur(j.eta_s) + " left" : "");
+    if (j.state === "queued") return j.request.priority ? "Priority " + j.request.priority : "Waiting for its turn";
+    if (j.state === "done") return (j.result && j.result.output) ? base(j.result.output) : "Finished";
+    var m = /needs ([\d.]+ GB) plus ([\d.]+ GB) headroom, but only ([\d.]+ GB)/.exec(j.message || "");
+    if (m) return "Needs " + m[1] + " + " + m[2] + " headroom · " + m[3] + " available";
+    return j.message || "";
+  }
+  function jobTime(j) {
+    if (j.started_at) return { t: clock((j.finished_at || now()) - j.started_at), muted: false };
+    return { t: clock((j.finished_at || now()) - j.created_at), muted: true };
+  }
+  function jobPeak(j) {
+    if (j.result && j.result.peak_bytes) return { t: gb(j.result.peak_bytes), muted: false };
+    if (est[j.id]) return { t: "≈ " + gb(est[j.id]), muted: true };
+    return { t: "–", muted: true };
+  }
+  function badge(j) {
+    var cls = j.state === "running" ? "mac-badge--keep" : j.state === "failed" ? "mac-badge--trash" :
+      j.state === "waiting_memory" ? "sh-badge sh-badge--wait" : j.state === "cancelled" ? "sh-badge sh-badge--muted" : "sh-badge";
+    return '<span class="mac-badge ' + cls + '">' + LABEL[j.state] + "</span>";
+  }
+  function renderQueue() {
+    if (!sys && !offline) return;
+    var q = sys ? sys.queue : null, parts = [];
+    if (q) {
+      if (q.running) parts.push(q.running + " running");
+      if (q.waiting_memory) parts.push(q.waiting_memory + " waiting for memory");
+      if (q.queued) parts.push(q.queued + " queued");
+      parts.push(q.done + " done");
+      if (q.failed) parts.push(q.failed + " failed");
+    }
+    $("q-sub").textContent = parts.length ? parts.join(" · ") : " ";
+    $("q-banner").innerHTML = banner();
+    $("q-mem").innerHTML = sys ? memBar(sys) : "";
+    var all = Object.keys(jobs).length, list = visibleJobs();
+    if (!all) {
+      $("q-table").innerHTML = empty("No requests yet", "Press <span class=\"mac-kbd\">N</span> to queue one here, or from Terminal run <code>shutter submit --model &lt;id&gt; --prompt \"…\"</code>.",
+        '<button class="mac-btn mac-btn--ink" data-act="new">New request</button>');
+    } else if (!list.length) {
+      $("q-table").innerHTML = empty("No matching requests", query ? "Nothing matches “" + esc(query) + "”. Press esc to clear the search." : "No " + filter + " requests right now.",
+        '<button class="mac-btn mac-btn--line" data-act="showall">Show all requests</button>');
+    } else {
+      $("q-table").innerHTML = '<table class="mac-table sh-table"><thead><tr><th>Request</th><th class="mac-hide-sm">Model</th><th>Status</th>' +
+        '<th class="num">Time</th><th class="num mac-hide-sm">Peak</th><th class="sh-act"><span class="mac-hide-sm" aria-hidden="true"></span></th></tr></thead><tbody>' +
+        list.map(rowHtml).join("") + "</tbody></table>";
+    }
+    $("q-detail").innerHTML = selected && jobs[selected] ? detailHtml(jobs[selected]) : "";
+    updateModeNote();
+    renderStatus();
+  }
+  // "Auto · Fast", "Small · Low memory · Lower memory", "Auto · Fast → Lower memory" (stepped down to fit)
+  function jobMode(j) {
+    var res = j.result || {}, p = (j.request && j.request.params) || {};
+    var mode = res.mode || p.mode;
+    if (!mode) return null;
+    var rung = res.rung || (mode === "low_memory" && typeof p.efficiency === "number" ? rungAt(p.efficiency).id : null);
+    return { mode: mode, rung: rung, from: res.stepped_down_from || null };
+  }
+  function modeText(m) {
+    if (!m) return "";
+    if (m.mode === "fast") return m.from && m.rung ? "Fast → " + rungLabel(m.rung) : "Fast";
+    return "Low memory" + (m.rung ? " · " + rungLabel(m.rung) : "");
+  }
+  function modelSub(j) {
+    return [modeText(jobMode(j)), j.client || ""].filter(Boolean).join(" · ");
+  }
+  function secs(s) { return s == null || !isFinite(s) ? "–" : (s < 10 ? s.toFixed(1) : Math.round(s)) + " s"; }
+  function stagesOf(res) {
+    var st = res && res.stages;
+    if (Array.isArray(st)) return st.filter(function (x) { return x && typeof x === "object"; }).map(function (x) {
+      return { name: x.name || x.stage || x.id || "", seconds: x.seconds, peak: x.peak_bytes }; });
+    if (st && typeof st === "object") return Object.keys(st).map(function (k) {
+      var x = st[k] || {}; return { name: k, seconds: typeof x === "number" ? x : x.seconds, peak: x.peak_bytes }; });
+    return [];
+  }
+  function detailHtml(j) {
+    var res = j.result || {}, m = jobMode(j), rows = [];
+    rows.push(kv("Request", '<span class="sh-mono">' + esc(j.id) + "</span>"));
+    if (m) {
+      rows.push(kv("Mode", m.mode === "fast" ? "Fast" : "Low memory"));
+      if (m.rung) rows.push(kv("Memory setting", esc(rungLabel(m.rung)) + (m.from ? '<span class="is-muted"> · stepped down from ' + esc(rungLabel(m.from)) + " to fit</span>" : "")));
+    }
+    if (res.seconds != null) rows.push(kv("Time", secs(res.seconds)));
+    if (res.peak_bytes) rows.push(kv("Peak memory", gb(res.peak_bytes) + (res.estimate_peak_bytes ? '<span class="is-muted"> · estimated ' + gb(res.estimate_peak_bytes) + "</span>" : "")));
+    var st = stagesOf(res), table = "";
+    if (st.length) {
+      table = '<table class="mac-table sh-table sh-stages"><thead><tr><th>Stage</th><th class="num">Time</th><th class="num">Peak</th></tr></thead><tbody>' +
+        st.map(function (x) { return '<tr><td class="sh-job"><span class="sh-cell"><span>' + esc(x.name) + '</span></span></td><td class="num">' + secs(x.seconds) +
+          '</td><td class="num">' + (x.peak ? gb(x.peak) : "–") + "</td></tr>"; }).join("") + "</tbody></table>";
+    }
+    return '<div class="sh-section sh-detail"><div class="mac-h">Selected request</div><div class="mac-group">' + rows.join("") + "</div>" + table + "</div>";
+  }
+  function rowHtml(j) {
+    var r = j.request, title = r.prompt ? esc(mid(r.prompt.replace(/\s+/g, " "), 64)) : '<span class="sh-mono">' + esc(j.id) + "</span>";
+    var sub = (r.prompt ? j.id + " · " : "") + detail(j), t = jobTime(j), p = jobPeak(j), pr = Math.round(100 * (j.progress || 0));
+    var showBar = j.state === "running" || (j.state !== "done" && j.progress > 0);
+    return '<tr class="sh-row' + (selected === j.id ? " is-selected" : "") + '" data-job="' + esc(j.id) + '" tabindex="0">' +
+      '<td class="sh-job"><span class="sh-cell"><span class="mac-row__title" title="' + esc(r.prompt || j.id) + '">' + title + '</span><span class="mac-row__sub" title="' + esc(j.message || sub) + '">' + esc(mid(sub, 90)) + "</span></span></td>" +
+      '<td class="mac-hide-sm"><span class="sh-cell"><span>' + esc(r.model) + '</span><span class="mac-row__sub">' + esc(modelSub(j)) + "</span></span></td>" +
+      '<td><span class="sh-status">' + badge(j) + (showBar ? '<span class="sh-prog"><i style="width:' + pr + '%"></i></span><span class="sh-pct">' + pr + "%</span>" : "") + "</span></td>" +
+      '<td class="num' + (t.muted ? " is-muted" : "") + '" data-tjob="' + esc(j.id) + '">' + t.t + "</td>" +
+      '<td class="num mac-hide-sm' + (p.muted ? " is-muted" : "") + '">' + p.t + "</td>" +
+      '<td class="sh-act">' + (LIVE[j.state] ? '<button class="mac-btn mac-btn--line mac-btn--sm" data-cancel="' + esc(j.id) + '">Cancel</button>' : "") + "</td></tr>";
+  }
+  function renderStatus() {
+    var s = $("status"), j = selected && jobs[selected];
+    if (j) {
+      var out = (j.result && j.result.output) || j.request.output || "";
+      s.textContent = j.id + " · " + j.request.model + " · " + LABEL[j.state] + (j.message ? " · " + j.message : j.state === "running" ? " · " + detail(j) : "") + (out ? " · " + out : "") +
+        Object.keys(j.request.inputs || {}).map(function (k) { return " · " + k + " " + j.request.inputs[k]; }).join("");
+      return;
+    }
+    var n = visibleJobs().length;
+    s.textContent = offline ? "Offline" : plural(n, "request") + (query || filter !== "all" ? " shown" : "") + " · " + (conn === "live" ? "Updating live" : conn === "polling" ? "Updating every 3 s" : "Connecting…");
+  }
+
+  // ---------- mode (Fast | Low memory, efficiency slider) ----------
+  var reduceMq = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  function reduced() { return !!(reduceMq && reduceMq.matches); }
+  var FAST_NOTE = "Uses the fastest settings that fit in free memory";
+  $("mode-note-a")._t = FAST_NOTE;
+  var ui = { mode: null, idx: -1, dragging: false, postTimer: null, seq: 0, acked: 0 };
+  function ladder() { return (settings && settings.ladder) || []; }
+  function rungAt(e) { var L = ladder(), b = L[0] || { id: "", label: "" }; L.forEach(function (r) { if (r.at <= e + 1e-9) b = r; }); return b; }
+  function rungById(id) { var L = ladder(); for (var i = 0; i < L.length; i++) if (L[i].id === id) return L[i]; return null; }
+  function rungLabel(id) { var r = rungById(id); return r ? r.label : String(id || ""); }
+  function idxFor(e) { var L = ladder(), k = 0; L.forEach(function (r, i) { if (r.at <= e + 1e-9) k = i; }); return k; }
+
+  // Cross-fade a line of text: the old words fade out while the new ones fade in, in the
+  // same grid cell (no blank frame, no layout jump).
+  function xfade(el, text) {
+    if (el._t === text) return;
+    el._t = text;
+    var cur = el.querySelector(".sh-xf__in:not(.is-leaving)");
+    if (reduced() || !cur) { el.innerHTML = '<span class="sh-xf__in"></span>'; el.firstChild.textContent = text; return; }
+    var nu = document.createElement("span");
+    nu.className = "sh-xf__in is-entering"; nu.textContent = text;
+    cur.classList.add("is-leaving");
+    el.appendChild(nu);
+    void nu.offsetWidth;
+    nu.classList.remove("is-entering");
+    setTimeout(function () { if (cur.parentNode) cur.parentNode.removeChild(cur); }, 260);
+  }
+  // Count a number from where it is to `to` (~300 ms); null shows an en dash.
+  function tween(el, to, fmt) {
+    cancelAnimationFrame(el._raf);
+    if (to == null || !isFinite(to)) { el._v = null; el.textContent = "–"; return; }
+    var from = el._v;
+    if (from == null || reduced()) { el._v = to; el.textContent = fmt(to); return; }
+    var t0 = performance.now(), d = 300;
+    (function step(t) {
+      var k = Math.min(1, (t - t0) / d), e = 1 - Math.pow(1 - k, 3), v = from + (to - from) * e;
+      el._v = v; el.textContent = fmt(v);
+      if (k < 1) el._raf = requestAnimationFrame(step); else el._v = to;
+    })(t0);
+  }
+  // Measured first, else the estimate; never a made-up number.
+  function peakOf(r) {
+    if (!r) return null;
+    if (typeof r.peak_bytes === "number") return { v: r.peak_bytes, est: false };
+    if (typeof r.est_peak_bytes === "number") return { v: r.est_peak_bytes, est: true };
+    return null;
+  }
+  function secondsOf(r) {
+    if (!r) return null;
+    if (typeof r.seconds === "number") return { v: r.seconds, est: false };
+    if (typeof r.est_seconds === "number") return { v: r.est_seconds, est: true };
+    return null;
+  }
+  function timeRatio(r) {
+    var a = secondsOf(r), b = secondsOf(ladder()[0]);
+    if (!a || !b || !(b.v > 0)) return null;
+    if (a.est !== b.est) {  // compare like with like
+      if (typeof r.est_seconds === "number" && typeof ladder()[0].est_seconds === "number") return { v: r.est_seconds / ladder()[0].est_seconds, est: true };
+      return null;
+    }
+    return { v: a.v / b.v, est: a.est };
+  }
+  function setMode(mode, animate) {
+    ui.mode = mode;
+    document.querySelectorAll("#mode-seg [data-mode]").forEach(function (b) {
+      var on = b.dataset.mode === mode; b.classList.toggle("is-on", on); b.setAttribute("aria-checked", on ? "true" : "false"); });
+    var rv = $("mode-reveal"), open = mode === "low_memory";
+    if (!animate || reduced()) rv.classList.add("no-anim");
+    rv.classList.toggle("is-open", open);
+    rv.setAttribute("aria-hidden", open ? "false" : "true");
+    $("slider").tabIndex = open ? 0 : -1;
+    if (!animate || reduced()) { void rv.offsetHeight; rv.classList.remove("no-anim"); }
+    updateModeNote();
+  }
+  function updateModeNote() {
+    if (!ui.mode) return;
+    var text;
+    if (ui.mode === "fast") {
+      text = FAST_NOTE;
+      var last = sortedJobs().filter(function (j) { return j.state === "done" || j.state === "failed"; })
+        .sort(function (a, b) { return (b.finished_at || 0) - (a.finished_at || 0); })[0];
+      var m = last && jobMode(last);
+      if (m && m.mode === "fast" && m.from && m.rung) text += " · Last request stepped down to " + rungLabel(m.rung) + " to fit";
+    } else {
+      var all = ladder().every(function (r) { return r.identical !== false; });
+      text = "Move right to use less memory; requests take longer" + (all && ladder().length ? ". Every setting renders the same frames" : "");
+    }
+    xfade($("mode-note-a"), text);
+  }
+  function buildTicks() {
+    var L = ladder(), box = $("slider-ticks");
+    box.innerHTML = L.map(function (r, i) {
+      return '<i class="sh-slider__tick" style="left:' + pos(i) + '" data-i="' + i + '"></i>'; }).join("");
+  }
+  function frac(i) { var n = Math.max(1, ladder().length - 1); return i / n; }
+  function pos(i) { return "calc(var(--thumb-r) + (100% - 2 * var(--thumb-r)) * " + frac(i).toFixed(4) + ")"; }
+  function setDetent(i, animate) {
+    var L = ladder(); if (!L.length) return;
+    i = Math.max(0, Math.min(L.length - 1, i));
+    var r = L[i], sl = $("slider");
+    sl.classList.toggle("no-anim", !animate || reduced());
+    $("slider-thumb").style.left = pos(i);
+    $("slider-fill").style.width = "calc((100% - 2 * var(--thumb-r)) * " + frac(i).toFixed(4) + ")";
+    document.querySelectorAll("#slider-ticks .sh-slider__tick").forEach(function (t) { t.classList.toggle("is-past", +t.dataset.i <= i); });
+    sl.setAttribute("aria-valuenow", String(r.at));
+    sl.setAttribute("aria-valuetext", r.label + ": " + r.detail);
+    ui.idx = i;
+    xfade($("rung-label"), r.label);
+    xfade($("rung-detail"), r.detail);
+    var pk = peakOf(r), tr = timeRatio(r);
+    tween($("ro-mem"), pk ? pk.v : null, gb);
+    tween($("ro-time"), tr ? tr.v : null, function (v) { return v.toFixed(1) + "×"; });
+    $("ro-mem-tag").hidden = !(pk && pk.est);
+    $("ro-time-tag").hidden = !(tr && tr.est);
+    renderStrip();
+    if (!animate || reduced()) { void sl.offsetHeight; sl.classList.remove("no-anim"); }
+  }
+  function renderStrip() {
+    var r = ladder()[ui.idx], pk = peakOf(r), fill = $("strip-fill"), line = $("strip-line");
+    if (!sys || !sys.memory.total) { fill.style.width = "0%"; $("strip-head").textContent = " "; return; }
+    var total = sys.memory.total, head = sys.guard.headroom_bytes, limit = Math.max(0, total - head);
+    line.style.left = (100 * limit / total).toFixed(2) + "%";
+    fill.style.width = pk ? Math.min(100, 100 * pk.v / total).toFixed(2) + "%" : "0%";
+    var over = pk && pk.v > limit;
+    fill.classList.toggle("is-over", !!over);
+    var sp = $("strip-peak");
+    if (pk) {
+      if (!$("strip-peak-v")) sp.innerHTML = '<b id="strip-peak-v"></b><span id="strip-peak-t"></span>';
+      $("strip-peak-v").className = over ? "sh-neg" : "";
+      tween($("strip-peak-v"), pk.v, gb);
+      $("strip-peak-t").textContent = " peak" + (pk.est ? " (estimate)" : "") + " of " + gb(total) + (over ? " · more than this Mac can give a request" : "");
+    } else {
+      sp.textContent = "No measurement for this setting yet · " + gb(total) + " in this Mac";
+    }
+    $("strip-head").innerHTML = "Reserve <b>" + gb(head) + "</b>" + (sys.guard.headroom_auto ? " (automatic)" : "");
+    $("strip").setAttribute("aria-label", pk ? "Peak " + gb(pk.v) + " of " + gb(total) + ", headroom " + gb(head) : "Peak not measured, headroom " + gb(head));
+  }
+  function applySettings(s, animate) {
+    var first = !settings;
+    settings = s;
+    if (first) buildTicks();
+    var mf = s.measured_for;
+    $("mode-measured").textContent = mf ? "Measured on " + mf.model + " at " + mf.size : " ";
+    if (ui.dragging) return;
+    if (ui.mode !== s.mode) setMode(s.mode, animate && !first);
+    var i = idxFor(s.efficiency);
+    if (i !== ui.idx || first) setDetent(i, animate && !first);
+    fillRungSelect();
+    if (first) renderQueue();  // job rows can now name their rungs
+  }
+  function postSettings(body) {
+    var seq = ++ui.seq;
+    return api("POST", "/v1/settings", body).then(function (s) {
+      ui.acked = Math.max(ui.acked, seq);
+      if (seq === ui.seq) { settings.mode = s.mode; settings.efficiency = s.efficiency; settings.rung = s.rung; settings.ladder = s.ladder; }
+    }).catch(function (e) { $("status").textContent = "Could not save the mode: " + e.message; });
+  }
+  function commitEfficiency(delay) {
+    clearTimeout(ui.postTimer);
+    var body = { mode: "low_memory", efficiency: ladder()[ui.idx].at };
+    if (delay) ui.postTimer = setTimeout(function () { postSettings(body); }, delay);
+    else postSettings(body);
+  }
+  function loadSettings() { return api("GET", "/v1/settings").then(function (s) { applySettings(s, false); }).catch(function () {}); }
+
+  (function wireMode() {
+    var sl = $("slider");
+    document.querySelectorAll("#mode-seg [data-mode]").forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!settings || b.dataset.mode === ui.mode) return;
+        setMode(b.dataset.mode, true);
+        settings.mode = b.dataset.mode;
+        clearTimeout(ui.postTimer);
+        postSettings({ mode: b.dataset.mode });
+      });
+    });
+    function idxFromEvent(e) {
+      var tr = sl.getBoundingClientRect(), r = parseFloat(getComputedStyle(sl).getPropertyValue("--thumb-r")) || 10;
+      var f = (e.clientX - tr.left - r) / Math.max(1, tr.width - 2 * r);
+      return Math.round(Math.max(0, Math.min(1, f)) * (ladder().length - 1));
+    }
+    sl.addEventListener("pointerdown", function (e) {
+      if (!settings || ui.mode !== "low_memory" || e.button !== 0) return;
+      e.preventDefault();
+      sl.setPointerCapture(e.pointerId);
+      ui.dragging = true; sl.classList.add("is-dragging"); sl.focus();
+      var i = idxFromEvent(e);
+      if (i !== ui.idx) { setDetent(i, true); commitEfficiency(250); }
+    });
+    sl.addEventListener("pointermove", function (e) {
+      if (!ui.dragging) return;
+      var i = idxFromEvent(e);
+      if (i !== ui.idx) { setDetent(i, true); commitEfficiency(250); }  // debounced while dragging
+    });
+    function end() {
+      if (!ui.dragging) return;
+      ui.dragging = false; sl.classList.remove("is-dragging");
+      commitEfficiency(0);  // commit on release
+    }
+    sl.addEventListener("pointerup", end);
+    sl.addEventListener("pointercancel", end);
+    sl.addEventListener("lostpointercapture", end);
+    sl.addEventListener("keydown", function (e) {
+      if (!settings || ui.mode !== "low_memory") return;
+      var n = ladder().length - 1, i = ui.idx;
+      if (e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "PageUp") i++;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowDown" || e.key === "PageDown") i--;
+      else if (e.key === "Home") i = 0;
+      else if (e.key === "End") i = n;
+      else return;
+      e.preventDefault(); e.stopPropagation();
+      i = Math.max(0, Math.min(n, i));
+      if (i !== ui.idx) { setDetent(i, true); commitEfficiency(200); }
+    });
+  })();
+
+  // ---------- models ----------
+  function renderModels() {
+    if (!sys) return;
+    var ent = sys.pool.entries, g = sys.gpu_lock;
+    $("m-sub").textContent = ent.length ? plural(ent.length, "component") + " loaded · " + gb(sys.pool.total_bytes) + " in memory" : "Nothing loaded";
+    $("m-loaded-n").textContent = ent.length;
+    $("unloadall").disabled = !ent.length;
+    $("m-loaded").innerHTML = ent.length ? '<table class="mac-table sh-table"><thead><tr><th>Component</th><th class="num">Size</th><th class="num">Idle</th><th>State</th><th class="sh-act"></th></tr></thead><tbody>' +
+      ent.map(function (e) {
+        var st = e.in_use ? "In use" : e.pinned ? "Pinned" : "Idle";
+        return '<tr><td class="sh-job"><span class="sh-cell"><span class="mac-row__title">' + esc(mid(e.key, 60)) + "</span></span></td><td class=\"num\">" + gb(e.size_bytes) +
+          '</td><td class="num">' + (e.in_use ? "–" : dur(e.idle_s)) + '</td><td><span class="mac-badge sh-badge">' + st + '</span></td><td class="sh-act"><button class="mac-btn mac-btn--line mac-btn--sm" data-unload="' +
+          esc(e.key) + '"' + (e.in_use ? " disabled" : "") + ">Unload</button></td></tr>";
+      }).join("") + "</tbody></table>"
+      : empty("Nothing loaded", "Models load when a request starts and unload after they sit idle, so memory goes back to your other apps.");
+    $("m-gpu").textContent = g.held ? "GPU lock held by " + (g.ours ? "Shuttrr" : ((g.holder && g.holder.label) || "another tool")) + "." : "GPU lock is free.";
+    $("m-avail-n").textContent = models.length;
+    $("m-avail").innerHTML = models.length ? '<table class="mac-table sh-table"><thead><tr><th>Model</th><th class="mac-hide-sm">Family</th><th class="mac-hide-sm">Kind</th><th class="sh-act sh-act--load"></th></tr></thead><tbody>' +
+      models.map(function (m) {
+        var name = m.family === "dummy" ? "Test model" : m.id, st, act = "";
+        if (m.error) st = '<span class="sh-neg">' + esc(m.error) + "</span>";
+        else if (!m.installed) st = '<span class="is-muted">Not installed</span>';
+        else if (m.state === "loaded") { st = '<span class="sh-dot sh-dot--good"></span>Loaded' + (m.loaded_bytes ? " · " + gb(m.loaded_bytes) + " in memory" : "");
+          act = '<button class="mac-btn mac-btn--line mac-btn--sm" data-munload="' + esc(m.id) + '">Unload</button>'; }
+        else if (m.state === "loading") { st = "Loading into memory…"; act = '<span class="sh-loading">Loading</span>'; }
+        else if (m.state === "waiting_for_memory") { st = '<span class="sh-warn">Waiting for memory. ' + esc(m.waiting || "") + "</span>";
+          act = '<button class="mac-btn mac-btn--line mac-btn--sm" data-munload="' + esc(m.id) + '">Cancel</button>'; }
+        else if (m.state) { st = '<span class="is-muted">Not loaded</span>'; act = '<button class="mac-btn mac-btn--ink mac-btn--sm" data-mload="' + esc(m.id) + '">Load</button>'; }
+        else st = '<span class="is-muted">Loads when a request needs it</span>';
+        var more = m.error ? "" : '<details class="sh-more"><summary class="sh-more__btn" aria-label="More" title="More">⋯</summary><div class="sh-more__menu" role="menu">' +
+          '<button role="menuitem" data-copydir="' + esc(m.dir) + '">Copy folder path</button>' +
+          '<button role="menuitem" data-newwith="' + esc(m.id) + '"' + (m.installed ? "" : " disabled") + '>Test</button></div></details>';
+        return '<tr><td class="sh-job"><span class="sh-cell"><span class="mac-row__title">' + esc(name) + '</span><span class="mac-row__sub">' + st + "</span>" +
+          '</span></td><td class="mac-hide-sm">' + esc(m.family) + '</td><td class="mac-hide-sm">' + esc(m.kind || "–") + '</td><td class="sh-act sh-act--load"><span class="sh-actrow">' + act + more + "</span></td></tr>";
+      }).join("") + "</tbody></table>"
+      : empty("No models configured", "Add a model to <code>config.json</code> in the Shuttrr home folder, then restart the engine.");
+  }
+
+  function showLoadFail(mid, err) {
+    var r = (err && err.body && err.body.refused) || null, f = function (v) { return Number(v).toFixed(1) + " GB"; };
+    var m = models.filter(function (x) { return x.id === mid; })[0] || {};
+    var name = (r && r.model_name) || m.name || mid, title, body, help, btns;
+    if (r && r.kind === "memory") {
+      title = "Not enough memory to load " + name;
+      body = "It needs " + f(r.peak_gb) + " at its peak, plus " + f(r.headroom_gb) + " kept free for macOS. This Mac has " +
+        f(r.available_gb) + " available right now, so it is " + f(r.short_by_gb) + " short.";
+      help = r.lowest ? "Quit other apps to free memory." : "Quit other apps to free memory, or choose a lower memory setting.";
+      btns = '<button class="mac-btn mac-btn--line mac-btn--sm" data-mwait="' + esc(mid) + '">Load when memory frees up</button>';
+    } else {
+      title = name + " could not be loaded"; body = (err && err.message) || "That did not work."; help = "The engine log has the details.";
+      btns = "";
+    }
+    $("m-loadfail").innerHTML = '<div class="sh-fail" role="alert"><div class="sh-fail__title">' + esc(title) + '</div><div class="sh-fail__body">' + esc(body) +
+      '</div><div class="sh-fail__help">' + esc(help) + '</div><div class="sh-fail__act"><button class="mac-btn mac-btn--line mac-btn--sm" data-act="closefail">Close</button>' + btns +
+      '<button class="mac-btn mac-btn--ink mac-btn--sm" data-mload="' + esc(mid) + '">Try again</button></div></div>';
+  }
+
+  // ---------- model downloads ----------
+  function getCard(r) {
+    var d = r.download || {}, st = d.state || "", busy = st === "downloading";
+    var meta = [gb(r.size_bytes) + " download", "from Hugging Face", gb(r.free_bytes) + " free on this Mac"];
+    var body = "", btn = "";
+    if (r.installed && catalogRestart) body = '<div class="sh-get__note">Downloaded. Quit and reopen Shuttrr to start using it.</div>';
+    else if (r.installed) body = '<div class="sh-get__note">Installed and ready.</div>';
+    else if (busy) {
+      var pct = d.total_bytes ? Math.min(100, 100 * d.done_bytes / d.total_bytes) : 0;
+      body = '<span class="sh-prog sh-prog--wide"><i style="width:' + pct.toFixed(1) + '%"></i></span>' +
+        '<div class="sh-get__note">' + gb(d.done_bytes || 0) + " of " + gb(d.total_bytes || r.size_bytes) + " · " + pct.toFixed(0) + "%. You can keep using this Mac; the download carries on if you close this page.</div>";
+      btn = '<button class="mac-btn mac-btn--line" data-getstop="' + esc(r.id) + '">Stop</button>';
+    } else {
+      if (st === "failed") body = '<div class="sh-get__note sh-neg">' + esc(d.error || "The download failed.") + "</div>";
+      else if (st === "stopped" || st === "cancelled") body = '<div class="sh-get__note">Stopped at ' + gb(d.done_bytes || 0) + ". It carries on from there.</div>";
+      if (!r.fits_this_mac) body += '<div class="sh-get__note sh-neg">This model needs a Mac with at least ' + gb(r.min_memory_bytes) + " of memory.</div>";
+      else if (r.free_bytes < r.size_bytes - (d.done_bytes || 0)) body += '<div class="sh-get__note sh-neg">Not enough free disk space for this download.</div>';
+      btn = '<button class="mac-btn mac-btn--ink" data-get="' + esc(r.id) + '"' + (r.fits_this_mac ? "" : " disabled") + ">" + (st && st !== "done" ? "Resume download" : "Download") + "</button>";
+    }
+    var notes = (r.notes || []).map(function (n) { return '<div class="sh-get__note">' + esc(n) + "</div>"; }).join("");
+    return '<div class="sh-get"><div class="sh-get__main"><div class="sh-get__name">' + esc(r.name) + '</div><div class="sh-get__sub">' + esc(r.summary) +
+      '</div><div class="sh-get__meta">' + meta.join(" · ") + "</div>" + body + notes + '</div><div class="sh-get__act">' + btn + "</div></div>";
+  }
+  function renderCatalog() {
+    var open = catalog.filter(function (r) { return !r.installed || catalogRestart; });
+    $("m-get-wrap").hidden = !open.length;
+    $("m-get").innerHTML = open.map(getCard).join("");
+    var none = catalog.length && !models.some(function (m) { return m.installed && m.family !== "dummy" && !m.error; });
+    $("q-setup").innerHTML = none ? '<section class="sh-setup"><div class="sh-setup__head"><div class="sh-setup__title">Set up Shuttrr</div>' +
+      '<div class="sh-setup__sub">Download a model to make your first video. It is saved on this Mac and nothing is uploaded.</div></div>' +
+      catalog.map(getCard).join("") + "</section>" : "";
+  }
+  function catalogBusy() { return catalog.some(function (r) { return r.download && r.download.state === "downloading"; }); }
+  function loadCatalog() {
+    return api("GET", "/v1/catalog").then(function (d) {
+      var was = catalogBusy();
+      catalog = d.models || []; catalogRestart = !!d.restart_needed; catalogAt = now();
+      if (was && !catalogBusy()) loadModels();
+      renderCatalog();
+    }).catch(function () {});
+  }
+  function catalogAct(method, id) {
+    api(method, "/v1/catalog/" + encodeURIComponent(id) + "/download").then(function (d) {
+      catalog = d.models || catalog; catalogRestart = !!d.restart_needed; renderCatalog();
+    }).catch(function (e) { $("status").textContent = e.message || "The download could not start"; });
+  }
+
+  // ---------- memory ----------
+  function renderMemory() {
+    if (!sys) return;
+    var p = memParts(sys);
+    $("mem-sub").textContent = gb(p.total) + " total · pressure " + p.pressure;
+    $("mem-banner").innerHTML = banner();
+    function stat(label, val, meta, big) {
+      return '<div class="mac-stat mac-stat--plain"><span class="mac-stat__label">' + label + '</span><span class="' + (big ? "mac-stat__big" : "sh-stat__val") + '">' + val +
+        '</span><span class="mac-stat__meta">' + meta + "</span></div>";
+    }
+    $("mem-stats").innerHTML = stat("Free for models", gb(p.free), "Available minus headroom", true) +
+      stat("Used", gb(p.used), "of " + gb(p.total)) + stat("Reserve", gb(p.headCfg), "Kept for your other apps") + stat("Swap", gb(p.swap), "In use now");
+    $("mem-bar").innerHTML = memBar(sys);
+    var pr = sys.guard.protected;
+    $("mem-protected").innerHTML = pr.length ? pr.map(function (x) {
+      return '<div class="sh-kv"><span>' + esc(x.name) + "</span><span>" + (x.busy ? '<b>Loaded: video requests wait.</b> ' + esc(x.busy) : "Idle") + "</span></div>";
+    }).join("") : '<div class="sh-kv"><span>None configured</span><span class="is-muted">Shuttrr starts requests whenever memory allows.</span></div>';
+  }
+
+  // ---------- settings ----------
+  function kv(k, v) { return '<div class="sh-kv"><span>' + k + "</span><span>" + v + "</span></div>"; }
+  function renderSettings() {
+    if (!sys) return;
+    var g = sys.gpu_lock;
+    $("s-engine").innerHTML = kv("Version", esc(sys.version)) + kv("Address", '<span class="sh-mono">' + esc(location.origin) + "</span>") +
+      kv("Updates", conn === "live" ? "Live (server-sent events)" : conn === "polling" ? "Polling every 3 s" : esc(conn)) +
+      kv("API key", key ? "Sent with every request" : "Not needed on this Mac");
+    $("s-guard").innerHTML = kv("Headroom", gb(sys.guard.headroom_bytes) + " kept free") + kv("Swap growth limit", gb(sys.guard.swap_growth_bytes)) +
+      kv("Protected services", sys.guard.protected.length ? esc(sys.guard.protected.map(function (x) { return x.name; }).join(", ")) : "None");
+    $("s-gpu").innerHTML = kv("State", g.held ? "Held by " + (g.ours ? "Shuttrr" : esc((g.holder && g.holder.label) || "another tool")) : "Free") +
+      kv("Lock file", '<span class="sh-mono">' + esc(g.path || "–") + "</span>") +
+      kv("Locked folders", g.dirs && g.dirs.length ? g.dirs.map(function (d) { return '<span class="sh-mono">' + esc(d.path) + "</span>"; }).join("<br>") : "None");
+  }
+
+  function renderAll() { renderChrome(); renderQueue(); renderModels(); renderMemory(); renderSettings(); }
+
+  // ---------- views ----------
+  function setView(v, push) {
+    if (["queue", "models", "memory", "settings"].indexOf(v) < 0) v = "queue";
+    view = v;
+    document.querySelectorAll("[data-panel]").forEach(function (el) { el.hidden = el.dataset.panel !== v; });
+    document.querySelectorAll(".mac-nav[data-view]").forEach(function (el) {
+      el.classList.toggle("is-on", el.dataset.view === v);
+      if (el.dataset.view === v) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
+    });
+    document.title = "Shuttrr · " + v.charAt(0).toUpperCase() + v.slice(1);
+    $("filter").hidden = v !== "queue";
+    if (push && location.hash !== "#" + v) history.replaceState(null, "", "#" + v);
+  }
+  function setFilter(f) {
+    filter = f;
+    document.querySelectorAll("#filter [data-filter]").forEach(function (b) { b.classList.toggle("is-on", b.dataset.filter === f); });
+    renderQueue();
+  }
+
+  // ---------- data ----------
+  function refresh() {
+    return Promise.all([
+      api("GET", "/v1/system").then(function (s) { sys = s; }),
+      api("GET", "/v1/jobs?limit=100").then(function (d) { jobs = {}; d.jobs.forEach(function (j) { jobs[j.id] = j; }); })
+    ]).then(function () { offline = ""; renderAll(); if (settings) renderStrip();
+        if (models.some(function (m) { return m.state === "loading" || m.state === "waiting_for_memory"; })) loadModels();
+        if (catalogBusy() || now() - catalogAt > (view === "models" || $("q-setup").innerHTML ? 20 : 120)) loadCatalog(); })
+      .catch(function (e) { offline = e.message || "No connection"; renderAll(); });
+  }
+  function loadModels() {
+    return api("GET", "/v1/models").then(function (d) {
+      models = d.models;
+      $("f-model").innerHTML = models.map(function (m) {
+        var note = m.error ? " (unavailable)" : (m.installed ? "" : " (not installed)");
+        return '<option value="' + esc(m.id) + '"' + (m.error ? " disabled" : "") + ">" + esc(m.id + note) + "</option>";
+      }).join("");
+      renderModels(); renderCatalog();
+    }).catch(function () {});
+  }
+
+  var pollTimer = null, refreshTimer = null;
+  function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 3000); }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  function soon() { if (!refreshTimer) refreshTimer = setTimeout(function () { refreshTimer = null; refresh(); }, 300); }
+
+  function connect() {
+    if (!window.EventSource) { conn = "polling"; startPolling(); return; }
+    var es = new EventSource("/v1/events?recent=50" + (key ? "&key=" + encodeURIComponent(key) : ""));
+    es.onopen = function () { conn = "live"; stopPolling(); renderChrome(); renderStatus(); loadSettings(); };
+    es.onerror = function () { conn = "reconnecting"; startPolling(); renderChrome(); renderStatus(); };
+    es.onmessage = function (m) {
+      var ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
+      if (ev.kind === "job.started" && ev.data && ev.data.estimate_peak) est[ev.job_id] = ev.data.estimate_peak;
+      if (ev.kind === "settings.changed" && ev.data && settings) {
+        // Another client (or this one) changed the defaults. A local change still in flight wins.
+        if (ui.dragging || ui.acked < ui.seq) return;
+        applySettings({ mode: ev.data.mode, efficiency: ev.data.efficiency, rung: ev.data.rung, ladder: settings.ladder, measured_for: settings.measured_for }, true);
+        return;
+      }
+      if (ev.kind === "job.progress" && jobs[ev.job_id]) {
+        var j = jobs[ev.job_id];
+        if (!LIVE[j.state] || ev.data.progress < j.progress) return;  // replayed or stale event
+        j.progress = ev.data.progress; j.stage = ev.data.stage; j.eta_s = ev.data.eta_s; j.state = "running";
+        renderQueue();
+      } else if (ev.kind.indexOf("job.") === 0 || ev.kind.indexOf("model.") === 0 || ev.kind.indexOf("queue.") === 0 || ev.kind === "memory.sample") {
+        soon();
+      }
+    };
+  }
+
+  // ---------- sheet ----------
+  var lastFocus = null;
+  function openSheet(model) {
+    lastFocus = document.activeElement;
+    $("err").textContent = "";
+    if (model) $("f-model").value = model;
+    if (settings) $("f-rung").value = String(rungAt(settings.efficiency).at);
+    setJobMode("");
+    $("sheet").hidden = false;
+    setTimeout(function () { $("f-model").focus(); }, 0);
+  }
+  function closeSheet() { $("sheet").hidden = true; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
+  function setJobMode(m) {
+    jmode = m;
+    document.querySelectorAll("#f-mode [data-jmode]").forEach(function (b) {
+      var on = b.dataset.jmode === m; b.classList.toggle("is-on", on); b.setAttribute("aria-checked", on ? "true" : "false"); });
+    $("f-rung").disabled = m !== "low_memory";
+    var hint;
+    if (m === "fast") hint = "Steps down only if it would not fit in free memory.";
+    else if (m === "low_memory") { var r = rungAt(parseFloat($("f-rung").value)); hint = r.detail || ""; }
+    else hint = settings ? "Now: " + (settings.mode === "fast" ? "Fast" : "Low memory · " + rungLabel(settings.rung)) : "The engine's current mode.";
+    $("f-mode-hint").textContent = hint;
+  }
+  function fillRungSelect() {
+    var sel = $("f-rung"), keep = sel.value;
+    sel.innerHTML = ladder().map(function (r) { return '<option value="' + r.at + '">' + esc(r.label) + "</option>"; }).join("");
+    sel.value = keep && sel.querySelector('option[value="' + keep + '"]') ? keep : String(rungAt(settings ? settings.efficiency : 0.5).at);
+    if (!$("sheet").hidden) setJobMode(jmode);
+  }
+  function submitJob() {
+    var f = new FormData($("newjob"));
+    var seed = parseInt(f.get("seed") || "42", 10), pri = parseInt(f.get("priority") || "0", 10);
+    if (!f.get("model")) { $("err").textContent = "Pick a model first."; return; }
+    if (isNaN(seed) || isNaN(pri)) { $("err").textContent = "Seed and priority must be whole numbers."; return; }
+    var body = { model: f.get("model"), seed: seed, priority: pri, client: "dashboard" };
+    var p = (f.get("prompt") || "").trim(); if (p) body.prompt = p;
+    ["image", "audio"].forEach(function (k) { var v = (f.get(k) || "").trim(); if (v) { body.inputs = body.inputs || {}; body.inputs[k] = v; } });
+    if (jmode) {  // per-job override; "Use default" sends nothing and the engine fills it in
+      body.params = { mode: jmode };
+      if (jmode === "low_memory") body.params.efficiency = parseFloat($("f-rung").value);
+    }
+    $("err").textContent = ""; $("submitbtn").disabled = true;
+    api("POST", "/v1/jobs", body).then(function (j) {
+      closeSheet(); setView("queue", true); selected = null; return refresh();
+    }).catch(function (err) { $("err").textContent = err.message; })
+      .then(function () { $("submitbtn").disabled = false; });
+  }
+
+  // ---------- events ----------
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("button, tr[data-job], .mac-nav");
+    if (!t) return;
+    var d = t.dataset;
+    if (d.cancel) { e.stopPropagation(); api("DELETE", "/v1/jobs/" + encodeURIComponent(d.cancel)).then(refresh); }
+    else if (d.unload) api("POST", "/v1/pool/release", { key: d.unload }).then(refresh);
+    else if (d.mload || d.munload || d.mwait) {
+      t.disabled = true;
+      $("m-loadfail").innerHTML = "";
+      var mm = d.mload || d.munload || d.mwait;
+      api("POST", "/v1/models/" + encodeURIComponent(mm) + (d.munload ? "/unload" : "/load"), d.mwait ? { wait: true } : {})
+        .catch(function (err) { showLoadFail(mm, err); })
+        .then(function () { loadModels(); refresh(); });
+    }
+    else if (d.act === "closefail") $("m-loadfail").innerHTML = "";
+    else if (d.copydir) { if (navigator.clipboard) navigator.clipboard.writeText(d.copydir); var dd = t.closest("details"); if (dd) dd.open = false; }
+    else if (t.id === "unloadall") api("POST", "/v1/pool/release", { key: null }).then(refresh);
+    else if (t.id === "pausebtn") api("POST", d.paused ? "/v1/queue/resume" : "/v1/queue/pause", {}).then(refresh);
+    else if (d.act === "resume") api("POST", "/v1/queue/resume", {}).then(refresh);
+    else if (d.get) { t.disabled = true; t.textContent = "Starting…"; catalogAct("POST", d.get); }
+    else if (d.getstop) { t.disabled = true; catalogAct("DELETE", d.getstop); }
+    else if (d.act === "new") openSheet();
+    else if (d.newwith) { var dm = t.closest("details"); if (dm) dm.open = false; openSheet(d.newwith); }
+    else if (d.act === "close") closeSheet();
+    else if (d.act === "showall") { query = ""; $("search").value = ""; setFilter("all"); }
+    else if (d.view) setView(d.view, true);
+    else if (d.filterJump) { setView("queue", true); setFilter(d.filterJump); }
+    else if (d.filter) setFilter(d.filter);
+    else if (d.jmode !== undefined) setJobMode(d.jmode);
+    else if (d.job) { selected = selected === d.job ? null : d.job; renderQueue(); }
+  });
+  $("sheet").addEventListener("mousedown", function (e) { if (e.target === this) closeSheet(); });
+  $("f-rung").addEventListener("change", function () { setJobMode(jmode); });
+  $("newjob").addEventListener("submit", function (e) { e.preventDefault(); submitJob(); });
+  $("search").addEventListener("input", function () { query = this.value.trim(); if (view !== "queue") setView("queue", true); renderQueue(); });
+
+  document.addEventListener("keydown", function (e) {
+    var tag = (e.target.tagName || "").toLowerCase(), typing = tag === "input" || tag === "textarea" || tag === "select";
+    var sheetOpen = !$("sheet").hidden;
+    if (e.key === "Escape") {
+      if (sheetOpen) { closeSheet(); e.preventDefault(); return; }
+      if (e.target.id === "search" || query) { $("search").value = ""; query = ""; $("search").blur(); renderQueue(); return; }
+      if (selected) { selected = null; renderQueue(); }
+      return;
+    }
+    if (sheetOpen) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitJob(); }
+      return;
+    }
+    if (e.key === "Enter" && e.target.dataset && e.target.dataset.job) { e.target.click(); return; }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "n" || e.key === "N") { e.preventDefault(); openSheet(); }
+    else if (e.key === "/") { e.preventDefault(); if (view !== "queue") setView("queue", true); $("search").focus(); }
+  });
+  window.addEventListener("hashchange", function () { setView(location.hash.slice(1), false); });
+
+  setView(location.hash.slice(1) || "queue", false);
+  refresh(); loadModels(); loadSettings(); loadCatalog(); connect();
+  setInterval(function () { if (!pollTimer) refresh(); }, 15000);
+  setInterval(function () {  // tick the clocks of live jobs without re-rendering rows
+    document.querySelectorAll("td[data-tjob]").forEach(function (td) {
+      var j = jobs[td.dataset.tjob]; if (j && LIVE[j.state]) td.textContent = jobTime(j).t;
+    });
+  }, 1000);
+})();
+</script>
+</body>
+</html>

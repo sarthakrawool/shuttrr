@@ -1,0 +1,106 @@
+/* ============================================================
+   tokens.css — the ONLY values a page may use.
+   The model picks from these. It never invents a size, a gap or a colour.
+   uicheck.mjs flags anything that is not on these lists.
+   ============================================================ */
+
+@font-face { font-family: "Geist"; src: url("../fonts/Geist-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("../fonts/Inter-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Newsreader"; src: url("../fonts/Newsreader-Variable.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("../fonts/GeistMono-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+
+:root {
+  /* ---------- Type: 2 families max ---------- */
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: var(--font-sans);  /* headline font; the studio theme swaps in a serif */
+
+  /* Type scale (px). Each step has a fixed line-height and tracking. */
+  --text-xs: 12px;   --lh-xs: 16px;                        /* labels, mono kickers */
+  --text-sm: 14px;   --lh-sm: 20px;                        /* captions, table cells */
+  --text-base: 16px; --lh-base: 26px;                      /* body: never smaller */
+  --text-lg: 18px;   --lh-lg: 28px;                        /* lead paragraph */
+  --text-xl: 20px;   --lh-xl: 28px;                        /* card titles */
+  --text-2xl: 24px;  --lh-2xl: 32px;                       /* h3 */
+  --text-3xl: 32px;  --lh-3xl: 38px;                       /* h2 small */
+  --text-4xl: 40px;  --lh-4xl: 44px;                       /* h2 */
+  --text-45xl: 48px; --lh-45xl: 52px;                      /* section title (studio) */
+  --text-5xl: 56px;  --lh-5xl: 60px;                       /* h1 */
+  --text-6xl: 72px;  --lh-6xl: 74px;                       /* hero h1 */
+  --text-7xl: 96px;  --lh-7xl: 96px;                       /* one giant number per page */
+
+  --track-tight: -0.03em;  /* 40px and up */
+  --track-snug: -0.015em;  /* 20–32px */
+  --track-wide: 0.08em;    /* mono uppercase kickers only */
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;  /* headings */
+
+  /* ---------- Spacing: 4px base. Nothing else. ---------- */
+  --space-1: 4px;  --space-2: 8px;   --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px;  --space-7: 48px; --space-8: 64px;
+  --space-9: 96px; --space-10: 128px;
+
+  /* ---------- Layout ---------- */
+  --container: 1120px;      /* page max width */
+  --measure: 640px;         /* max width of a paragraph (~68 characters) */
+  --gutter: 24px;           /* grid gap; 16px on phones */
+  --page-pad: 32px;         /* side padding; 16px on phones */
+
+  /* ---------- Shape ---------- */
+  --radius-sm: 6px;   /* inputs, tags */
+  --radius-md: 10px;  /* buttons, cards */
+  --radius-lg: 16px;  /* large panels, images */
+  --hairline: 1px solid var(--line);
+
+  /* ---------- Colour: theme "editorial" (default, light) ---------- */
+  --bg: #f5f6f8;         /* page */
+  --surface: #ffffff;    /* cards */
+  --ink: #0b0d12;        /* headings, primary text */
+  --ink-2: #3d4250;      /* body text */
+  --muted: #646b7a;      /* captions, meta (passes 4.5:1 on bg) */
+  --line: #e3e5ea;       /* hairlines, borders */
+  --accent: #2456e6;     /* ONE accent: links, primary button, one highlight */
+  --accent-ink: #ffffff; /* text on accent */
+  --accent-soft: #e8eefd;/* tinted backgrounds, max one per section */
+  --good: #12804a;
+  --bad: #c2372b;
+}
+
+/* Theme "brand": Sarthak's cream / green / bordo. Use with <html data-theme="brand">. */
+:root[data-theme="brand"] {
+  --bg: #f5dabf;  --surface: #fff8f0; --ink: #1e1416; --ink-2: #4a3a36;
+  --muted: #6e5a50; --line: #e2c3a3; --accent: #6c151e; --accent-ink: #fff8f0;
+  --accent-soft: #f1d3cb; --good: #0f3d3a; --bad: #6c151e;
+}
+
+/* Theme "studio": distilled from Origami, Notion, Subframe, Miro, Plane, hilos, Tana (see references/BREAKDOWN.md).
+   Off-white page, white cards with hairlines, near-black primary buttons, serif headlines at weight 400, Inter body. */
+:root[data-theme="studio"] {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Newsreader", Georgia, serif;
+  --bg: #fafafa; --surface: #ffffff; --ink: #0a0a0b; --ink-2: #52525b; --muted: #66666e;
+  --line: #e4e4e7; --accent: #0a0a0b; --accent-ink: #ffffff; --accent-soft: #f4f4f5;
+  --good: #15803d; --bad: #b42318;
+  --soft: #f4f4f5;                 /* quiet fills: secondary buttons, feature cards */
+  --band: #0f0f10;                 /* the one dark section */
+  --band-ink: #f4f4f5; --band-muted: #a1a1aa; --band-line: #27272a;
+  /* pastel bento family: same lightness, low chroma, text is the same hue very dark */
+  --pastel-blue: #dbe6f7;   --pastel-blue-ink: #1d2b45;
+  --pastel-yellow: #f3eac2; --pastel-yellow-ink: #3d3415;
+  --pastel-pink: #f2dde6;   --pastel-pink-ink: #45202f;
+  --pastel-peach: #f5dccb;  --pastel-peach-ink: #47261a;
+  --pastel-green: #d9ecdf;  --pastel-green-ink: #173a26;
+}
+
+/* Theme "night": only when the brief asks for dark. */
+:root[data-theme="night"] {
+  --bg: #0b0d12;  --surface: #151821; --ink: #f2f3f5; --ink-2: #c4c8d2;
+  --muted: #9097a6; --line: #262a35; --accent: #6d95ff; --accent-ink: #0b0d12;
+  --accent-soft: #1a2240; --good: #3ccf86; --bad: #ff6b5e;
+}
+
+@media (max-width: 720px) {
+  :root { --gutter: 16px; --page-pad: 16px; }
+}

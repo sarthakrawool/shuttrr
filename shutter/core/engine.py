@@ -1,0 +1,1135 @@
+"""The engine: one process, one GPU worker thread.
+
+The worker takes the next queued job (highest priority, then oldest), asks its adapter for
+a memory estimate, and only starts it when the MemoryGuard admits it, no other render is
+running, and it holds both the flock `GpuLock` and the shared `mkdir` lock dirs. Otherwise
+the job waits in `waiting_memory` with a human reason and is re-checked every
+`memory_poll_s`; a newer higher-priority job may overtake it.
+
+While a job runs, `ctx.check_cancelled()` also polls `guard.watch()`; when swap grows or
+pressure turns critical the job is stopped "to protect the Mac" and every model is
+released. Exceptions never kill the worker.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Any, Callable, Iterable, Optional
+
+from shutter.adapters.base import RunContext
+from shutter.core.cache import ContentCache
+from shutter.core.config import Config
+from shutter.core.dirlock import DirLocks
+from shutter.core.memory import (
+    GpuLock, MemoryGuard, OmlxService, ProcessRssService, default_probe, parse_ps,
+)
+from shutter.core import memory as _memory
+from shutter.core.pool import ModelPool
+from shutter.core.queue import EventBus, JobStore
+from shutter.core.registry import AdapterUnavailable, Registry, UnknownModel
+from shutter.core import files as _files
+from shutter.core.stats import ClientTracker, StepRate, parse_step, throughput_from_jobs, THROUGHPUT_WINDOW_S
+from shutter.types import (
+    GB, TERMINAL_STATES, Cancelled, Event, Job, JobRequest, JobState, MemoryEstimate, MemoryRefused,
+)
+
+__all__ = ["Engine", "SubmitError", "UnloadRefused", "LoadRefused", "version", "is_load", "model_name"]
+
+PROTECT_PREFIX = "stopped to protect the Mac: "
+RENDER_BUSY_MESSAGE = "another render is running"
+MAX_MIDRUN_REFUSALS = 3
+
+
+def version() -> str:
+    try:
+        from shutter import __version__
+        return __version__
+    except Exception:  # pragma: no cover
+        return "0.0.0"
+
+
+class SubmitError(ValueError):
+    """Bad job request (unknown model, missing input file, ...)."""
+
+
+class UnloadRefused(RuntimeError):
+    """POST /v1/models/<id>/unload while a request for that model is running."""
+
+
+class LoadRefused(RuntimeError):
+    """POST /v1/models/<id>/load when the memory guard says no right now. `info` carries the numbers the app shows:
+    kind ("memory" or "busy"), model_name, peak_gb, headroom_gb, available_gb, short_by_gb, rung, lowest."""
+
+    def __init__(self, reason: str, info: dict[str, Any]):
+        super().__init__(reason)
+        self.info = info
+
+
+LOAD_ACTION = "load"
+
+
+def is_load(request: JobRequest) -> bool:
+    """A load request: POST /v1/models/<id>/load queues one of these (params._action = "load"). It goes through the
+    same queue, GPU lock and memory guard as any request, but runs adapter.warm() instead of adapter.run()."""
+    return (getattr(request, "params", None) or {}).get("_action") == LOAD_ACTION
+
+
+def load_estimate(adapter: Any, request: JobRequest) -> MemoryEstimate:
+    """The guard checks a load against the model's request peak in the current mode (loading a model that then
+    cannot run a request would only take memory from other apps); `steady` is what the load keeps in memory."""
+    est = adapter.estimate(request)
+    return MemoryEstimate(peak=int(est.peak), steady=int(est.steady or est.peak), note=f"load: {est.note}".strip())
+
+
+def model_name(model_id: str, family: str = "") -> str:
+    """A name for people: the catalog's name, "Test model" for the built-in one, else the id."""
+    if family == "dummy" or model_id == "dummy":
+        return "Test model"
+    try:
+        from shutter.core.catalog import CATALOG
+        if model_id in CATALOG:
+            return str(CATALOG[model_id]["name"])
+    except Exception:
+        pass
+    return model_id
+
+
+def _rung_of(adapter: Any, request: JobRequest) -> Optional[str]:
+    for name in ("choose_rung", "choose"):
+        fn = getattr(adapter, name, None)
+        if callable(fn):
+            try:
+                return str(fn(request)["rung"])
+            except Exception:
+                return None
+    return None
+
+
+class _Shutdown(Cancelled):
+    pass
+
+
+def _prepare(adapter: Any, request: JobRequest) -> JobRequest:
+    """adapter.prepare(request) (core fields mirrored into params, see adapters.base), or the
+    request itself for an adapter without prepare."""
+    fn = getattr(adapter, "prepare", None)
+    return fn(request) if callable(fn) else request
+
+
+# ---------------------------------------------------------------- modes (docs/MODES.md)
+
+try:  # the model side owns the ladder; fall back to the table in docs/MODES.md
+    from shutter.core.modes import LADDER as _LADDER
+except Exception:  # pragma: no cover - only while modes.py is missing or broken
+    _LADDER = [
+        {"at": 0.00, "id": "resident", "label": "Full speed", "detail": "Same as Fast: the whole model stays in memory."},
+        {"at": 0.25, "id": "split", "label": "Slightly lower memory", "detail": "Each model block runs in 3 smaller pieces: about 2 GB less memory, about 2% slower."},
+        {"at": 0.50, "id": "staged", "label": "Lower memory", "detail": "Also works through the frames in 4 chunks, and frees the main model before the final decode."},
+        {"at": 0.75, "id": "stream_wide", "label": "Very low memory", "detail": "Reads the model from the SSD as it goes, keeping 8 blocks in memory at a time."},
+        {"at": 1.00, "id": "stream_tight", "label": "Lowest memory", "detail": "Reads the model from the SSD as it goes, keeping only 2 blocks in memory: lowest memory, slowest."},
+    ]
+
+MODES = ("fast", "low_memory")
+DEFAULT_MODE = "fast"
+DEFAULT_EFFICIENCY = 0.5
+
+
+def normalize_mode(v: Any) -> Optional[str]:
+    """"fast" / "low_memory" (also "low-memory", "low memory"); None for anything else."""
+    if not isinstance(v, str):
+        return None
+    k = v.strip().lower().replace("-", "_").replace(" ", "_")
+    return {"fast": "fast", "low_memory": "low_memory", "lowmemory": "low_memory", "low": "low_memory"}.get(k)
+
+
+def clamp_efficiency(v: Any) -> float:
+    """0..1, rounded to 4 decimals; a non-number raises ValueError (bool is not a number)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError("efficiency must be a number from 0 to 1")
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")):
+        return DEFAULT_EFFICIENCY if f != f else (1.0 if f > 0 else 0.0)
+    return round(min(1.0, max(0.0, f)), 4)
+
+
+def rung_id(mode: str, efficiency: float) -> str:
+    if mode != "low_memory":
+        return _LADDER[0]["id"]
+    best = _LADDER[0]
+    for r in _LADDER:
+        if r["at"] <= efficiency + 1e-9:
+            best = r
+    return best["id"]
+
+
+def read_measured(home: str) -> Optional[tuple[str, str, dict[str, Any]]]:
+    """measured.json's (model, size, rungs) with the most measured rungs (ties: by name).
+    Missing file, bad JSON or a wrong shape give None. Same rule as the daemon."""
+    import json as _json
+    try:
+        with open(os.path.join(home, "measured.json"), encoding="utf-8") as f:
+            data = _json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ids = [r["id"] for r in _LADDER]
+    best = None
+    for model in sorted(data):
+        sizes = data[model]
+        if not isinstance(sizes, dict):
+            continue
+        for size in sorted(sizes):
+            rungs = sizes[size]
+            if not isinstance(rungs, dict):
+                continue
+            n = sum(1 for i in ids if isinstance(rungs.get(i), dict))
+            if n and (best is None or n > best[0]):
+                best = (n, model, size, rungs)
+    return (best[1], best[2], best[3]) if best else None
+
+
+def ladder_json(home: str) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
+    measured = read_measured(home)
+    rows = []
+    for r in _LADDER:
+        row = {"at": r["at"], "id": r["id"], "label": r["label"], "detail": r["detail"],
+               "identical": r.get("identical", True)}
+        e = measured[2].get(r["id"]) if measured else None
+        if isinstance(e, dict):
+            for k in ("peak_bytes", "seconds"):
+                x = e.get(k)
+                if isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0 and x == x:
+                    row[k] = int(x) if k == "peak_bytes" else float(x)
+            if isinstance(e.get("identical"), bool):
+                row["identical"] = e["identical"]
+        rows.append(row)
+    return rows, ({"model": measured[0], "size": measured[1]} if measured else None)
+
+
+def persist_settings(path: str, mode: str, efficiency: float) -> None:
+    """Write default_mode / default_efficiency into config.json atomically, keeping every
+    other key as it is in the file (not the whole Config, so the file stays small)."""
+    import json as _json
+    data: dict[str, Any] = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        if text.strip():
+            data = _json.loads(text)  # ValueError: left alone, reported
+            if not isinstance(data, dict):
+                raise ValueError(f"{path} is not a JSON object; not changing it")
+    data["default_mode"] = mode
+    data["default_efficiency"] = efficiency
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+class Engine:
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        probe: Any = None,
+        protected: Optional[Iterable[Any]] = None,
+        *,
+        registry: Optional[Registry] = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Optional[Callable[[float], None]] = None,
+        ps: Optional[Callable[[], str]] = None,
+        sample_interval_s: float = 5.0,
+        watch_interval_s: float = 3.0,
+        idle_check_s: float = 30.0,
+        progress_persist_s: float = 1.0,
+    ):
+        self.config = config or Config.load()
+        self.config.ensure_dirs()
+        self.probe = probe or default_probe()
+        if protected is None:
+            protected = []
+            if self.config.omlx_url:
+                protected.append(OmlxService(self.config.omlx_url, api_key=self.config.omlx_api_key))
+            if self.config.protected_process_pattern:
+                protected.append(ProcessRssService(self.config.protected_process_pattern,
+                                                   self.config.protected_process_min_bytes))
+        self.clock = clock
+        self._sleep = sleep
+        self._ps = ps or _memory._ps
+        self.sample_interval_s = sample_interval_s
+        self.watch_interval_s = watch_interval_s
+        self.idle_check_s = idle_check_s
+        self.progress_persist_s = progress_persist_s
+
+        self.store = JobStore(self.config.db_path)
+        self.bus = EventBus()
+        self.headroom_auto = self.config.headroom_auto
+        try:
+            total = int(self.probe.sample().total)
+        except Exception:
+            total = 0
+        headroom = self.config.headroom_for(total)
+        self.guard = MemoryGuard(self.probe, protected=list(protected),
+                                 headroom_bytes=headroom,
+                                 swap_growth_bytes=self.config.swap_growth_bytes,
+                                 max_fraction=self.config.max_fraction)
+        self.pool = ModelPool(self.guard, on_event=self.bus.publish, clock=clock)
+        self.cache = ContentCache(self.config.cache_dir, self.config.cache_max_bytes)
+        self.registry = registry or Registry(self.config)
+        self.gpu_lock = GpuLock(self.config.gpu_lock_path, label=f"shutter (pid {os.getpid()})")
+        self.dir_locks = DirLocks(self.config.gpu_lock_dirs or [], owner="shutter")
+        self._busy_re = (re.compile(self.config.busy_process_pattern)
+                         if self.config.busy_process_pattern else None)
+
+        self._lock = threading.RLock()
+        self._wake = threading.Event()
+        self._stopping = threading.Event()
+        self._paused = False
+        self._thread: Optional[threading.Thread] = None
+        self._running: Optional[Job] = None
+        self._cancel = threading.Event()
+        self._abort_reason: Optional[str] = None
+        self._wait_reasons: dict[str, str] = {}
+        self._load_errors: dict[str, str] = {}
+        self._midrun_refusals: dict[str, int] = {}
+        self._last_idle_check = clock()
+        self._settings_lock = threading.Lock()
+        mode = normalize_mode(self.config.default_mode) or DEFAULT_MODE
+        try:
+            eff = clamp_efficiency(self.config.default_efficiency)
+        except ValueError:
+            eff = DEFAULT_EFFICIENCY
+        self._settings = {"mode": mode, "efficiency": eff}
+        self.worker_errors: list[str] = []
+        self.clients = ClientTracker()
+        self._steprate = StepRate(clock=clock)
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stopping.clear()
+        self._thread = threading.Thread(target=self._worker, name="shutter-gpu-worker", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 10.0) -> None:
+        self._stopping.set()
+        if self._running is not None:
+            self._cancel.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+        self._thread = None
+
+    def close(self) -> None:
+        self.stop()
+        self.pool.release_all()
+        self.store.close()
+
+    @property
+    def running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    # ------------------------------------------------------------------ public API
+
+    def submit(self, request: JobRequest, client: Optional[str] = None) -> Job:
+        if isinstance(request, dict):
+            client = client or request.get("client")
+            request = JobRequest.from_dict(request)
+        if not request.model:
+            raise SubmitError("model is required")
+        if request.model not in self.registry:
+            raise SubmitError(str(UnknownModel(request.model, self.registry.model_ids())))
+        if not isinstance(request.inputs, dict):
+            raise SubmitError("inputs must be an object: {\"image\": path, \"audio\": path, ...}")
+        resolved = {}
+        for name, p in request.inputs.items():
+            if p is None or p == "":
+                continue
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
+                raise SubmitError(f"input names are short words such as image, audio, video (got {name!r})")
+            if not isinstance(p, str):
+                raise SubmitError(f"inputs.{name} must be a file path or an upload id")
+            p = _files.resolve_input(self.config.work_dir, p)
+            if not os.path.isfile(p):
+                raise SubmitError(f"{name} file not found: {p}")
+            resolved[name] = p
+        request.inputs = resolved
+        for k in ("width", "height", "frames", "steps"):
+            v = getattr(request, k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v <= 0):
+                raise SubmitError(f"{k} must be a positive integer")
+        for k in ("fps", "guidance"):
+            v = getattr(request, k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+                raise SubmitError(f"{k} must be a number >= 0")
+        if request.output:
+            request.output = os.path.abspath(os.path.expanduser(request.output))
+        if request.duration_s is not None and request.duration_s < 0:
+            raise SubmitError("duration_s must be >= 0")
+        try:
+            request.priority = int(request.priority or 0)
+            request.seed = int(request.seed)
+        except (TypeError, ValueError) as e:
+            raise SubmitError(f"priority and seed must be integers ({e})")
+        if not isinstance(request.params, dict):
+            raise SubmitError("params must be an object")
+        cur = dict(self._settings)
+        params = dict(request.params)
+        if params.get("mode") is None:
+            params["mode"] = cur["mode"]
+        elif normalize_mode(params["mode"]) is None:
+            raise SubmitError("mode must be one of: fast, low_memory")
+        else:
+            params["mode"] = normalize_mode(params["mode"])
+        if params.get("efficiency") is None:
+            params["efficiency"] = cur["efficiency"]
+        else:
+            try:
+                params["efficiency"] = clamp_efficiency(params["efficiency"])
+            except ValueError as e:
+                raise SubmitError(str(e))
+        request.params = params
+        job = Job(request=request, client=client or None)
+        self.store.add(job)
+        self.clients.submitted(job.client)
+        extra = {"client": job.client} if job.client else {}
+        self._publish("job.queued", job, priority=request.priority, model=request.model, **extra)
+        self._wake.set()
+        return job
+
+    def get(self, job_id: str) -> Optional[Job]:
+        with self._lock:
+            if self._running is not None and self._running.id == job_id:
+                return self._copy(self._running)
+        return self.store.get(job_id)
+
+    def list(self, states: Optional[Iterable[JobState]] = None, limit: int = 200) -> list[Job]:
+        jobs = self.store.list(states=states, limit=limit)
+        with self._lock:
+            if self._running is not None:
+                jobs = [self._copy(self._running) if j.id == self._running.id else j for j in jobs]
+        return jobs
+
+    def cancel(self, job_id: str) -> Optional[Job]:
+        """Cancel a job. Queued/waiting: cancelled at once. Running: the adapter stops at
+        its next check_cancelled(). Returns the job (None when unknown)."""
+        with self._lock:
+            if self._running is not None and self._running.id == job_id:
+                self._cancel.set()
+                self._running.message = "cancelling"
+                return self._copy(self._running)
+            job = self.store.get(job_id)
+            if job is None:
+                return None
+            if job.state in (JobState.QUEUED, JobState.WAITING_MEMORY):
+                job.state = JobState.CANCELLED
+                job.finished_at = time.time()
+                job.message = "cancelled before it started"
+                self.store.update(job)
+                self._wait_reasons.pop(job.id, None)
+                self._publish("job.cancelled", job)
+        self._wake.set()
+        return job
+
+    def pause(self) -> None:
+        self._paused = True
+        self.bus.publish(Event("queue.paused"))
+
+    def resume(self) -> None:
+        self._paused = False
+        self.bus.publish(Event("queue.resumed"))
+        self._wake.set()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def release(self, key: Optional[str] = None) -> list[str]:
+        """Unload one pool entry (or all when key is None). Entries in use by the running
+        job are dropped once it lets go. Returns the keys that were unloaded now."""
+        before = set(self.pool.keys())
+        if key is None:
+            self.pool.release_all()
+        else:
+            self.pool.release(key)
+        return sorted(before - set(self.pool.keys()))
+
+    # ------------------------------------------------------------------ load / unload
+
+    def _model_keys(self, model_id: str) -> list[str]:
+        return [e["key"] for e in self.pool.stats()["entries"] if self._model_of_key(e["key"]) == model_id]
+
+    def _pending_load(self, model_id: str) -> Optional[Job]:
+        for j in self.store.list([JobState.QUEUED, JobState.WAITING_MEMORY, JobState.RUNNING], limit=500):
+            if j.request.model == model_id and is_load(j.request):
+                return j
+        with self._lock:
+            r = self._running
+            if r is not None and r.request.model == model_id and is_load(r.request):
+                return self._copy(r)
+        return None
+
+    def load_model(self, model_id: str, client: Optional[str] = None, wait: bool = False) -> Job:
+        """POST /v1/models/<id>/load: queue a load (or return the one already pending). Without `wait` the memory
+        guard is asked first and a "no" raises LoadRefused with the numbers; with `wait` the load queues and waits
+        for memory like any request."""
+        if model_id not in self.registry:
+            raise SubmitError(str(UnknownModel(model_id, self.registry.model_ids())))
+        pending = self._pending_load(model_id)
+        if pending is not None:
+            return pending
+        req = JobRequest(model=model_id, params={"_action": LOAD_ACTION, **self._settings})
+        if not wait:
+            self.check_load(req)
+        self._load_errors.pop(model_id, None)
+        return self.submit(req, client=client or "load")
+
+    def check_load(self, req: JobRequest) -> None:
+        """Ask the guard now, without queueing anything; raise LoadRefused with structured numbers on a no."""
+        try:
+            adapter = self.registry.adapter_for(req.model)
+            family = self.registry.spec(req.model).get("adapter", "")
+        except (UnknownModel, AdapterUnavailable) as e:
+            raise SubmitError(str(e))
+        preq = _prepare(adapter, req)
+        est = load_estimate(adapter, preq)
+        keys, prefix = self._needed_keys(adapter, preq)
+        warm = sum(e["size_bytes"] for e in self.pool.stats()["entries"] if self._is_needed(e["key"], keys, prefix))
+        need = max(0, int(est.peak) - warm)
+        name = model_name(req.model, family)
+        d = self.guard.check(need, name)
+        if d.ok:
+            return
+        rung = _rung_of(adapter, preq)
+        avail = int(d.sample.available)
+        head = int(self.guard.headroom_bytes)
+        memory = "Not enough free memory" in d.reason or "more than the" in d.reason
+        info = {"kind": "memory" if memory else "busy", "model": req.model, "model_name": name,
+                "peak_gb": round(int(est.peak) / GB, 1), "need_gb": round(need / GB, 1),
+                "headroom_gb": round(head / GB, 1), "available_gb": round(avail / GB, 1),
+                "short_by_gb": round(max(0, need + head - avail) / GB, 1),
+                "rung": rung, "lowest": rung == "stream_tight", "reason": d.reason}
+        raise LoadRefused(d.reason, info)
+
+    def unload_model(self, model_id: str) -> list[str]:
+        """POST /v1/models/<id>/unload: cancel a pending load, drop the model's pool entries and their load mark.
+        Raises UnloadRefused while a request for the model is running."""
+        if model_id not in self.registry:
+            raise SubmitError(str(UnknownModel(model_id, self.registry.model_ids())))
+        with self._lock:
+            r = self._running
+            if r is not None and r.request.model == model_id:
+                what = "loading it" if is_load(r.request) else "running a request for it"
+                raise UnloadRefused(f"Shuttrr is {what} right now. Unload it when that is done.")
+        for j in self.store.list([JobState.QUEUED, JobState.WAITING_MEMORY], limit=500):
+            if j.request.model == model_id and is_load(j.request):
+                self.cancel(j.id)
+        self._load_errors.pop(model_id, None)
+        keys = self._model_keys(model_id)
+        before = set(self.pool.keys())
+        for k in keys:
+            try:
+                self.pool.hold(k, False)
+            except KeyError:
+                pass
+            self.pool.release(k)
+        return sorted(before - set(self.pool.keys()))
+
+    def models(self) -> list[dict[str, Any]]:
+        """GET /v1/models: the registry rows plus state (not_loaded, loading, waiting_for_memory, loaded), loaded_gb
+        and, while a load waits, the guard's sentence (`waiting`)."""
+        rows = self.registry.list()
+        entries = self.pool.stats()["entries"]
+        for row in rows:
+            mid = row["id"]
+            mine = [e for e in entries if self._model_of_key(e["key"]) == mid]
+            pending = self._pending_load(mid)
+            row["loaded_bytes"] = int(sum(e["size_bytes"] for e in mine))
+            row["loaded_gb"] = round(row["loaded_bytes"] / GB, 2) if mine else None
+            row["held"] = any(e.get("held") for e in mine)
+            row["waiting"] = None
+            if pending is not None and pending.state == JobState.RUNNING:
+                row["state"] = "loading"
+            elif pending is not None and pending.state == JobState.WAITING_MEMORY:
+                row["state"] = "waiting_for_memory"
+                row["waiting"] = pending.message
+            elif pending is not None:
+                row["state"] = "loading"
+            elif mine:
+                row["state"] = "loaded"
+            else:
+                row["state"] = "not_loaded"
+            row["load_request"] = pending.id if pending is not None else None
+            row["name"] = model_name(mid, row.get("family", ""))
+            row["load_error"] = self._load_errors.get(mid) if row["state"] == "not_loaded" else None
+        return rows
+
+    # ------------------------------------------------------------------ settings
+
+    def settings_brief(self) -> dict[str, Any]:
+        cur = dict(self._settings)
+        return {"mode": cur["mode"], "efficiency": cur["efficiency"],
+                "rung": rung_id(cur["mode"], cur["efficiency"])}
+
+    def settings(self) -> dict[str, Any]:
+        """GET /v1/settings: defaults, the rung they pick, the ladder (+ measured numbers)."""
+        out = self.settings_brief()
+        ladder, used = ladder_json(self.config.home)
+        out["ladder"] = ladder
+        out["measured_for"] = used
+        return out
+
+    def update_settings(self, mode: Any = None, efficiency: Any = None) -> dict[str, Any]:
+        """POST /v1/settings. Raises SubmitError (400) on a bad value, OSError/ValueError
+        when config.json cannot be written."""
+        m = None
+        if mode is not None:
+            m = normalize_mode(mode)
+            if m is None:
+                raise SubmitError("mode must be one of: fast, low_memory")
+        e = None
+        if efficiency is not None:
+            try:
+                e = clamp_efficiency(efficiency)
+            except ValueError as err:
+                raise SubmitError(str(err))
+        with self._settings_lock:
+            nxt = {"mode": m or self._settings["mode"],
+                   "efficiency": self._settings["efficiency"] if e is None else e}
+            persist_settings(self.config.path, nxt["mode"], nxt["efficiency"])
+            self._settings = nxt
+            self.config.default_mode, self.config.default_efficiency = nxt["mode"], nxt["efficiency"]
+        self.bus.publish(Event("settings.changed", data=self.settings_brief()))
+        return self.settings()
+
+    def system(self) -> dict[str, Any]:
+        snap = self.guard.snapshot()
+        s = snap["sample"]
+        pool = self.pool.stats()
+        counts = self.store.counts()
+        holder = None
+        held = self.gpu_lock.held
+        try:
+            holder = self.gpu_lock.holder()
+        except Exception:
+            holder = None
+        dir_holders = []
+        try:
+            dir_holders = self.dir_locks.holders()
+        except Exception:
+            pass
+        running = self._running
+        return {
+            "version": version(),
+            "settings": self.settings_brief(),
+            "memory": {"total": s["total"], "available": s["available"],
+                       "swap_used": s["swap_used"], "pressure": s["pressure"]},
+            "guard": {
+                "headroom_bytes": self.guard.headroom_bytes,
+                "headroom_auto": self.headroom_auto,
+                "swap_growth_bytes": self.guard.swap_growth_bytes,
+                "protected": [{"name": p["name"], "busy": p["busy"]} for p in snap["protected"]],
+            },
+            "pool": {
+                "total_bytes": pool["total_bytes"],
+                "entries": [{"key": e["key"], "size_bytes": e["size_bytes"],
+                             "idle_s": round(e["idle_s"], 1), "pinned": e["pinned"],
+                             "in_use": e.get("in_use", False),
+                             "residency": "streamed" if e.get("residency") == "streamed" else "resident"}
+                            for e in pool["entries"]],
+            },
+            "queue": {
+                "queued": counts.get("queued", 0),
+                "running": counts.get("running", 0),
+                "waiting_memory": counts.get("waiting_memory", 0),
+                "done": counts.get("done", 0),
+                "failed": counts.get("failed", 0),
+                "cancelled": counts.get("cancelled", 0),
+                "paused": self._paused,
+                "current": running.id if running is not None else None,
+            },
+            "gpu_lock": {
+                "held": bool(held or holder),
+                "ours": held,
+                "holder": holder,
+                "path": self.gpu_lock.path,
+                "dirs": [{"path": p, "ours": p in self.dir_locks._created}
+                         for p in self.dir_locks.paths],
+                "dir_holders": dir_holders,
+            },
+            "throughput": self.throughput(),
+        }
+
+    # ------------------------------------------------------------------ native API additions
+
+    def throughput(self) -> dict[str, Any]:
+        """Done requests in the last hour, their mean wall seconds, the running job's step rate."""
+        now = time.time()
+        try:
+            jobs = self.store.finished_since(now - THROUGHPUT_WINDOW_S)
+        except Exception:
+            jobs = []
+        running = self._running
+        cur = None
+        if running is not None:
+            cur = {"id": running.id, "model": running.request.model, **self._steprate.snapshot()}
+        return throughput_from_jobs(jobs, cur, now=now)
+
+    def _model_of_key(self, key: str) -> Optional[str]:
+        ids = self.registry.model_ids()
+        parts = key.split("/")
+        for mid in sorted(ids, key=len, reverse=True):
+            if mid in parts or key.startswith(mid + "/"):
+                return mid
+        return None
+
+    def memory(self, model: Optional[str] = None, request: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """GET /v1/memory: what the Mac has, what Shutter keeps back, what Shutter holds (each
+        component resident or streamed) and, with `model`, whether that model's request fits now."""
+        snap = self.guard.snapshot()
+        s = snap["sample"]
+        reserve = int(self.guard.headroom_bytes)
+        free = max(0, int(s["available"]) - reserve)
+        cap = None
+        if self.guard.max_fraction is not None and s["total"]:
+            cap = int(self.guard.max_fraction * s["total"])
+            free = min(free, cap)
+        pool = self.pool.stats()
+        comps = [{"key": e["key"], "model": self._model_of_key(e["key"]), "size_bytes": int(e["size_bytes"]),
+                  "residency": e.get("residency", "resident"), "in_use": bool(e.get("in_use", False)),
+                  "pinned": bool(e["pinned"]), "idle_s": round(e["idle_s"], 1)} for e in pool["entries"]]
+        out: dict[str, Any] = {
+            "total": int(s["total"]), "available": int(s["available"]), "reserve": reserve,
+            "reserve_auto": bool(self.headroom_auto), "free_for_models": free, "max_job_bytes": cap,
+            "swap": int(s["swap_used"]), "pressure": s["pressure"],
+            "held": int(pool["total_bytes"]),
+            "resident_bytes": sum(c["size_bytes"] for c in comps if c["residency"] == "resident"),
+            "streamed_bytes": sum(c["size_bytes"] for c in comps if c["residency"] == "streamed"),
+            "components": comps,
+            "protected": [{"name": p["name"], "busy": p["busy"]} for p in snap["protected"]],
+        }
+        if model:
+            out["model"] = self._model_fit(model, request or {}, free, comps)
+        return out
+
+    def _model_fit(self, model: str, extra: dict[str, Any], free: int, comps: list[dict[str, Any]]) -> dict[str, Any]:
+        row: dict[str, Any] = {"id": model, "need_bytes": None, "warm_bytes": 0, "fits": None,
+                               "short_by_bytes": None, "error": None}
+        try:
+            adapter = self.registry.adapter_for(model)
+            req = JobRequest.from_dict({"model": model, **extra})
+            params = dict(req.params)
+            params.setdefault("mode", self._settings["mode"])
+            params.setdefault("efficiency", self._settings["efficiency"])
+            req.params = params
+            est = adapter.estimate(_prepare(adapter, req))
+        except Exception as e:
+            row["error"] = str(e) if isinstance(e, (UnknownModel, AdapterUnavailable)) else f"{type(e).__name__}: {e}"
+            return row
+        keys, prefix = self._needed_keys(adapter, req)
+        warm = sum(c["size_bytes"] for c in comps if self._is_needed(c["key"], keys, prefix))
+        need = int(est.peak)
+        short = max(0, need - warm - free)
+        row.update({"need_bytes": need, "warm_bytes": int(warm), "fits": short == 0, "short_by_bytes": short})
+        return row
+
+    def save_upload(self, name: Optional[str], data: bytes, content_type: Optional[str] = None) -> dict[str, Any]:
+        """POST /v1/files. Raises files.UploadError."""
+        return _files.save_upload(self.config.work_dir, name, data, content_type,
+                                  max_bytes=int(self.config.max_upload_mb * 1024 * 1024))
+
+    def output_file(self, job_id: str) -> tuple[int, str]:
+        """GET /v1/jobs/{id}/output: (200, path) or (status, error message)."""
+        job = self.get(job_id)
+        if job is None:
+            return 404, f"no job {job_id}"
+        if job.state != JobState.DONE:
+            return 409, f"job {job_id} is {job.state.value}; it has no output yet"
+        out = job.result.get("output") or job.request.output
+        if not out or not isinstance(out, str):
+            return 404, f"job {job_id} has no output file"
+        if not os.path.isfile(out):
+            return 404, f"the output file of job {job_id} is gone: {out}"
+        return 200, out
+
+    # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _copy(job: Job) -> Job:
+        return Job.from_dict(job.to_dict())
+
+    def _publish(self, kind: str, job: Optional[Job] = None, **data: Any) -> None:
+        if job is not None:
+            data.setdefault("state", job.state.value)
+            if job.message and "message" not in data:
+                data["message"] = job.message
+        self.bus.publish(Event(kind, job_id=job.id if job else None, data=data))
+
+    def _wait(self, seconds: float) -> None:
+        """Interruptible sleep: returns early on submit/cancel/resume/stop."""
+        if self._sleep is not None:
+            self._sleep(seconds)
+            self._wake.clear()
+            return
+        self._wake.wait(max(0.0, seconds))
+        self._wake.clear()
+
+    def _render_busy(self) -> Optional[str]:
+        if self._busy_re is None:
+            return None
+        try:
+            procs = parse_ps(self._ps())
+        except Exception:
+            return None
+        me = os.getpid()
+        for pid, _rss, cmd in procs:
+            if pid != me and self._busy_re.search(cmd):
+                return RENDER_BUSY_MESSAGE
+        return None
+
+    def _needed_keys(self, adapter: Any, request: JobRequest) -> tuple[list[str], str]:
+        keys: list[str] = []
+        fn = getattr(adapter, "pool_keys", None)
+        if callable(fn):
+            try:
+                keys = list(fn(request) or [])
+            except Exception:
+                keys = []
+        return keys, f"{adapter.model_id}/"
+
+    def _is_needed(self, key: str, keys: list[str], prefix: str) -> bool:
+        """A pool entry belongs to this job's model when the adapter lists it in
+        `pool_keys(request)`, or the model id is one of the key's '/'-separated parts
+        (e.g. "dummy/dit", "longcat/<model id>/generator")."""
+        return key in keys or key.startswith(prefix) or prefix[:-1] in key.split("/")
+
+    def _free_unneeded(self, keys: list[str], prefix: str) -> list[str]:
+        freed = []
+        for e in self.pool.stats()["entries"]:
+            if e["pinned"] or e.get("in_use") or self._is_needed(e["key"], keys, prefix):
+                continue
+            self.pool.release(e["key"])
+            freed.append(e["key"])
+        return freed
+
+    def _set_waiting(self, job: Job, reason: str) -> None:
+        with self._lock:
+            cur = self.store.get(job.id)
+            if cur is None or cur.state not in (JobState.QUEUED, JobState.WAITING_MEMORY):
+                return
+            changed = self._wait_reasons.get(job.id) != reason
+            if cur.state != JobState.WAITING_MEMORY or cur.message != reason:
+                cur.state = JobState.WAITING_MEMORY
+                cur.message = reason
+                self.store.update(cur)
+            self._wait_reasons[job.id] = reason
+        if changed:
+            self._publish("job.waiting_memory", cur, reason=reason)
+
+    def _finish(self, job: Job, state: JobState, message: str = "", kind: str = "") -> None:
+        if is_load(job.request) and state == JobState.FAILED:
+            self._load_errors[job.request.model] = message or "the model could not be loaded"
+        job.state = state
+        job.finished_at = time.time()
+        job.message = message
+        if state == JobState.DONE:
+            job.progress = 1.0
+        self.store.update(job)
+        self._wait_reasons.pop(job.id, None)
+        data: dict[str, Any] = {}
+        if state == JobState.DONE:
+            data["result"] = job.result
+        self._publish(kind or f"job.{state.value}", job, **data)
+
+    def _idle_maintenance(self, force: bool = False) -> None:
+        now = self.clock()
+        if force or now - self._last_idle_check >= min(self.idle_check_s, max(1.0, self.config.idle_unload_s)):
+            self._last_idle_check = now
+            try:
+                self.pool.evict_idle(self.config.idle_unload_s)
+            except Exception as e:  # pragma: no cover
+                self.worker_errors.append(f"evict_idle: {e!r}")
+
+    # ------------------------------------------------------------------ worker
+
+    def _worker(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                if self._paused:
+                    self._idle_maintenance()
+                    self._wait(min(1.0, self.idle_check_s))
+                    continue
+                job = self.store.next_queued()
+                if job is None:
+                    self._idle_maintenance()
+                    self._wait(min(self.idle_check_s, max(0.05, self.config.idle_unload_s or 1.0)))
+                    continue
+                self._step(job)
+            except Exception:  # the worker must never die
+                self.worker_errors.append(traceback.format_exc())
+                self._wait(0.5)
+
+    def _step(self, job: Job) -> None:
+        req = job.request
+        try:
+            adapter = self.registry.adapter_for(req.model)
+            preq = _prepare(adapter, req)
+            est = load_estimate(adapter, preq) if is_load(req) else adapter.estimate(preq)
+        except (UnknownModel, AdapterUnavailable) as e:
+            self._finish(job, JobState.FAILED, str(e))
+            return
+        except Exception as e:
+            self._finish(job, JobState.FAILED, f"estimate failed: {type(e).__name__}: {e}")
+            return
+
+        # 1. another render running on this Mac?
+        busy = self._render_busy()
+        if busy:
+            self._set_waiting(job, busy)
+            self._wait(self.config.memory_poll_s)
+            return
+
+        # 2. memory guard (warm components this job reuses are already resident)
+        keys, prefix = self._needed_keys(adapter, req)
+        warm = sum(e["size_bytes"] for e in self.pool.stats()["entries"]
+                   if self._is_needed(e["key"], keys, prefix))
+        need = max(0, int(est.peak) - warm)
+        label = f"job {job.id} ({req.model})"
+        d = self.guard.check(need, label)
+        if not d.ok and self._free_unneeded(keys, prefix):
+            d = self.guard.check(need, label)
+        if not d.ok:
+            self._set_waiting(job, d.reason)
+            self._wait(self.config.memory_poll_s)
+            return
+
+        # 3. GPU locks: flock, then the shared mkdir dirs (all or nothing)
+        if not self.gpu_lock.try_acquire(0):
+            h = self.gpu_lock.holder() or {}
+            who = h.get("label") or (h.get("raw") or "").strip() or "another process"
+            self._set_waiting(job, f"GPU busy: {who}")
+            self._wait(self.config.memory_poll_s)
+            return
+        reason = self.dir_locks.try_acquire()
+        if reason is not None:
+            self.gpu_lock.release()
+            self._set_waiting(job, f"GPU busy: {reason}")
+            self._wait(self.config.memory_poll_s)
+            return
+
+        try:
+            with self._lock:
+                cur = self.store.get(job.id)
+                if cur is None or cur.state not in (JobState.QUEUED, JobState.WAITING_MEMORY):
+                    return  # cancelled meanwhile
+                job = cur
+                job.state = JobState.RUNNING
+                job.started_at = time.time()
+                job.finished_at = None
+                job.progress = 0.0
+                job.stage = "starting"
+                job.message = ""
+                job.result = {}
+                self._cancel.clear()
+                self._abort_reason = None
+                self._running = job
+                self.store.update(job)
+            self._run(job, adapter, est)
+        finally:
+            with self._lock:
+                self._running = None
+            self.dir_locks.release()
+            self.gpu_lock.release()
+            if self.config.idle_unload_s <= 0:
+                self.pool.evict_idle(0)
+            else:
+                self._idle_maintenance(force=True)
+
+    def _run(self, job: Job, adapter: Any, est: Any) -> None:
+        req = job.request
+        work_dir = Path(self.config.work_dir) / job.id
+        work_dir.mkdir(parents=True, exist_ok=True)
+        loading = is_load(req)
+        if not req.output and not loading:
+            ext = getattr(adapter, "extension", None) or ("png" if getattr(adapter, "kind", "video") == "image" else "mp4")
+            req.output = os.path.join(self.config.output_dir, f"{job.id}.{ext}")
+        if req.output:
+            Path(req.output).parent.mkdir(parents=True, exist_ok=True)
+
+        base = self.guard.begin_run()
+        peak = {"used": base.used, "swap": base.swap_used, "avail_min": base.available,
+                "base_used": base.used}
+        self._publish("job.started", job, estimate_peak=int(est.peak), model=req.model)
+
+        stop_sampler = threading.Event()
+
+        def take_sample(publish: bool) -> dict[str, Any]:
+            s = self.probe.sample()
+            peak["used"] = max(peak["used"], s.used)
+            peak["swap"] = max(peak["swap"], s.swap_used)
+            peak["avail_min"] = min(peak["avail_min"], s.available)
+            d = s.to_dict()
+            if publish:
+                self.bus.publish(Event("memory.sample", job_id=job.id, data={
+                    "total": s.total, "available": s.available, "swap_used": s.swap_used,
+                    "pressure": s.pressure, "used": s.used}))
+            return d
+
+        def sampler() -> None:
+            while not stop_sampler.wait(self.sample_interval_s):
+                try:
+                    take_sample(True)
+                except Exception:
+                    pass
+
+        sampler_t = threading.Thread(target=sampler, name="shutter-mem-sampler", daemon=True)
+        sampler_t.start()
+
+        t_start = self.clock()
+        state = {"persist": t_start, "publish": 0.0, "watch": t_start, "stage": None}
+
+        self._steprate.reset()
+
+        def report(progress: float, stage: str = "") -> None:
+            p = min(1.0, max(0.0, float(progress)))
+            now = self.clock()
+            st = parse_step(stage)
+            if st is not None:
+                self._steprate.update(*st)
+            with self._lock:
+                job.progress = p
+                job.stage = stage or job.stage
+                if now - state["persist"] >= self.progress_persist_s or p >= 1.0:
+                    state["persist"] = now
+                    self.store.update(job)
+            elapsed = now - t_start
+            eta = elapsed * (1 - p) / p if p > 0.01 else None
+            if stage != state["stage"] or now - state["publish"] >= 0.1 or p >= 1.0:
+                state["publish"] = now
+                state["stage"] = stage
+                self._publish("job.progress", job, progress=p, stage=job.stage,
+                              eta_s=round(eta, 1) if eta is not None else None)
+
+        def check_cancelled() -> None:
+            if self._cancel.is_set():
+                if self._stopping.is_set():
+                    raise _Shutdown("engine is shutting down")
+                raise Cancelled("cancelled")
+            now = self.clock()
+            if now - state["watch"] >= self.watch_interval_s:
+                state["watch"] = now
+                r = self.guard.watch()
+                if r:
+                    self._abort_reason = r
+                    raise Cancelled(r)
+
+        ctx = RunContext(
+            models=self.pool, cache=self.cache, work_dir=work_dir, report=report,
+            check_cancelled=check_cancelled, memory_sample=lambda: take_sample(False),
+            settings={"job_id": job.id, "output": req.output, "home": self.config.home,
+                      "headroom_bytes": self.guard.headroom_bytes,
+                      "sleep": self._sleep},
+        )
+        t0 = time.perf_counter()
+        outcome = None
+        run_job = Job(request=_prepare(adapter, req), id=job.id, state=job.state, created_at=job.created_at,
+                      started_at=job.started_at, node=job.node, client=job.client)
+        try:
+            if loading:
+                warm = getattr(adapter, "warm", None)
+                if not callable(warm):
+                    raise RuntimeError(f"{req.model} cannot be loaded ahead of a request; it loads when a request "
+                                       f"needs it")
+                result = warm(run_job, ctx) or {}
+                held = self._model_keys(req.model)
+                for k in held:
+                    self.pool.hold(k)
+                result["loaded_keys"] = held
+                result["loaded_bytes"] = int(sum(e["size_bytes"] for e in self.pool.stats()["entries"]
+                                                 if e["key"] in held))
+            else:
+                result = adapter.run(run_job, ctx) or {}
+            if self._abort_reason:  # adapter swallowed the Cancelled
+                raise Cancelled(self._abort_reason)
+            if self._cancel.is_set() and not self._stopping.is_set():
+                raise Cancelled("cancelled")
+            outcome = (JobState.DONE, "", dict(result))
+        except _Shutdown:
+            outcome = (JobState.QUEUED, "interrupted by shutdown; it will run again", {})
+        except Cancelled:
+            if self._abort_reason:
+                outcome = (JobState.FAILED, PROTECT_PREFIX + self._abort_reason, {})
+            else:
+                outcome = (JobState.CANCELLED, "cancelled while running", {})
+        except MemoryRefused as e:
+            n = self._midrun_refusals.get(job.id, 0) + 1
+            self._midrun_refusals[job.id] = n
+            if n >= MAX_MIDRUN_REFUSALS:
+                outcome = (JobState.FAILED, f"memory refused {n} times mid-run: {e.reason}", {})
+            else:
+                outcome = (JobState.WAITING_MEMORY, e.reason, {})
+        except Exception as e:
+            outcome = (JobState.FAILED, f"{type(e).__name__}: {e}",
+                       {"traceback": traceback.format_exc()[-4000:]})
+        finally:
+            stop_sampler.set()
+            try:
+                take_sample(False)
+            except Exception:
+                pass
+            self.guard.end_run()
+
+        state_, message, result = outcome
+        seconds = time.perf_counter() - t0
+        result.setdefault("seconds", round(seconds, 3))
+        adapter_peak = result.get("peak_bytes", result.get("peak_memory_bytes"))
+        try:
+            result["peak_bytes"] = int(adapter_peak) if adapter_peak is not None else int(peak["used"])
+        except (TypeError, ValueError):
+            result["peak_bytes"] = int(peak["used"])
+        result["peak_memory"] = {"used_bytes": int(peak["used"]),
+                                 "delta_bytes": int(peak["used"] - peak["base_used"]),
+                                 "available_min": int(peak["avail_min"]),
+                                 "swap_used_max": int(peak["swap"]),
+                                 "swap_used_start": int(base.swap_used)}
+        result["estimate_peak_bytes"] = int(est.peak)
+        if state_ == JobState.DONE and not loading:
+            result.setdefault("output", req.output)
+        # Give the GPU back (and, after a protect-abort, every model) before the job's
+        # final state is visible, so observers never see a finished job holding locks.
+        self.dir_locks.release()
+        self.gpu_lock.release()
+        if state_ == JobState.FAILED and message.startswith(PROTECT_PREFIX):
+            self.pool.release_all()
+        with self._lock:
+            job.result = result
+            if state_ in (JobState.QUEUED, JobState.WAITING_MEMORY):
+                job.state = state_
+                job.message = message
+                job.started_at = None
+                job.progress = 0.0
+                job.stage = ""
+                self.store.update(job)
+                if state_ == JobState.WAITING_MEMORY:
+                    self._wait_reasons[job.id] = message
+                    self._publish("job.waiting_memory", job, reason=message)
+                else:
+                    self._publish("job.requeued", job)
+            else:
+                self._midrun_refusals.pop(job.id, None)
+                self._finish(job, state_, message)
+        if state_ == JobState.DONE and not self.config.keep_work_dirs:
+            wd = str(work_dir.resolve()) + os.sep
+            paths = [req.output] + [v for v in result.values() if isinstance(v, str)]
+            if not any(str(Path(p).resolve()).startswith(wd) for p in paths if p and os.sep in p):
+                shutil.rmtree(work_dir, ignore_errors=True)

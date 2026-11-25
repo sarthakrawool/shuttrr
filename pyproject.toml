@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shutter-engine"
+version = "0.1.0"
+description = "Shuttrr: a Mac-native engine that runs large video and image diffusion models in less memory"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["numpy", "starlette>=0.37", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+
+[project.optional-dependencies]
+mlx = ["mlx>=0.29"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+shutter = "shutter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["shutter*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

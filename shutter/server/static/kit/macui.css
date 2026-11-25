@@ -1,0 +1,440 @@
+/* ============================================================
+   macui.css — illustrated macOS app scenes, built from tokens.
+   Measured from tryhomy.app (see references/tryhomy/BREAKDOWN.md).
+   Load after tokens.css, base.css (and studio.css). Every scene sits
+   inside <div class="mac-scene" data-mock>…</div>.
+
+   Rules baked in so uicheck stays clean:
+   - all colours are hex tokens on :root (scoped aliases --m-* point at them);
+   - padding/gap only from the 4px scale; density comes from fixed heights;
+   - text inside the app is 12 / 13 / 16 / 24px, system font (--font-ui);
+   - no backdrop-filter (vibrancy is faked with near-opaque fills);
+   - shadow layers never blur more than 24px;
+   - no <a>/<button>/<h*> inside a scene: spans and divs only.
+   ============================================================ */
+
+:root {
+  /* type inside the app: SF on a Mac, then good fallbacks */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Inter", system-ui, sans-serif;
+  --text-mac: 13px;  --lh-mac: 18px;   /* macOS body / row title */
+  --lh-mac-sm: 18px;                   /* 12px text inside the app (1.5, stays readable when it wraps) */
+
+  /* light app palette */
+  --mac-window: #ffffff;    --mac-chrome: #fafafa;    --mac-sidebar: #fbfbfb;
+  --mac-fill: #f0f0f0;      --mac-well: #f4f4f5;      --mac-panel: #efefee;
+  --mac-ink: #1d1d1f;       --mac-ink-2: #48484a;     --mac-muted: #636366;
+  --mac-accent: #0a6cf5;    --mac-accent-soft: #e5effe;
+  --mac-danger: #d93036;    --mac-good: #1a7f52;      --mac-good-soft: #dcf1e7;
+  --mac-banner: #161616;    --mac-banner-2: #3a3a3c;  --mac-banner-ink: #d1d1d6;
+  --mac-stage: #e7e9ee;     --mac-showcase: #ececec;
+  --mac-light-r: #ff5f57;   --mac-light-y: #febc2e;   --mac-light-g: #28c840;
+  --mac-tag: #ebe8fd;       --mac-tag-ink: #3b2f9e;
+  /* pastel family (folder + stat cards): same lightness, ink stays --mac-ink */
+  --mac-lavender: #e6e3fb;  --mac-blue: #dde9fb;  --mac-peach: #fbe6da;
+  --mac-green: #dcf1e7;     --mac-yellow: #fbf0d4; --mac-pink: #fbe1ea;
+  /* category hues: icons, dots, avatars (never text on white below 18px) */
+  --mac-hue-images: #8c80f2; --mac-hue-videos: #599ef2; --mac-hue-music: #fa9461;
+  --mac-hue-docs: #40b88c;   --mac-hue-apps: #ed6b9e;   --mac-hue-archives: #edb333;
+  /* thumbnail art (flat, no gradients) */
+  --mac-sky: #cfe3f7; --mac-hill: #7fb07a; --mac-hill-2: #4f8a5a; --mac-sun: #f6c453;
+  --mac-folder: #8e8e93; --mac-folder-2: #7a7a7f; --mac-paper: #f2f2f2;
+  /* dark app palette */
+  --macd-window: #1e1e1e;   --macd-chrome: #2a2a2a;   --macd-sidebar: #232323;
+  --macd-fill: #2c2c2e;     --macd-well: #2a2a2c;     --macd-panel: #262626;
+  --macd-ink: #f5f5f7;      --macd-ink-2: #d1d1d6;    --macd-muted: #a1a1a6;
+  --macd-stage: #141414;    --macd-danger: #ff6961;
+  /* the one allowed gradient: .mac-wallpaper (macOS desktop) */
+  --mac-wall-a: #fa9461; --mac-wall-b: #8c80f2; --mac-wall-c: #40b88c; --mac-wall-d: #599ef2; --mac-wall-base: #ed6b9e;
+}
+
+/* ---------- Scene: the root of every illustration ---------- */
+.mac-scene {
+  --m-window: var(--mac-window); --m-chrome: var(--mac-chrome); --m-sidebar: var(--mac-sidebar);
+  --m-fill: var(--mac-fill); --m-well: var(--mac-well); --m-panel: var(--mac-panel);
+  --m-ink: var(--mac-ink); --m-ink-2: var(--mac-ink-2); --m-muted: var(--mac-muted);
+  --m-line: rgba(0, 0, 0, 0.08); --m-line-strong: rgba(0, 0, 0, 0.14); --m-ring: rgba(0, 0, 0, 0.1);
+  --m-stage: var(--mac-stage);
+  position: relative;
+  font-family: var(--font-ui); font-size: var(--text-mac); line-height: var(--lh-mac);
+  color: var(--m-ink); letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+.mac-scene--dark {
+  --m-window: var(--macd-window); --m-chrome: var(--macd-chrome); --m-sidebar: var(--macd-sidebar);
+  --m-fill: var(--macd-fill); --m-well: var(--macd-well); --m-panel: var(--macd-panel);
+  --m-ink: var(--macd-ink); --m-ink-2: var(--macd-ink-2); --m-muted: var(--macd-muted);
+  --m-line: rgba(255, 255, 255, 0.1); --m-line-strong: rgba(255, 255, 255, 0.16); --m-ring: rgba(255, 255, 255, 0.12);
+  --m-stage: var(--macd-stage);
+}
+.mac-scene *, .mac-scene *::before, .mac-scene *::after { box-sizing: border-box; }
+
+/* ---------- Backdrops the window sits on ---------- */
+/* Hero stage: soft grey desktop with a menu bar on top */
+.mac-stage { position: relative; background: var(--m-stage); border-radius: 20px; overflow: hidden; }
+.mac-stage__body { display: flex; justify-content: center; padding: var(--space-7) var(--space-9) var(--space-8); }
+/* Feature showcase: grey panel, the WHOLE window sits inside it with even padding (never cropped, never bleeding off an edge). */
+.mac-showcase { background: var(--mac-showcase); border-radius: var(--radius-lg); padding: var(--space-8) var(--space-7) var(--space-8); }
+/* Retired: .mac-bleed / .mac-showcase--bleed used to push the window off the bottom edge. They stay as harmless names:
+   the window is fully shown and centred. Do not crop illustrations (RULES.md §9). */
+.mac-showcase > .mac-bleed { width: 100%; max-width: 760px; margin: 0 auto; translate: none; }
+.mac-showcase--bleed { gap: var(--space-5); }
+/* The ONE allowed gradient: a macOS desktop wallpaper behind a window (intentional; uicheck flags it once) */
+.mac-wallpaper {
+  background-color: var(--mac-wall-base);
+  background-image:
+    radial-gradient(60% 80% at 8% 12%, var(--mac-wall-a), transparent 70%),
+    radial-gradient(55% 75% at 92% 8%, var(--mac-wall-b), transparent 70%),
+    radial-gradient(60% 80% at 12% 95%, var(--mac-wall-c), transparent 70%),
+    radial-gradient(60% 80% at 95% 92%, var(--mac-wall-d), transparent 70%);
+  border-radius: 26px; padding: var(--space-6);
+}
+
+/* ---------- Menu bar (top of the desktop) ---------- */
+.mac-menubar { display: flex; align-items: center; gap: var(--space-4); height: 28px; padding: 0 var(--space-4); background: rgba(255, 255, 255, 0.55); font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 500; color: var(--mac-ink); }
+.mac-menubar b { font-weight: 700; }
+.mac-menubar__right { flex: 1; justify-content: flex-end; display: flex; align-items: center; gap: var(--space-3); }
+.mac-scene--dark .mac-menubar { background: rgba(0, 0, 0, 0.35); color: var(--macd-ink); }
+
+/* Drop-down menu under a menu-bar item */
+.mac-menu { width: 260px; padding: var(--space-1); border-radius: 10px; background: rgba(255, 255, 255, 0.96); border: 1px solid var(--m-line); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 12px 24px -6px rgba(0, 0, 0, 0.18); }
+.mac-scene--dark .mac-menu { background: rgba(0, 0, 0, 0.82); }
+.mac-menu__item { display: flex; align-items: center; gap: var(--space-2); height: 24px; padding: 0 var(--space-2); border-radius: 5px; color: var(--m-ink); }
+.mac-menu__item .mac-kbdtext { flex: 1; text-align: right; color: var(--m-muted); }
+.mac-menu__item.is-on { background: var(--mac-accent); color: var(--mac-window); }
+.mac-menu__item.is-on .mac-kbdtext, .mac-menu__item.is-on .mac-i { color: var(--mac-window); }
+.mac-menu__sep { height: 1px; margin: var(--space-1) var(--space-2); background: var(--m-line); }
+.mac-menu__head { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 var(--space-2); font-weight: 600; }
+.mac-menu__head .mac-link { color: var(--mac-accent); font-weight: 500; }
+
+/* ---------- Window ---------- */
+.mac-window { position: relative; background: var(--m-window); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 0 0 1px var(--m-ring), 0 1px 3px rgba(0, 0, 0, 0.08), 0 12px 24px -8px rgba(0, 0, 0, 0.16), 0 24px 24px -16px rgba(0, 0, 0, 0.18); }
+.mac-window--lg { border-radius: 18px; }
+.mac-titlebar { display: flex; align-items: center; gap: var(--space-2); height: 28px; padding: 0 var(--space-4); background: var(--m-chrome); border-bottom: 1px solid var(--m-line); }
+.mac-window--lg .mac-titlebar { height: 32px; }
+.mac-titlebar__title { flex: 1; text-align: center; font-weight: 600; color: var(--m-ink-2); margin-right: var(--space-8); }
+.mac-lights { display: inline-flex; gap: var(--space-2); }
+.mac-lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--mac-light-r); box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12); }
+.mac-lights i:nth-child(2) { background: var(--mac-light-y); }
+.mac-lights i:nth-child(3) { background: var(--mac-light-g); }
+.mac-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); height: 64px; padding: 0 var(--space-5); background: var(--m-window); border-bottom: 1px solid var(--m-line); }
+.mac-toolbar__meta { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-toolbar__meta b { color: var(--m-ink); font-weight: 600; }
+
+/* Sidebar + main */
+.mac-split { display: grid; grid-template-columns: 216px minmax(0, 1fr); }
+.mac-sidebar { background: var(--m-sidebar); border-right: 1px solid var(--m-line); padding: var(--space-4) var(--space-3); display: flex; flex-direction: column; gap: 2px; }
+.mac-sidebar__brand { display: flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-2); margin-bottom: var(--space-2); font-size: var(--text-base); font-weight: 600; }
+.mac-sidebar__label { height: 28px; padding: var(--space-2) var(--space-2) 0; font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-sidebar__sep { height: 1px; margin: var(--space-2); background: var(--m-line); }
+.mac-nav { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); height: 30px; padding: 0 var(--space-2); border-radius: 8px; color: var(--m-ink); }
+.mac-nav .mac-i { color: var(--m-ink-2); }
+.mac-nav.is-on { background: var(--m-fill); font-weight: 500; }
+.mac-nav__count { justify-self: end; font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); font-variant-numeric: tabular-nums; }
+.mac-nav__count--green { color: var(--mac-good); font-weight: 600; }
+.mac-nav__count--red { min-width: 24px; height: 18px; padding: 0 var(--space-2); border-radius: 9px; background: var(--mac-danger); color: var(--mac-window); font-weight: 600; text-align: center; }
+.mac-main { padding: var(--space-5) var(--space-6); display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
+
+/* In-app headings (not real h-tags) */
+.mac-title { font-size: var(--text-2xl); line-height: var(--lh-2xl); font-weight: 400; letter-spacing: -0.01em; color: var(--m-ink); }
+.mac-subtitle { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-h { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-base); line-height: 22px; font-weight: 500; color: var(--m-ink); }
+.mac-count { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 20px; padding: 0 var(--space-2); border-radius: 10px; background: var(--m-fill); font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 600; color: var(--m-ink); }
+.mac-seeall { flex: 1; text-align: right; font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); font-weight: 400; }
+.mac-row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+
+/* ---------- Search field + keycaps ---------- */
+.mac-search { display: flex; align-items: center; gap: var(--space-2); width: 360px; max-width: 100%; height: 40px; padding: 0 var(--space-3); background: var(--m-window); border: 1px solid var(--m-line-strong); border-radius: 10px; color: var(--m-muted); }
+.mac-search__text { flex: 1; min-width: 0; white-space: nowrap; }
+.mac-search__text.is-typed { color: var(--m-ink); }
+.mac-search--lg { width: 100%; height: 64px; padding: 0 var(--space-5); gap: var(--space-4); border: 0; border-bottom: 1px solid var(--m-line); border-radius: 0; background: transparent; }
+.mac-search--lg .mac-search__text { font-size: var(--text-2xl); line-height: var(--lh-2xl); color: var(--m-ink); letter-spacing: -0.01em; }
+.mac-search--lg .mac-i { width: 24px; height: 24px; }
+.mac-caret { display: inline-block; width: 2px; height: 1.15em; margin-left: 1px; vertical-align: -0.2em; background: var(--mac-accent); animation: mac-blink 1s step-end infinite; }
+@keyframes mac-blink { 50% { opacity: 0; } }
+
+.mac-kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 var(--space-1); border-radius: 5px; background: var(--m-window); border: 1px solid var(--m-line-strong); box-shadow: 0 1px 0 var(--m-line); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--m-ink); }
+.mac-kbd--fill { background: var(--m-fill); border-color: transparent; box-shadow: none; }
+.mac-kbds { display: inline-flex; gap: var(--space-1); }
+.mac-kbdtext { font-size: var(--text-mac); line-height: var(--lh-mac); color: var(--m-muted); }
+.mac-hints { display: flex; align-items: center; gap: var(--space-4); height: 40px; padding: 0 var(--space-4); border-top: 1px solid var(--m-line); color: var(--m-muted); }
+.mac-hint { display: inline-flex; align-items: center; gap: var(--space-2); }
+.mac-hint--end { flex: 1; justify-content: flex-end; }
+
+/* ---------- Spotlight-style panel ---------- */
+.mac-spotlight .mac-kbd--fill { background: rgba(0, 0, 0, 0.07); }
+.mac-spotlight { width: 640px; max-width: 100%; background: var(--m-panel); border-radius: 16px; overflow: hidden; border: 1px solid var(--m-line); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 12px 24px -6px rgba(16, 16, 24, 0.16); }
+
+/* ---------- Result list ---------- */
+.mac-list { display: flex; flex-direction: column; padding: 0 var(--space-2) var(--space-2); }
+.mac-section { display: flex; align-items: center; gap: var(--space-2); height: 36px; padding: var(--space-2) var(--space-3) 0; font-weight: 600; color: var(--m-muted); }
+.mac-section .mac-i { color: var(--mac-hue-images); }
+.mac-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); height: 48px; padding: 0 var(--space-3); border-radius: 8px; transition: background-color 0.15s ease; }
+.mac-row:hover { background: var(--m-fill); }
+.mac-row__title { font-weight: 600; color: var(--m-ink); white-space: nowrap; }
+.mac-row__sub { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); white-space: nowrap; }
+.mac-row__meta { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mac-row.is-selected { background: var(--mac-accent); }
+.mac-row.is-selected .mac-row__title, .mac-row.is-selected .mac-row__sub, .mac-row.is-selected .mac-row__meta { color: var(--mac-window); }
+
+/* ---------- File thumbnails (CSS only, flat) ---------- */
+.mac-thumb { position: relative; display: block; width: 32px; height: 32px; border-radius: 6px; background: var(--mac-window); box-shadow: 0 0 0 1px var(--m-line); overflow: hidden; flex: none; }
+.mac-thumb--lg { width: 96px; height: 120px; border-radius: 4px; box-shadow: 0 0 0 1px var(--m-line), 0 4px 12px -4px rgba(0, 0, 0, 0.18); }
+.mac-thumb--wide { width: 120px; height: 90px; }
+/* image: sky, two hills, a sun */
+.mac-thumb--img { background: var(--mac-sky); }
+.mac-thumb--img::before { content: ""; position: absolute; inset: 40% 0 0; background: var(--mac-hill); clip-path: polygon(0 60%, 30% 10%, 55% 55%, 75% 25%, 100% 50%, 100% 100%, 0 100%); }
+.mac-thumb--img::after { content: ""; position: absolute; top: 18%; right: 20%; width: 22%; aspect-ratio: 1; border-radius: 50%; background: var(--mac-sun); }
+/* document: text lines */
+.mac-thumb--doc::before { content: ""; position: absolute; left: 18%; right: 18%; top: 20%; height: 2px; border-radius: 1px; background: var(--m-line-strong);
+  box-shadow: 0 5px 0 var(--m-line-strong), 0 10px 0 var(--m-line-strong), 0 15px 0 var(--m-line-strong); }
+.mac-thumb--lg.mac-thumb--doc::before { top: 12%; height: 3px; box-shadow: 0 9px 0 var(--m-line-strong), 0 18px 0 var(--m-line-strong), 0 27px 0 var(--m-line-strong), 0 36px 0 var(--m-line-strong), 0 45px 0 var(--m-line-strong), 0 54px 0 var(--m-line-strong), 0 63px 0 var(--m-line-strong); }
+/* screenshot: a tiny app — top bar + coloured blocks */
+.mac-thumb--shot::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 18%; background: var(--mac-fill); }
+.mac-thumb--shot::after { content: ""; position: absolute; left: 4px; top: 10px; width: 11px; height: 8px; border-radius: 2px; background: var(--mac-lavender);
+  box-shadow: 13px 0 0 var(--mac-blue), 0 11px 0 var(--mac-peach), 13px 11px 0 var(--mac-green); }
+.mac-thumb--lg.mac-thumb--shot::after { left: 12px; top: 32px; width: 32px; height: 22px; border-radius: 4px; box-shadow: 40px 0 0 var(--mac-blue), 0 30px 0 var(--mac-peach), 40px 30px 0 var(--mac-green), 0 60px 0 var(--mac-yellow), 40px 60px 0 var(--mac-pink); }
+/* pdf: doc lines + red corner tag */
+.mac-thumb--pdf::before { content: "PDF"; position: absolute; left: 0; bottom: 8%; padding: 0 var(--space-1); background: var(--mac-danger); color: var(--mac-window); font: 700 8px/12px var(--font-ui); border-radius: 0 2px 2px 0; }
+.mac-thumb--pdf::after { content: ""; position: absolute; left: 18%; right: 18%; top: 18%; height: 2px; background: var(--m-line-strong); box-shadow: 0 5px 0 var(--m-line-strong), 0 10px 0 var(--m-line-strong); }
+.mac-thumb--lg.mac-thumb--pdf::before { font-size: var(--text-xs); line-height: var(--lh-mac-sm); padding: 0 var(--space-2); }
+.mac-thumb--lg.mac-thumb--pdf::after { height: 3px; box-shadow: 0 9px 0 var(--m-line-strong), 0 18px 0 var(--m-line-strong), 0 27px 0 var(--m-line-strong), 0 36px 0 var(--m-line-strong), 0 45px 0 var(--m-line-strong); }
+/* dark poster / photo */
+.mac-thumb--dark { background: var(--mac-banner); }
+.mac-thumb--dark::before { content: ""; position: absolute; left: 20%; right: 20%; top: 40%; height: 3px; background: var(--mac-banner-ink); box-shadow: 0 7px 0 var(--mac-banner-2); }
+/* folder (blue, Finder style) */
+.mac-thumb--folder { background: transparent; box-shadow: none; overflow: visible; }
+.mac-thumb--folder::before { content: ""; position: absolute; left: 6%; right: 6%; top: 22%; bottom: 14%; border-radius: 3px; background: var(--mac-hue-videos); clip-path: polygon(0 0, 38% 0, 46% 14%, 100% 14%, 100% 100%, 0 100%); }
+.mac-thumb--folder::after { content: ""; position: absolute; left: 6%; right: 6%; top: 34%; bottom: 14%; border-radius: 3px; background: var(--mac-blue); box-shadow: inset 0 1px 0 var(--mac-window); }
+/* app icon tile */
+.mac-thumb--app { border-radius: 8px; background: var(--mac-accent); box-shadow: none; display: grid; place-items: center; color: var(--mac-window); }
+
+/* ---------- File grid + card ---------- */
+.mac-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); }
+.mac-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mac-card { position: relative; background: var(--m-window); border: 1px solid var(--m-line); border-radius: 12px; overflow: hidden; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.mac-card:hover { border-color: var(--m-line-strong); }
+.mac-card.is-selected { box-shadow: 0 0 0 2px var(--m-ink); border-color: transparent; }
+.mac-card__well { position: relative; display: grid; place-items: center; height: 160px; padding: var(--space-6) var(--space-4) var(--space-4); background: var(--m-well); }
+.mac-card__chip { position: absolute; top: var(--space-2); left: var(--space-2); }
+.mac-card__corner { position: absolute; top: var(--space-2); right: var(--space-2); }
+.mac-card__float { position: absolute; right: var(--space-2); bottom: var(--space-2); }
+.mac-card__foot { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3) var(--space-3) var(--space-3); }
+.mac-card__name { font-weight: 500; color: var(--m-ink); overflow-wrap: anywhere; }
+.mac-card__date { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-filechip { display: inline-flex; align-items: center; gap: var(--space-1); height: 20px; padding: 0 var(--space-2); border-radius: 10px; background: var(--m-window); box-shadow: 0 0 0 1px var(--m-line); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-ink-2); white-space: nowrap; }
+.mac-filechip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mac-hue-docs); }
+.mac-more { display: inline-grid; place-items: center; width: 24px; height: 20px; border-radius: 10px; background: var(--m-window); box-shadow: 0 0 0 1px var(--m-line); color: var(--m-ink-2); }
+.mac-floatpill { display: inline-flex; align-items: center; gap: var(--space-1); height: 24px; padding: 0 var(--space-2); border-radius: 12px; background: rgba(255, 255, 255, 0.96); box-shadow: 0 0 0 1px var(--m-line), 0 2px 8px rgba(0, 0, 0, 0.12); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--mac-ink); }
+
+/* ---------- Buttons, pills, badges, segmented control (inside the app) ---------- */
+.mac-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-4); border-radius: 16px; font-weight: 600; white-space: nowrap; transition: transform 0.15s ease, background-color 0.15s ease; }
+.mac-btn--sm { height: 24px; padding: 0 var(--space-3); border-radius: 6px; font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 500; }
+.mac-btn--ink { background: var(--m-ink); color: var(--m-window); }
+.mac-btn--line { background: var(--m-window); color: var(--m-ink); box-shadow: 0 0 0 1px var(--m-line-strong); }
+.mac-btn--fill { background: var(--m-fill); color: var(--m-ink); }
+.mac-btn--danger { background: var(--mac-window); color: var(--mac-danger); }
+.mac-btn--dark { background: var(--mac-banner-2); color: var(--mac-window); }
+.mac-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 var(--space-2); border-radius: 9px; font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 600; color: var(--mac-window); background: var(--mac-ink); white-space: nowrap; }
+.mac-badge--trash { background: var(--mac-danger); }
+.mac-badge--keep { background: var(--mac-good); }
+.mac-badge--free { background: var(--mac-good); }
+.mac-seg { display: inline-flex; padding: 0; border-radius: 6px; background: var(--m-fill); }
+.mac-seg > span { display: inline-flex; align-items: center; gap: var(--space-2); height: 28px; padding: 0 var(--space-3); border-radius: 6px; color: var(--m-ink); }
+.mac-seg > .is-on { background: var(--m-ink); color: var(--m-window); }
+.mac-filter { display: inline-flex; align-items: center; gap: var(--space-1); height: 28px; padding: 0 var(--space-3); border-radius: 8px; background: var(--m-window); box-shadow: 0 0 0 1px var(--m-line-strong); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); white-space: nowrap; }
+.mac-filter b { color: var(--m-ink); font-weight: 500; }
+.mac-filter::after { content: ""; width: 6px; height: 6px; margin-left: var(--space-1); border-right: 1.5px solid var(--m-muted); border-bottom: 1.5px solid var(--m-muted); transform: translateY(-2px) rotate(45deg); }
+.mac-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+.mac-toggle { display: inline-flex; height: 28px; border-radius: 8px; box-shadow: 0 0 0 1px var(--m-line-strong); overflow: hidden; }
+.mac-toggle > span { display: grid; place-items: center; width: 32px; color: var(--m-muted); }
+.mac-toggle > .is-on { background: var(--m-fill); color: var(--m-ink); }
+.mac-understood { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 var(--space-2); border-radius: 11px; background: var(--mac-tag); color: var(--mac-tag-ink); font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 600; white-space: nowrap; }
+
+/* ---------- Dark banner ("Free up 526 KB") ---------- */
+.mac-banner { display: flex; align-items: center; gap: var(--space-5); padding: var(--space-5); border-radius: 14px; background: var(--mac-banner); color: var(--mac-window); }
+.mac-banner__icon { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: var(--mac-banner-2); color: var(--mac-window); flex: none; }
+.mac-banner__icon .mac-i { width: 28px; height: 28px; }
+.mac-banner__big { font-size: var(--text-2xl); line-height: var(--lh-2xl); font-weight: 700; letter-spacing: -0.01em; color: var(--mac-window); }
+.mac-banner__sub { color: var(--mac-banner-ink); }
+.mac-banner__actions { flex: 1; display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2); }
+
+/* ---------- Duplicate group ---------- */
+.mac-group { border: 1px solid var(--m-line); border-radius: 12px; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.mac-mono { font-family: var(--font-mono); font-size: var(--text-mac); line-height: var(--lh-mac); color: var(--m-ink); }
+.mac-copies { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+.mac-copy { position: relative; width: 168px; padding: var(--space-2); border-radius: 10px; background: var(--m-well); display: flex; flex-direction: column; gap: var(--space-2); }
+.mac-copy .mac-thumb { width: 100%; height: 96px; border-radius: 6px; }
+.mac-copy .mac-badge { position: absolute; top: var(--space-4); left: var(--space-4); }
+.mac-copy.is-kept { background: var(--mac-good-soft); outline: 2px solid var(--mac-good); outline-offset: -2px; }
+.mac-copy__path { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-ink-2); }
+
+/* ---------- Pastel folder cards (Playful look) ---------- */
+.mac-folders { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); }
+.mac-folder-card { position: relative; margin-top: var(--space-3); padding: var(--space-4); border-radius: 12px; background: var(--mac-lavender); color: var(--mac-ink); display: flex; flex-direction: column; gap: var(--space-3); }
+.mac-folder-card::before { content: ""; position: absolute; left: 0; top: -12px; width: 40%; height: 24px; border-radius: 10px 12px 0 0; background: inherit; clip-path: polygon(0 0, 82% 0, 100% 50%, 100% 100%, 0 100%); }
+.mac-folder-card__label { font-family: var(--font-mono); font-size: var(--text-mac); line-height: var(--lh-mac); padding: var(--space-3) 0 var(--space-2); border-bottom: 1px solid rgba(0, 0, 0, 0.1); display: flex; align-items: center; justify-content: space-between; }
+.mac-folder-card__foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--mac-ink-2); white-space: nowrap; }
+.mac-folder-card .mac-more { background: rgba(255, 255, 255, 0.85); box-shadow: none; }
+.mac-folder-card--blue { background: var(--mac-blue); } .mac-folder-card--peach { background: var(--mac-peach); } .mac-folder-card--green { background: var(--mac-green); }
+.mac-folder-card--yellow { background: var(--mac-yellow); } .mac-folder-card--pink { background: var(--mac-pink); }
+/* avatar stack: columns narrower than the circles = overlap without negative margins */
+.mac-avatars { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 14px; padding-right: var(--space-2); }
+.mac-avatar { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--mac-hue-images); box-shadow: 0 0 0 2px var(--mac-window); }
+.mac-avatar:nth-child(2) { background: var(--mac-hue-videos); } .mac-avatar:nth-child(3) { background: var(--mac-hue-docs); }
+.mac-avatar--more { width: 28px; border-radius: 11px; background: var(--mac-window); color: var(--mac-ink); font-size: var(--text-xs); }
+
+/* Clean Up stat cards */
+.mac-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); }
+.mac-stat { padding: var(--space-4); border-radius: 12px; background: var(--mac-pink); display: flex; flex-direction: column; gap: var(--space-2); color: var(--mac-ink); }
+.mac-stat--blue { background: var(--mac-blue); } .mac-stat--peach { background: var(--mac-peach); } .mac-stat--green { background: var(--mac-green); }
+.mac-stat--yellow { background: var(--mac-yellow); } .mac-stat--lavender { background: var(--mac-lavender); }
+.mac-stat--plain { background: var(--m-window); box-shadow: 0 0 0 1px var(--m-line); color: var(--m-ink); }
+.mac-stat__top { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
+.mac-stat__icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: rgba(255, 255, 255, 0.8); color: var(--mac-ink-2); }
+.mac-stat__label { font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--mac-ink-2); }
+.mac-stat--plain .mac-stat__label { font-family: var(--font-ui); color: var(--m-muted); }
+.mac-stat__row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.mac-stat__big { font-size: var(--text-2xl); line-height: var(--lh-2xl); font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.mac-stat__meta { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--mac-ink-2); white-space: nowrap; }
+
+/* Grey 3D folders with paper peeking out (Minimal look) */
+.mac-folder3d-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-5) var(--space-4); justify-items: center; }
+.mac-folder3d { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); text-align: center; }
+.mac-folder3d__art { position: relative; width: 120px; height: 84px; }
+.mac-folder3d__art::before { content: ""; position: absolute; inset: 0 0 8px; border-radius: 8px; background: var(--mac-folder-2); clip-path: polygon(0 0, 36% 0, 44% 12%, 100% 12%, 100% 100%, 0 100%); }
+.mac-folder3d__art > i { position: absolute; left: 14%; top: 16%; width: 46%; height: 52%; border-radius: 3px; background: var(--mac-paper); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06); transform: rotate(-6deg); }
+.mac-folder3d__art > i + i { left: 40%; top: 14%; transform: rotate(5deg); background: var(--mac-window); }
+.mac-folder3d__art::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 62%; border-radius: 6px 6px 8px 8px; background: var(--mac-folder); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.mac-folder3d__name { font-weight: 500; color: var(--m-ink); }
+.mac-folder3d__meta { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+
+/* ---------- Toast + notifications ---------- */
+.mac-toast { width: 280px; padding: var(--space-4); border-radius: 16px; background: rgba(255, 255, 255, 0.97); border: 1px solid var(--m-line); box-shadow: 0 1px 3px rgba(16, 16, 24, 0.06), 0 16px 24px -12px rgba(16, 16, 24, 0.24); display: flex; flex-direction: column; gap: var(--space-2); color: var(--mac-ink); }
+.mac-toast__title { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 600; color: var(--mac-good); }
+.mac-toast__mono { font-family: var(--font-mono); font-size: var(--text-mac); line-height: var(--lh-mac); text-transform: uppercase; letter-spacing: 0.04em; }
+.mac-toast--dark { background: rgba(0, 0, 0, 0.86); border-color: rgba(255, 255, 255, 0.1); color: var(--macd-ink); }
+.mac-notes-stack { display: flex; flex-direction: column; gap: var(--space-2); width: 344px; max-width: 100%; }
+.mac-notification { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: var(--space-3); align-items: start; padding: var(--space-3) var(--space-4); border-radius: 16px; background: rgba(255, 255, 255, 0.86); border: 1px solid var(--m-line); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px -8px rgba(0, 0, 0, 0.18); }
+.mac-scene--dark .mac-notification { background: rgba(0, 0, 0, 0.55); }
+.mac-notification__title { font-weight: 600; color: var(--m-ink); }
+.mac-notification__body { color: var(--m-ink-2); }
+.mac-notification__time { font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); }
+.mac-notification--back { transform: scale(0.96); opacity: 0.85; margin-top: calc(-1 * var(--space-7)); position: relative; z-index: -1; }
+
+/* ---------- Dock-like icon tiles (floating) ---------- */
+.mac-tile { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 12px; background: var(--mac-window); border: 1px solid var(--m-line); box-shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px -8px rgba(16, 16, 24, 0.12); color: var(--mac-hue-images); rotate: var(--tilt, 0deg); animation: mac-float 6s ease-in-out var(--delay, 0s) infinite; }
+.mac-tile .mac-i { width: 22px; height: 22px; }
+.mac-tile--videos { color: var(--mac-hue-videos); } .mac-tile--music { color: var(--mac-hue-music); } .mac-tile--docs { color: var(--mac-hue-docs); }
+.mac-tile--apps { color: var(--mac-hue-apps); } .mac-tile--archives { color: var(--mac-hue-archives); }
+@keyframes mac-float { 50% { translate: 0 -6px; } }
+.mac-dock { display: inline-flex; align-items: flex-end; gap: var(--space-2); padding: var(--space-2); border-radius: 20px; background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(255, 255, 255, 0.5); }
+.mac-dock .mac-tile { animation: none; box-shadow: none; }
+
+/* ---------- Table window (bookkeeping, settings…) ---------- */
+.mac-table { width: 100%; border-collapse: collapse; }
+.mac-table th { height: 28px; padding: 0 var(--space-3); text-align: left; font-size: var(--text-xs); line-height: var(--lh-mac-sm); font-weight: 500; color: var(--m-muted); border-bottom: 1px solid var(--m-line); white-space: nowrap; }
+.mac-table td { height: 32px; padding: 0 var(--space-3); border-bottom: 1px solid var(--m-line); color: var(--m-ink); white-space: nowrap; }
+.mac-table tr:nth-child(even) td { background: var(--m-sidebar); }
+.mac-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.mac-table .neg { color: var(--mac-danger); }
+.mac-scene--dark .mac-table .neg { color: var(--macd-danger); }
+.mac-table tr.is-selected td { background: var(--mac-accent); color: var(--mac-window); }
+.mac-statusbar { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 var(--space-3); font-size: var(--text-xs); line-height: var(--lh-mac-sm); color: var(--m-muted); background: var(--m-chrome); border-top: 1px solid var(--m-line); }
+
+/* ---------- Icons: 16px line icons drawn as masks (colour = currentColor) ---------- */
+.mac-i { display: inline-block; width: 16px; height: 16px; flex: none; background: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; vertical-align: middle; }
+.mac-i--search { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'><circle cx='11' cy='11' r='6.5'/><path d='m20 20-4.2-4.2'/></svg>"); }
+.mac-i--home { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><path d='M4 10.5 12 4l8 6.5V20h-5.5v-5.5h-5V20H4z'/></svg>"); }
+.mac-i--clock { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><circle cx='12' cy='12' r='8.5'/><path d='M12 7.5V12l3 2'/></svg>"); }
+.mac-i--image { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><rect x='3.5' y='5' width='17' height='14' rx='2.5'/><path d='m4 17 5-5 4 4 2.5-2.5L20 18'/><circle cx='15.5' cy='9.5' r='1.3'/></svg>"); }
+.mac-i--video { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><rect x='3.5' y='5' width='17' height='14' rx='2.5'/><path d='m10.5 9.5 4 2.5-4 2.5z'/></svg>"); }
+.mac-i--music { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><path d='M9 17.5V6l10-2v11.5'/><circle cx='6.5' cy='17.5' r='2.5'/><circle cx='16.5' cy='15.5' r='2.5'/></svg>"); }
+.mac-i--doc { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round' stroke-linecap='round'><path d='M6 3.5h8l4 4v13H6z'/><path d='M14 3.5v4h4M9 12h6M9 15.5h6'/></svg>"); }
+.mac-i--archive { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round' stroke-linecap='round'><rect x='3.5' y='4.5' width='17' height='4.5' rx='1'/><path d='M5 9v10.5h14V9M10 12.5h4'/></svg>"); }
+.mac-i--apps { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'><rect x='4' y='4' width='6.5' height='6.5' rx='1.6'/><rect x='13.5' y='4' width='6.5' height='6.5' rx='1.6'/><rect x='4' y='13.5' width='6.5' height='6.5' rx='1.6'/><rect x='13.5' y='13.5' width='6.5' height='6.5' rx='1.6'/></svg>"); }
+.mac-i--drive { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><path d='M3.5 13.5 6 6h12l2.5 7.5V18h-17z'/><path d='M3.5 13.5h17'/></svg>"); }
+.mac-i--shot { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><path d='M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16'/><circle cx='12' cy='12' r='3'/></svg>"); }
+.mac-i--copy { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linejoin='round'><rect x='8.5' y='8.5' width='11' height='11' rx='2.5'/><path d='M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5'/></svg>"); }
+.mac-i--sparkle { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M10 3 11.8 8.2 17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8zM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z'/></svg>"); }
+.mac-i--download { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='8.5'/><path d='M12 7.5v8M8.5 12.5 12 16l3.5-3.5'/></svg>"); }
+.mac-i--folder { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><path d='M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2h8A1.5 1.5 0 0 1 20.5 9v8.5A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z'/></svg>"); }
+.mac-i--trash { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5'/></svg>"); }
+.mac-i--refresh { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M19 12a7 7 0 1 1-2.05-4.95L19 9M19 4.5V9h-4.5'/></svg>"); }
+.mac-i--sidebar { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'><rect x='3.5' y='5' width='17' height='14' rx='2.5'/><path d='M14.5 5v14'/></svg>"); }
+.mac-i--more { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><circle cx='12' cy='6' r='1.7'/><circle cx='12' cy='12' r='1.7'/><circle cx='12' cy='18' r='1.7'/></svg>"); }
+.mac-i--text { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><path d='M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M8 9h8M8 12h8M8 15h5'/></svg>"); }
+.mac-i--grid { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8'><rect x='5' y='5' width='5.5' height='5.5' rx='1.2'/><rect x='13.5' y='5' width='5.5' height='5.5' rx='1.2'/><rect x='5' y='13.5' width='5.5' height='5.5' rx='1.2'/><rect x='13.5' y='13.5' width='5.5' height='5.5' rx='1.2'/></svg>"); }
+.mac-i--list { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'><path d='M9 7h11M9 12h11M9 17h11M4.5 7h.5M4.5 12h.5M4.5 17h.5'/></svg>"); }
+.mac-i--bell { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round' stroke-linecap='round'><path d='M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5h4'/></svg>"); }
+.mac-i--wifi { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M3.5 9.5a12 12 0 0 1 17 0M6.5 12.8a7.5 7.5 0 0 1 11 0M9.5 16a3 3 0 0 1 5 0'/><circle cx='12' cy='19' r='.8'/></svg>"); }
+.mac-i--battery { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6'><rect x='2.5' y='7.5' width='17' height='9' rx='2.5'/><rect x='4.5' y='9.5' width='10' height='5' rx='1' fill='black'/><path d='M21.5 10.5v3'/></svg>"); }
+.mac-i--apple { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M16.4 12.6c0-2.2 1.8-3.3 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8s-1.7-.8-2.9-.8c-1.5 0-2.8.9-3.6 2.2-1.5 2.7-.4 6.6 1.1 8.8.7 1 1.6 2.2 2.7 2.2s1.5-.7 2.8-.7 1.7.7 2.9.7 1.9-1.1 2.6-2.1c.8-1.2 1.2-2.4 1.2-2.5 0 0-2.3-.9-2.2-3.6zM14.2 6.1c.6-.7 1-1.8.9-2.8-.9 0-1.9.6-2.5 1.3-.6.6-1.1 1.7-.9 2.7 1 .1 2-.5 2.5-1.2z'/></svg>"); }
+.mac-i--play { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M7 4.8v14.4a1 1 0 0 0 1.5.9l12-7.2a1 1 0 0 0 0-1.8l-12-7.2A1 1 0 0 0 7 4.8z'/></svg>"); }
+.mac-i--pause { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><rect x='6' y='5' width='4' height='14' rx='1'/><rect x='14' y='5' width='4' height='14' rx='1'/></svg>"); }
+.mac-i--left { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M15 18l-6-6 6-6'/></svg>"); }
+.mac-i--right { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>"); }
+.mac-i--chart { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><path d='M4 20h16M7 16v-4M12 16V7M17 16v-6'/></svg>"); }
+.mac-i--bank { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><path d='M3.5 9 12 4l8.5 5zM5.5 10v7M10 10v7M14 10v7M18.5 10v7M3.5 20h17'/></svg>"); }
+.mac-i--mail { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linejoin='round'><rect x='3.5' y='5.5' width='17' height='13' rx='2.5'/><path d='m4.5 7 7.5 6 7.5-6'/></svg>"); }
+.mac-i--calendar { --i: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'><rect x='4' y='5.5' width='16' height='14.5' rx='2.5'/><path d='M4 10h16M8.5 3.5v4M15.5 3.5v4'/></svg>"); }
+
+/* ---------- Page-level framing (outside the app window) ---------- */
+.mac-roundbtn { position: absolute; top: 50%; translate: 0 -50%; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; background: rgba(255, 255, 255, 0.92); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15); color: var(--mac-ink); transition: transform 0.2s ease, background-color 0.2s ease; z-index: 2; }
+.mac-roundbtn--prev { left: var(--space-4); } .mac-roundbtn--next { right: var(--space-4); }
+.mac-roundbtn:hover, .mac-pause:hover { transform: scale(1.05); background: var(--mac-window); }
+/* demo pill: place it over a part of the window that has no text (or use --corner) */
+.mac-demo { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; pointer-events: none; }
+.mac-demo--corner { inset: auto auto var(--space-4) var(--space-4); display: block; }
+.mac-demo__pill { display: inline-flex; align-items: center; gap: var(--space-3); height: 64px; padding: 0 var(--space-5) 0 var(--space-3); border-radius: 32px; background: rgba(0, 0, 0, 0.8); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15), 0 10px 24px -8px rgba(0, 0, 0, 0.5); font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: 500; color: var(--mac-window); transition: transform 0.2s ease; }
+.mac-demo:hover .mac-demo__pill { transform: scale(1.05); }
+.mac-demo__play { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--mac-window); color: var(--mac-banner); }
+.mac-pause { position: absolute; right: var(--space-4); bottom: var(--space-4); display: inline-flex; align-items: center; gap: var(--space-2); height: 40px; padding: 0 var(--space-4); border-radius: 20px; background: rgba(255, 255, 255, 0.92); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: 500; color: var(--mac-ink); transition: transform 0.2s ease; z-index: 2; }
+.mac-slides { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: var(--space-4); }
+.mac-slide { position: relative; aspect-ratio: 16 / 10; border-radius: 10px; background: var(--mac-window); box-shadow: 0 0 0 1px rgba(11, 18, 40, 0.07); opacity: 0.7; overflow: hidden; transition: opacity 0.2s ease; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); }
+.mac-slide:hover { opacity: 1; }
+.mac-slide.is-on { opacity: 1; outline: 2px solid var(--mac-accent); outline-offset: 2px; }
+.mac-slide > i { display: block; height: 6px; border-radius: 2px; background: var(--mac-fill); }
+.mac-slide > i:nth-child(2) { width: 60%; } .mac-slide > i:nth-child(3) { flex: 1; background: var(--mac-well); }
+.mac-feature { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); line-height: var(--lh-sm); color: var(--muted); }
+.mac-feature .mac-i { color: var(--mac-hue-videos); }
+.mac-feature .mac-kbd { font-size: var(--text-xs); }
+.mac-notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-5); text-align: left; }
+.mac-notes > p { border-top: 1px solid var(--line); padding-top: var(--space-3); font-size: var(--text-sm); line-height: var(--lh-sm); color: var(--muted); }
+.mac-overlay { position: relative; }
+/* Intro block above a scene: centred on desktop (tryhomy), left-aligned on phones so wrapped lines share one edge */
+.mac-intro { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); text-align: center; }
+.mac-intro > * { margin-left: auto; margin-right: auto; }
+.mac-overlay__float { position: absolute; z-index: 2; }
+
+/* ---------- Phone: reflow, never shrink text below 12px ---------- */
+@media (max-width: 900px) {
+  .mac-folders, .mac-stats, .mac-grid, .mac-folder3d-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mac-slides { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .mac-split { grid-template-columns: minmax(0, 1fr); }
+  .mac-sidebar, .mac-hide-sm { display: none; }
+  .mac-stage__body { padding: var(--space-4) var(--space-4) var(--space-5); }
+  .mac-roundbtn { display: none; }
+  .mac-showcase { padding: var(--space-6) var(--space-4) var(--space-6); }
+  .mac-main { padding: var(--space-4); }
+  .mac-toolbar { padding: 0 var(--space-4); }
+  .mac-banner { flex-wrap: wrap; }
+  .mac-banner__actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .mac-notes { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+  .mac-search--lg .mac-search__text { font-size: var(--text-lg); line-height: var(--lh-lg); }
+  .mac-wallpaper { padding: var(--space-3); border-radius: var(--radius-lg); }
+  .mac-overlay__float, .mac-demo, .mac-card__corner { display: none; }
+  .mac-demo__pill { height: 48px; font-size: var(--text-base); line-height: var(--lh-base); }
+  .mac-demo__play { width: 32px; height: 32px; }
+  .mac-slides { display: none; }
+  .mac-intro { align-items: flex-start; text-align: left; }
+  .mac-intro > * { margin-left: 0; margin-right: 0; }
+  .mac-table th, .mac-table td { padding: 0 var(--space-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mac-tile, .mac-caret { animation: none; }
+  .mac-row, .mac-card, .mac-btn, .mac-roundbtn, .mac-demo__pill, .mac-slide, .mac-pause { transition: none; }
+}
