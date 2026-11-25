@@ -9,7 +9,7 @@ import SwiftUI
 
 /// Where releases are published. One place to change when the repository moves.
 enum Releases {
-    static let owner = "OWNER"          // GitHub user or organisation that publishes Shuttrr
+    static let owner = "sarthakrawool"          // GitHub user or organisation that publishes Shuttrr
     static let repo = "shuttrr"
     static let latestAPI = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/latest")!
     static let latestPage = URL(string: "https://github.com/\(owner)/\(repo)/releases/latest")!

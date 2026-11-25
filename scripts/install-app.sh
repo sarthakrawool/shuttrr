@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the Shuttrr Mac app from the latest GitHub release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/shuttrr/main/scripts/install-app.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/sarthakrawool/shuttrr/main/scripts/install-app.sh | bash
 #
 # The app is ad-hoc signed (no paid Apple developer account), so macOS would block a copy
 # downloaded in a browser. This script downloads the DMG with curl, copies Shuttrr.app to
@@ -14,7 +14,7 @@
 #   SHUTTRR_NO_OPEN=1 do not open the app when done
 set -euo pipefail
 
-OWNER="OWNER"   # GitHub user or organisation that publishes the releases
+OWNER="sarthakrawool"   # GitHub user or organisation that publishes the releases
 REPO="shuttrr"
 DMG_URL="${SHUTTRR_DMG_URL:-https://github.com/${OWNER}/${REPO}/releases/latest/download/Shuttrr.dmg}"
 APP_NAME="Shuttrr.app"

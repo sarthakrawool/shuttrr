@@ -39,14 +39,26 @@ and the video that comes out is **identical, bit for bit**. It costs about 5% mo
 
 ## Install
 
-**The app (recommended).** Download `Shuttrr.dmg` from [Releases](../../releases), drag Shuttrr to
-Applications and open it. The first-run window checks your Mac, installs the engine into `~/.shutter`, and
-offers the models. No Python, Homebrew or Terminal needed.
+**One line (easiest).** Paste this into Terminal. It downloads the latest app into Applications and opens
+it, with no security prompt:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarthakrawool/shuttrr/main/scripts/install-app.sh | bash
+```
+
+**The DMG.** Download `Shuttrr.dmg` from [Releases](../../releases), drag Shuttrr to Applications and open
+it. The first-run window checks your Mac, installs the engine into `~/.shutter`, and offers the models. No
+Python, Homebrew or Terminal needed.
+
+> **"Apple could not verify Shuttrr" when you open it?** Shuttrr is free and open source and is not signed
+> with a paid Apple developer certificate, so macOS asks once. Press **Done**, open **System Settings →
+> Privacy & Security**, scroll down and press **Open Anyway** next to Shuttrr, then confirm. You only do
+> this once. If you prefer, build it yourself from source below.
 
 **From source.**
 
 ```bash
-git clone https://github.com/<owner>/shuttrr && cd shuttrr
+git clone https://github.com/sarthakrawool/shuttrr && cd shuttrr
 scripts/install.sh                         # engine in ~/.shutter/venv, Shuttrr.app in ~/Applications
 shutter doctor                             # is this Mac ready?
 shutter download longcat-avatar-1.6-8bit   # 37.5 GB from Hugging Face
@@ -140,7 +152,18 @@ To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clie
 
 ## Privacy
 
-Everything runs on your Mac. Shuttrr only goes online to download models from Hugging Face.
+Everything runs on your Mac. Shuttrr only goes online to download models from Hugging Face and, once a day,
+to check GitHub for a new version (turn it off in Settings). No analytics.
+
+## Uninstall
+
+Settings → **Uninstall Shuttrr…** in the app, or `shutter uninstall` (add `--keep-models` to keep the
+downloaded models). Then drag Shuttrr.app to the Bin.
+
+## Found a problem?
+
+Press **Copy Diagnostics** on the app's Server tab and paste it into a
+[new issue](../../issues/new/choose).
 
 ## Docs
 
