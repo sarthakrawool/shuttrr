@@ -254,7 +254,11 @@ fn valid_model_id(id: &str) -> bool {
     !id.is_empty() && id.len() < 100 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
-async fn start_download(State(s): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+async fn start_download(
+    State(s): State<AppState>,
+    AxPath(id): AxPath<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     if !valid_model_id(&id) {
         return err(404, "unknown model");
     }
@@ -266,6 +270,13 @@ async fn start_download(State(s): State<AppState>, AxPath(id): AxPath<String>) -
     let Some(row) = row else {
         return err(404, &format!("unknown model '{id}'"));
     };
+    // the catalog's fit classifier (Python, catalog.classify_fit) is the one source of truth
+    let forced = matches!(q.get("force").map(String::as_str), Some("1") | Some("true"));
+    if row["fit"]["level"] == "no_fit" && !forced {
+        let name = row["name"].as_str().unwrap_or(&id);
+        let why = row["fit"]["reason"].as_str().unwrap_or("");
+        return err(409, &format!("{name} does not fit this Mac. {why}"));
+    }
     if row["download"]["state"] != "downloading" {
         let Some(mut cmd) = shutter_cli(&s, &["download", &id, "--quiet"]) else {
             return err(500, "worker_cmd is empty");

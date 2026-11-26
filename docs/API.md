@@ -42,7 +42,7 @@ Conventions:
   "output": null,                       // output path; default <outputs>/<id>.<ext>
   "priority": 0,
   "params": {"mode": "low_memory", "efficiency": 0.75},   // adapter-specific, passed through
-  "client": "comfyui-shutter/0.2.0"     // optional, recorded on the job (not part of the request)
+  "client": "comfyui-shutter/0.2.1"     // optional, recorded on the job (not part of the request)
 }
 ```
 
@@ -80,7 +80,7 @@ Conventions:
   "eta_s": 12.5,                         // only while running and progress > 1%
   "result": {"output": "/…/outputs/d98530c84d6c.mp4", "seconds": 0.002, "peak_bytes": 17179869184, "…": "…"},
   "node": "local",
-  "client": "comfyui-shutter/0.2.0",     // null when no client was named
+  "client": "comfyui-shutter/0.2.1",     // null when no client was named
   "request": { "model": "…", "prompt": "…", "negative_prompt": "", "width": null, "height": null,
                "frames": null, "duration_s": null, "fps": null, "steps": 2, "guidance": null,
                "seed": 42, "inputs": {}, "output": "…", "priority": 0, "params": {} }
@@ -167,7 +167,7 @@ The ComfyUI pack uses `fits` to decide whether to unload ComfyUI's own models be
 
 ```json
 {"window_s": 600,
- "clients": [{"client": "comfyui-shutter/0.2.0", "requests": 3, "requests_total": 5,
+ "clients": [{"client": "comfyui-shutter/0.2.1", "requests": 3, "requests_total": 5,
               "first_seen": 1795589100.2, "last_seen": 1795589400.9, "idle_s": 4.2}]}
 ```
 
@@ -273,17 +273,27 @@ Limits:
 
 `GET /v1/catalog` lists the models Shuttrr can download: `{"models": [{"id", "name", "summary", "kind",
 "source", "size_bytes", "min_memory_bytes", "fits_this_mac", "free_bytes", "dir", "installed", "notes",
-"download", "fit", "disk", "recommended", "sample"}], "restart_needed"}`. `download` is null or `{"state",
+"download", "fit", "disk", "recommended", "makes", "sample"}], "restart_needed"}`. `download` is null or `{"state",
 "done_bytes", "total_bytes", "error"}` with state `downloading`, `done`, `failed`, `stopped` (the download process
 died; it can resume) or `cancelled`.
 
-`fit` says how the model fits this Mac's memory (its total, not what is free now), from the engine's own per-step
-estimates at the size it runs by default here: `{"level": "fits" | "low_memory" | "needs" | "unknown", "label":
-"Fits" | "Fits in Low memory" | "Needs 24 GB", "detail"}`. `disk` is `{"ok", "need_bytes", "label"}` (label empty
-when the download fits on the disk). `recommended` is true for the starter model on a Mac with under 24 GB.
-`sample` is null or the request "Try a Sample" sends (`{"prompt", "width", "height", "frames", "steps", "seed"}`);
-the app posts it to `POST /v1/jobs` with the model's id. Rows come sorted: the recommended model first, then the
-models that fit.
+`fit` is the engine's one fit classifier (`catalog.classify_fit`), against this Mac's total memory (not what is
+free now), at the size the model runs by default here: `{"level": "recommended" | "barely" | "no_fit" | "unknown",
+"label": "Recommended" | "Fits but barely" | "Doesn't fit", "reason", "detail", "peak_bytes", "measured", "at"}`.
+It uses the measured peak for that size when there is one (`checked_on`), otherwise the engine's estimate; an
+estimate never counts the SSD-streaming steps.
+
+- `recommended`: measured at this size, and the full speed peak is at most 50% of total memory.
+- `barely`: the lowest step's peak is at most 70% of total memory, or the model is only an estimate here
+  (reason "Not tested on a Mac this size yet.", or "Tight on this Mac. Close other apps first.").
+- `no_fit`: anything above, or under the model's smallest Mac (reason "Needs about 32 GB. This Mac has 16 GB.").
+  `POST /v1/catalog/{id}/download` refuses these with 409 unless `?force=1`.
+
+`reason` is one short line for the app to show. `disk` is `{"ok", "need_bytes", "label"}` (label empty when the
+download fits on the disk). `recommended` is `fit.level == "recommended"`. `makes` is one line such as "Makes
+320x512 clips on this Mac". `sample` is null or the request "Try a Sample" sends (`{"prompt", "width", "height",
+"frames", "steps", "seed"}`); the app posts it to `POST /v1/jobs` with the model's id. Rows come sorted:
+Recommended, then Fits but barely, then Doesn't fit.
 `restart_needed` (Rust engine only) is true when a model finished downloading after the engine started.
 
 `POST /v1/catalog/{id}/download` starts or resumes the download and returns the catalog (202).

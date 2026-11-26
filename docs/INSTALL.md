@@ -63,6 +63,10 @@ Fast mode picks the fastest step that fits in free memory, so most Macs need no 
 
 ### 16 GB Macs
 
+The app lists LongCat under **Doesn't fit** on a 16 GB Mac and offers no Download button: its lowest measured step
+peaks at 12.3 GB, more than 70% of the memory, so it would likely push the Mac into swap. What follows is for
+people who download it anyway from Terminal (`shutter download longcat-avatar-1.6-8bit`).
+
 A 16 GB Mac cannot hold the full-size final decode (12.9 GB) next to macOS. On Macs with less than 24 GB the
 download step therefore sets two things:
 

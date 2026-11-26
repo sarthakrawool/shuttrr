@@ -333,6 +333,9 @@ def cmd_catalog(args: argparse.Namespace) -> int:
         approx = "~" if r.get("size_approximate") else " "
         lines.append(f"{r['id']:<28}{approx}{r['size_bytes'] / GB:>5.1f} GB  {state}")
         lines.append(f"{'':<28} {r['name']}. {r['summary']}")
+        fit = r.get("fit") or {}
+        if fit.get("label"):
+            lines.append(f"{'':<28} {fit['label']}: {fit.get('reason', '')}")
         if r.get("needs_conversion") and not r["installed"]:
             lines.append(f"{'':<28} Downloads the original weights, then converts them on this Mac "
                          f"(about {r['built_size_bytes'] / GB:.0f} GB when built). Needs {r['min_memory_bytes'] / GB:.0f} GB "
@@ -348,6 +351,12 @@ def cmd_download(args: argparse.Namespace) -> int:
         stopped = catalog.cancel(args.model)
         print("stopped" if stopped else "no download is running for that model")
         return 0
+    total = catalog.total_memory()
+    if args.model in catalog.CATALOG and total and not args.quiet:
+        fit = catalog.classify_fit(args.model, total)
+        if fit["level"] == "no_fit":
+            print(f"warning: this model does not fit this Mac. {fit['reason']} It will likely swap or be refused.",
+                  file=sys.stderr)
     last = [0.0]
 
     def show(s: dict[str, Any]) -> None:

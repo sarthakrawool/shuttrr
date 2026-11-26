@@ -32,7 +32,7 @@ RUNNING = ("downloading", "converting")
 CATALOG: dict[str, dict[str, Any]] = {
     "longcat-avatar-1.6-8bit": {
         "name": "LongCat Video Avatar 1.6",
-        "summary": "Talking video of a person from one photo and a voice recording.",
+        "summary": "Talking video of a person from a photo and a voice.",
         "kind": "video",
         "adapter": "longcat-avatar",
         "repo": "SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem",
@@ -62,7 +62,7 @@ WAN13_CHECKED = [
 ]
 CATALOG["wan2.1-t2v-1.3b-8bit"] = {
     "name": "Wan 2.1 Text to Video 1.3B",
-    "summary": "Short video clips from a text prompt. The smallest Wan model: quick, and fits a 16 GB Mac.",
+    "summary": "Short video clips from a text prompt.",
     "kind": "video",
     "adapter": "wan", "family": "wan", "variant": "wan2.1-t2v-1.3b",
     "repo": "SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem",
@@ -95,20 +95,19 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
     },
     "wan2.2-ti2v-5b": {
         "name": "Wan 2.2 Text and Image to Video 5B",
-        "summary": "720p video from a text prompt, or from a photo and a prompt. One model for both.",
+        "summary": "Video from a text prompt, or from a photo and a prompt.",
         "source_repo": "Wan-AI/Wan2.2-TI2V-5B", "source_size_gb": 34,
         "shape": dict(dim=3072, in_dim=48, out_dim=48, ffn_dim=14336, num_layers=30),
     },
     "wan2.2-t2v-a14b": {
         "name": "Wan 2.2 Text to Video A14B",
-        "summary": "The largest Wan text-to-video model: two 14B experts, the best quality and the slowest. "
-                   "A very large download.",
+        "summary": "Best-quality video from a text prompt. Very large and slow.",
         "source_repo": "Wan-AI/Wan2.2-T2V-A14B", "source_size_gb": 126,
         "shape": dict(dim=5120, in_dim=16, out_dim=16, ffn_dim=13824, num_layers=40, dual=True),
     },
     "wan2.2-i2v-a14b": {
         "name": "Wan 2.2 Image to Video A14B",
-        "summary": "Brings a photo to life as a video, guided by a prompt. Two 14B experts; a very large download.",
+        "summary": "Brings a photo to life, guided by a prompt. Very large.",
         "source_repo": "Wan-AI/Wan2.2-I2V-A14B", "source_size_gb": 126,
         "shape": dict(dim=5120, in_dim=36, out_dim=16, ffn_dim=13824, num_layers=40, dual=True),
     },
@@ -253,52 +252,118 @@ def default_request(model_id: str, total_bytes: int) -> tuple[int, int, int]:
     return 480, 832, 81
 
 
-def fit_for(model_id: str, total_bytes: int, headroom: int) -> dict[str, Any]:
-    """How a catalog model fits this Mac's memory (its total, not what is free right now), from the engine's own
-    per-step estimates at the size it would run by default here:
-      fits        the fastest step (resident) fits
-      low_memory  only a lower step fits (Shuttrr steps down by itself; slower, same frames)
-      needs       not even the lowest step fits: needs a Mac with `min_memory_gb`
-    `label` is the words to show."""
+# One fit classifier for the app, the dashboard and the CLI (docs/API.md, "fit"). It never promises that a model fits
+# because a low-memory step squeezes it in: a model that needs more than ~70% of this Mac's memory even at its lowest
+# step is "no_fit", whatever the estimates say about streaming.
+RECOMMENDED_SHARE = 0.50   # full speed peak at or under half of total memory, and measured at this size
+BARELY_SHARE = 0.70        # the lowest step's peak at or under 70% of total memory
+MAC_SIZES_GB = (8, 16, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
+FIT_LABELS = {"recommended": "Recommended", "barely": "Fits but barely", "no_fit": "Doesn't fit", "unknown": ""}
+TIGHT = "Tight on this Mac. Close other apps first."
+UNTESTED = "Not tested on a Mac this size yet."
+
+# LongCat, measured on an M5 Max (README "Measured results"): MLX peak per memory step, 93 frames, 8 steps.
+CATALOG["longcat-avatar-1.6-8bit"]["checked_on"] = [
+    {"date": "2026-11-20", "mac": "MacBook Pro M5 Max", "memory_gb": 128, "size": "480x832", "frames": 93,
+     "steps": 8, "identical": True, "peaks_gb": {"resident": 31.5, "staged": 12.3, "stream_tight": 12.9}},
+    {"date": "2026-11-20", "mac": "MacBook Pro M5 Max", "memory_gb": 128, "size": "704x1312", "frames": 93,
+     "steps": 8, "identical": True, "peaks_gb": {"resident": 34.5, "stream_tight": 13.8}},
+]
+
+
+def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]:
+    """(height, width, frames) the model makes by default on this Mac, for any catalog adapter."""
     e = CATALOG[model_id]
-    need_gb = int(e["min_memory_gb"])
+    if e["adapter"] == "longcat-avatar":
+        from shutter.adapters import longcat as L
+        h, w = (480, 832) if 0 < total_bytes < L.SMALL_MAC_BYTES else (704, 1312)
+        return h, w, 93
+    return default_request(model_id, total_bytes)
+
+
+def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, int]:
+    """Measured peak (bytes) per memory step for this exact request size, from the model's `checked_on`; {} if none."""
+    for c in e.get("checked_on") or []:
+        if c.get("size") == f"{h}x{w}" and int(c.get("frames", 0)) == f and not c.get("vae_tile"):
+            return {r: int(float(g) * GB) for r, g in (c.get("peaks_gb") or {}).items()}
+    return {}
+
+
+def _mac_size_for(peak: int, floor_gb: int) -> int:
+    need = peak / BARELY_SHARE / GB
+    return next((g for g in MAC_SIZES_GB if g >= need and g >= floor_gb), max(floor_gb, int(-(-need // 1))))
+
+
+def classify_fit(model_id: str, total_bytes: int) -> dict[str, Any]:
+    """How a catalog model fits a Mac with `total_bytes` of memory (its total, not what is free right now), at the
+    size it would make by default there:
+      recommended  measured at this size, and its full speed peak is at most 50% of total memory
+      barely       its lowest step's peak is at most 70% of total memory (or it is only an estimate)
+      no_fit       anything above, or under the model's smallest Mac
+    Uses the measured peaks when there are any for this size (and only those), otherwise the engine's estimates.
+    Returns {"level", "label", "reason", "detail", "peak_bytes", "measured", "at"}; `reason` is one plain line."""
+    e = CATALOG[model_id]
     if not total_bytes:
-        return {"level": "unknown", "label": "", "detail": "This Mac's memory could not be read."}
+        return {"level": "unknown", "label": "", "reason": "This Mac's memory could not be read.",
+                "detail": "This Mac's memory could not be read.", "peak_bytes": 0, "measured": False, "at": ""}
+    mac_gb = total_bytes / GB
     try:
-        if e["adapter"] == "wan":
-            h, w, f = default_request(model_id, total_bytes)
-            est = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
-            at = f"{h}x{w}, {f} frames"
-        elif e["adapter"] == "longcat-avatar":
-            est = _longcat_estimates(total_bytes)
-            at = "the default size"
-        else:
-            est = {}
-            at = ""
+        h, w, f = default_request_any(model_id, total_bytes)
+        at = f"{h}x{w}, {f} frames"
     except Exception:
-        est = {}
+        h = w = f = 0
         at = ""
-    budget = total_bytes - headroom
-    if total_bytes < need_gb * GB:
-        return {"level": "needs", "label": f"Needs {need_gb} GB",
-                "detail": f"Needs a Mac with at least {need_gb} GB of memory; this one has {total_bytes / GB:.0f} GB."}
-    if not est:
-        return {"level": "fits", "label": "Fits", "detail": f"This Mac has {total_bytes / GB:.0f} GB of memory."}
-    fast, low = est.get("resident", 0), min(est.values())
-    # a model that needs more than half of this Mac's memory only runs with most other apps closed: say so
-    tight = (f" It needs about {low / GB:.0f} GB free when it runs, so close other apps first."
-             if low > total_bytes / 2 else "")
-    if fast <= budget:
-        return {"level": "fits", "label": "Fits",
-                "detail": f"Runs at full speed here: about {fast / GB:.1f} GB at {at}.", "peak_bytes": fast}
-    if low <= budget:
-        return {"level": "low_memory", "label": "Fits in Low memory",
-                "detail": f"Runs here in Low memory: about {low / GB:.1f} GB at {at} (the fastest step would "
-                          f"need about {fast / GB:.0f} GB).{tight}", "peak_bytes": low}
-    more = max(need_gb, int(-(-(low + headroom) // GB)))
-    return {"level": "needs", "label": f"Needs {more} GB",
-            "detail": f"Even Low memory needs about {low / GB:.0f} GB at {at}; this Mac has "
-                      f"{total_bytes / GB:.0f} GB.", "peak_bytes": low}
+    peaks = _measured_peaks(e, h, w, f) if h else {}
+    measured = bool(peaks)
+    if not peaks:
+        try:
+            if e["adapter"] == "wan":
+                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
+            elif e["adapter"] == "longcat-avatar":
+                peaks = _longcat_estimates(total_bytes)
+        except Exception:
+            peaks = {}
+    if peaks and not measured:
+        # an estimate never earns the SSD-streaming steps: those numbers are the least trustworthy, so judge an
+        # untested model by its lowest step that keeps the whole model in memory
+        peaks = {r: v for r, v in peaks.items() if not r.startswith("stream")} or peaks
+    low = min(peaks.values()) if peaks else 0
+    fast = peaks.get("resident", 0)
+    floor_gb = int(e.get("min_memory_gb") or 0)
+
+    def out(level: str, reason: str, peak: int) -> dict[str, Any]:
+        return {"level": level, "label": FIT_LABELS[level], "reason": reason, "detail": reason,
+                "peak_bytes": int(peak), "measured": measured, "at": at}
+
+    if total_bytes < floor_gb * GB or not peaks or low > BARELY_SHARE * total_bytes:
+        need = _mac_size_for(low, floor_gb)
+        if need <= mac_gb:
+            need = next((g for g in MAC_SIZES_GB if g > mac_gb), int(mac_gb) * 2)
+        return out("no_fit", f"Needs about {need} GB. This Mac has {mac_gb:.0f} GB.", low)
+    if measured and fast and fast <= RECOMMENDED_SHARE * total_bytes:
+        return out("recommended", "Runs at full speed on this Mac.", fast)
+    roomy = low <= RECOMMENDED_SHARE * total_bytes
+    if not measured:
+        return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
+    if roomy:
+        return out("barely", "Runs only in a lower memory step here. It may be slow.", low)
+    return out("barely", TIGHT, low)
+
+
+def makes_line(model_id: str, total_bytes: int) -> str:
+    """One short line on what the model makes by default on this Mac, e.g. "Makes 320x512 clips on this Mac"."""
+    try:
+        h, w, _f = default_request_any(model_id, total_bytes)
+    except Exception:
+        return ""
+    if CATALOG[model_id]["adapter"] == "longcat-avatar":
+        return f"Makes {'480p' if h < 700 else '720p'} talking videos on this Mac"
+    return f"Makes {h}x{w} clips on this Mac"
+
+
+def fit_for(model_id: str, total_bytes: int, headroom: int = 0) -> dict[str, Any]:
+    """Kept for callers of the old name; `headroom` no longer changes the answer (see classify_fit)."""
+    return classify_fit(model_id, total_bytes)
 
 
 def disk_for(entry: dict[str, Any], free: int, done_bytes: int = 0, installed: bool = False) -> dict[str, Any]:
@@ -312,7 +377,7 @@ def disk_for(entry: dict[str, Any], free: int, done_bytes: int = 0, installed: b
         need += int(entry.get("built_size_gb", 0) * GB)
     ok = free <= 0 or free >= need
     return {"ok": ok, "need_bytes": need,
-            "label": "" if ok else f"Needs {need / GB:.0f} GB of free disk space ({free / GB:.0f} GB free)"}
+            "label": "" if ok else f"Not enough free disk ({need / GB:.0f} GB needed, {free / GB:.0f} GB free)"}
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -391,11 +456,11 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
                         installed)
         rows.append({
             "id": mid, "name": e["name"], "summary": e["summary"], "kind": e["kind"], "source": e["repo"],
-            "fit": fit, "disk": disk,
-            "recommended": bool(e.get("starter")) and 0 < total < SMALL_MAC_BYTES and fit["level"] != "needs",
+            "fit": fit, "disk": disk, "makes": makes_line(mid, total),
+            "recommended": fit["level"] == "recommended",
             "sample": e.get("sample"),
             "size_bytes": int(e["size_gb"] * GB), "min_memory_bytes": int(e["min_memory_gb"] * GB),
-            "fits_this_mac": total == 0 or fit["level"] != "needs",
+            "fits_this_mac": total == 0 or fit["level"] != "no_fit",
             "dir": str(folder), "installed": installed, "free_bytes": free,
             "notes": preset["notes"], "download": st,
             "needs_conversion": bool(e.get("needs_conversion")),
@@ -403,9 +468,9 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "size_approximate": bool(e.get("size_approximate")),
             "checked_on": checked,
         })
-    # the recommended starter first, then models that fit, then the rest (stable within each group)
-    order = {"fits": 0, "low_memory": 1, "unknown": 1, "needs": 2}
-    rows.sort(key=lambda r: (not r["recommended"], order.get(r["fit"]["level"], 1)))
+    # Recommended, then Fits but barely, then Doesn't fit (stable within each group)
+    order = {"recommended": 0, "barely": 1, "unknown": 1, "no_fit": 2}
+    rows.sort(key=lambda r: order.get(r["fit"]["level"], 1))
     return rows
 
 

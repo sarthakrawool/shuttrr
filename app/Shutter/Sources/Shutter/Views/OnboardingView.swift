@@ -34,8 +34,16 @@ struct OnboardingView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
-    static let width: CGFloat = 640
-    static let height: CGFloat = 600
+    /// About 960 x 800 points, clamped to the screen's visible frame; the window can be resized from there.
+    static let minWidth: CGFloat = 640
+    static let minHeight: CGFloat = 560
+    static var width: CGFloat { clamped(960, \.width, margin: 80, floor: minWidth) }
+    static var height: CGFloat { clamped(800, \.height, margin: 60, floor: minHeight) }
+    private static func clamped(_ want: CGFloat, _ side: KeyPath<CGSize, CGFloat>, margin: CGFloat,
+                                floor: CGFloat) -> CGFloat {
+        guard let vis = NSScreen.main?.visibleFrame.size else { return want }
+        return max(floor, min(want, vis[keyPath: side] - margin))
+    }
     /// Clears the close, minimise and zoom buttons (the content runs under the hidden title bar).
     static let headerTop: CGFloat = 52
 
@@ -58,10 +66,11 @@ struct OnboardingView: View {
         }
         .padding(.horizontal, Theme.Space.s7)
         .padding(.bottom, Theme.Space.s6)
-        .frame(width: Self.width)
-        .frame(minHeight: Self.height, idealHeight: Self.height)
+        .frame(minWidth: Self.minWidth, idealWidth: Self.width, maxWidth: .infinity,
+               minHeight: Self.minHeight, idealHeight: Self.height, maxHeight: .infinity)
         .background(PaperBackground())
         .background(PaperWindow())
+        .background(OnboardingWindowSizer())
         .animation(Motion.gentle, value: flow.page)
         .onAppear {
             if flow.autoRunSetup && flow.page == .setup && setup.phase == .idle { setup.run() }
@@ -425,9 +434,7 @@ private struct ModelPage: View {
                         ForEach(downloading) { model in
                             BackgroundDownloadLine(model: model)
                         }
-                        ForEach(choices) { model in
-                            ModelDownloadRow(model: model)
-                        }
+                        SectionedModelList(models: choices)
                     }
                 }
             }
@@ -587,5 +594,34 @@ private struct ReadyPage: View {
             }
         }
         .onAppear { UserDefaults.standard.set(true, forKey: SetupRunner.onboardingDoneKey) }
+    }
+}
+
+
+/// Opens the first-run window at its full size even when macOS restores a smaller frame saved by an older version
+/// (0.2.0 was 640 x 600). Done once per window, so a size the person picks by resizing is kept while it is open.
+private struct OnboardingWindowSizer: NSViewRepresentable {
+    @MainActor private static var sized = Set<ObjectIdentifier>()
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { Self.size(view.window) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { Self.size(view.window) }
+    }
+
+    @MainActor private static func size(_ window: NSWindow?) {
+        guard let window, !sized.contains(ObjectIdentifier(window)) else { return }
+        sized.insert(ObjectIdentifier(window))
+        let want = NSSize(width: OnboardingView.width, height: OnboardingView.height)
+        let f = window.frame
+        guard f.width < want.width - 1 || f.height < want.height - 1 else { return }
+        let vis = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? f
+        let size = NSSize(width: max(f.width, want.width), height: max(f.height, want.height))
+        let origin = NSPoint(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2)
+        window.setFrame(NSRect(origin: origin, size: size), display: true, animate: false)
     }
 }

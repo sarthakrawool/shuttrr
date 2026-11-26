@@ -390,6 +390,10 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         mid = request.path_params["model_id"]
         if mid not in cat.CATALOG:
             return _err(404, f"unknown model '{mid}'")
+        total = cat.total_memory()
+        fit = cat.classify_fit(mid, total) if total else {"level": "unknown"}
+        if fit["level"] == "no_fit" and request.query_params.get("force") not in ("1", "true"):
+            return _err(409, f"{cat.CATALOG[mid]['name']} does not fit this Mac. {fit['reason']}")
         st = cat.read_state(engine.config, mid)
         if not (st and st.get("state") in cat.RUNNING):      # downloading, or converting a Wan download
             env = dict(os.environ, SHUTTER_HOME=str(engine.config.home))

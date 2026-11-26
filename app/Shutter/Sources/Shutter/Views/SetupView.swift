@@ -16,9 +16,7 @@ struct SetupCard: View {
                     .foregroundStyle(Theme.Palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(store.catalog) { model in
-                ModelDownloadRow(model: model)
-            }
+            SectionedModelList(models: store.catalog)
         }
         .padding(Theme.Space.s5)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -28,85 +26,163 @@ struct SetupCard: View {
     }
 }
 
-/// One downloadable model: what it is, how big, progress, and the one button that fits its state.
+/// Catalog models in three headed sections: Recommended, Fits but barely, Doesn't fit this Mac. Empty sections are
+/// hidden; Doesn't fit starts folded, with a count.
+struct SectionedModelList: View {
+    let models: [CatalogModel]
+    /// Testing: SHUTTER_SHOW_NOFIT=1 opens the Doesn't fit section, for screenshots.
+    @State private var showNoFit = ProcessInfo.processInfo.environment["SHUTTER_SHOW_NOFIT"] != nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s5) {
+            ForEach(FitSection.allCases) { section in
+                let rows = models.filter { FitSection.of($0) == section }
+                if !rows.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.Space.s2) {
+                        if section == .noFit {
+                            Button {
+                                withAnimation(Motion.smooth) { showNoFit.toggle() }
+                            } label: {
+                                HStack(spacing: Theme.Space.s1) {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .rotationEffect(.degrees(showNoFit ? 90 : 0))
+                                    Text("\(section.title) (\(rows.count))")
+                                        .font(Theme.Fonts.metaSemibold)
+                                }
+                                .foregroundStyle(Theme.Palette.muted)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Text(section.title)
+                                .font(Theme.Fonts.metaSemibold)
+                                .foregroundStyle(section == .recommended ? Theme.Palette.ink : Theme.Palette.ink2)
+                        }
+                        if section != .noFit || showNoFit {
+                            ForEach(rows) { ModelDownloadRow(model: $0) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One downloadable model, at most three short lines under the name: what it is, the download size, and (only when
+/// it does not sit comfortably) why. Everything else is behind Details.
 struct ModelDownloadRow: View {
     @EnvironmentObject private var store: EngineStore
     @EnvironmentObject private var engine: EngineProcess
     let model: CatalogModel
+    @State private var showDetails = false
 
     private var pending: Bool { store.catalogPending.contains(model.id) }
     private var state: String { model.download?.state ?? "" }
     private var remaining: Int { max(0, model.sizeBytes - (model.download?.doneBytes ?? 0)) }
     private var diskShort: Bool {
-        guard !model.installed && !model.isDownloading else { return false }
+        guard !model.installed && !model.isDownloading && !model.fit.isNoFit else { return false }
         if !model.disk.label.isEmpty { return !model.disk.ok }
         return model.freeBytes > 0 && model.freeBytes < remaining
     }
-    private var tooBig: Bool { !model.fitsThisMac || model.fit.level == "needs" }
+    private var noFit: Bool { model.fit.isNoFit }
 
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.Space.s5) {
-            VStack(alignment: .leading, spacing: Theme.Space.s2) {
+        HStack(alignment: .top, spacing: Theme.Space.s4) {
+            VStack(alignment: .leading, spacing: Theme.Space.s1) {
                 HStack(spacing: Theme.Space.s2) {
                     Text(model.name)
                         .font(Theme.Fonts.rowMedium)
                         .foregroundStyle(Theme.Palette.ink)
                         .lineLimit(1)
-                        .layoutPriority(1)
-                    if model.recommended && !model.installed {
-                        KitBadge(text: "Recommended", kind: .quiet)
-                    }
-                    FitBadge(fit: model.fit)
+                        .truncationMode(.tail)
+                        .help(model.name)
+                    detailsButton
                 }
                 Text(model.summary)
                     .font(Theme.Fonts.row)
                     .foregroundStyle(Theme.Palette.ink2)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("\(Fmt.gb(model.sizeBytes)) download · from Hugging Face · \(Fmt.gb(model.freeBytes)) free on this Mac")
-                    .font(Theme.Fonts.mono)
-                    .foregroundStyle(Theme.Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .help(model.summary)
+                meta
                 status
-                ForEach(model.notes, id: \.self) { note in
-                    line(note)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             action
         }
         .padding(.horizontal, Theme.Space.s5)
-        .padding(.vertical, Theme.Space.s4)
+        .padding(.vertical, Theme.Space.s3)
         .background(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
+            .fill(Theme.Palette.white.opacity(noFit ? 0.35 : 0.8)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
             .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metric.hairline))
+        .opacity(noFit && !model.installed ? 0.6 : 1)
         .animation(Motion.smooth, value: state)
+    }
+
+    /// "12.3 GB download", or the disk warning.
+    @ViewBuilder private var meta: some View {
+        if diskShort {
+            line("Not enough free disk", danger: true)
+                .help(model.disk.label)
+        } else if !model.installed && !model.isDownloading {
+            Text("\(Fmt.gb(model.sizeBytes)) download")
+                .font(Theme.Fonts.meta)
+                .foregroundStyle(Theme.Palette.muted)
+                .lineLimit(1)
+        }
     }
 
     @ViewBuilder private var status: some View {
         if model.installed && store.catalogRestartNeeded {
-            line("Downloaded. Restart the engine to start using it.")
+            line("Downloaded. Restart the engine to use it.")
         } else if model.installed {
             line("Installed and ready.")
         } else if let d = model.download, d.isRunning {
             ProgressLine(value: d.fraction, width: nil, height: Theme.Metric.progressHeightWide)
-            line("\(Fmt.gb(d.doneBytes)) of \(Fmt.gb(d.totalBytes > 0 ? d.totalBytes : model.sizeBytes)) · \(Fmt.percent(d.fraction)). You can keep using this Mac; the download carries on if you close this window.")
-        } else {
-            if state == "failed" {
-                line((model.download?.error ?? "").isEmpty ? "The download failed." : model.download?.error ?? "", danger: true)
-            } else if state == "stopped" || state == "cancelled" {
-                line("Stopped at \(Fmt.gb(model.download?.doneBytes ?? 0)). It carries on from there.")
-            }
-            if tooBig {
-                line(model.fit.detail.isEmpty
-                     ? "This model needs a Mac with at least \(Fmt.gb(model.minMemoryBytes)) of memory."
-                     : model.fit.detail, danger: true)
-            } else {
-                if !model.fit.detail.isEmpty { line(model.fit.detail) }
-                if diskShort {
-                    line(model.disk.label.isEmpty ? "Not enough free disk space for this download." : model.disk.label,
-                         danger: true)
+                .padding(.vertical, Theme.Space.s1)
+            line("\(Fmt.gb(d.doneBytes)) of \(Fmt.gb(d.totalBytes > 0 ? d.totalBytes : model.sizeBytes)) · \(Fmt.percent(d.fraction))")
+        } else if state == "failed" {
+            line((model.download?.error ?? "").isEmpty ? "The download failed." : model.download?.error ?? "",
+                 danger: true)
+        } else if state == "stopped" || state == "cancelled" {
+            line("Stopped at \(Fmt.gb(model.download?.doneBytes ?? 0)). Resume carries on.")
+        } else if !model.fit.isRecommended && !model.fit.reason.isEmpty {
+            line(model.fit.reason, danger: noFit)
+        }
+    }
+
+    private var detailsButton: some View {
+        Button { showDetails.toggle() } label: {
+            Image(systemName: "info.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Palette.muted)
+        }
+        .buttonStyle(.plain)
+        .help("Details")
+        .popover(isPresented: $showDetails, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: Theme.Space.s2) {
+                Text(model.name).font(Theme.Fonts.rowMedium)
+                ForEach(detailLines, id: \.self) { t in
+                    Text(t)
+                        .font(Theme.Fonts.meta)
+                        .foregroundStyle(Theme.Palette.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .padding(Theme.Space.s4)
+            .frame(width: 340, alignment: .leading)
         }
+    }
+
+    private var detailLines: [String] {
+        var out: [String] = []
+        if !model.fit.reason.isEmpty { out.append(model.fit.reason) }
+        if !model.makes.isEmpty { out.append(model.makes + ".") }
+        out.append("\(Fmt.gb(model.sizeBytes)) download from Hugging Face. \(Fmt.gb(model.freeBytes)) free on this Mac.")
+        out.append(contentsOf: model.notes)
+        return out
     }
 
     @ViewBuilder private var action: some View {
@@ -124,12 +200,12 @@ struct ModelDownloadRow: View {
             Button("Stop") { store.stopDownload(model.id) }
                 .buttonStyle(.kit(.line))
                 .disabled(pending)
-        } else {
-            Button(pending ? "Starting…" : (state.isEmpty || state == "done" ? "Download" : "Resume Download")) {
+        } else if !noFit {
+            Button(pending ? "Starting…" : (state.isEmpty || state == "done" ? "Download" : "Resume")) {
                 store.startDownload(model.id)
             }
             .buttonStyle(.kit(.ink))
-            .disabled(pending || tooBig || diskShort || !store.connection.isConnected)
+            .disabled(pending || diskShort || !store.connection.isConnected)
         }
     }
 
@@ -137,8 +213,9 @@ struct ModelDownloadRow: View {
         Text(text)
             .font(Theme.Fonts.meta)
             .foregroundStyle(danger ? Theme.Palette.danger : Theme.Palette.ink2)
+            .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
+            .help(text)
     }
 
     private func restartEngine() {
@@ -154,27 +231,6 @@ struct ModelDownloadRow: View {
     }
 }
 
-
-/// "Fits" / "Fits in Low memory" / "Needs 24 GB": how a catalog model fits this Mac's memory.
-struct FitBadge: View {
-    let fit: CatalogFit
-
-    var body: some View {
-        if !fit.label.isEmpty {
-            KitBadge(text: fit.label, kind: kind)
-                .help(fit.detail)
-        }
-    }
-
-    private var kind: KitBadge.Kind {
-        switch fit.level {
-        case "fits": return .good
-        case "low_memory": return .outline
-        case "needs": return .danger
-        default: return .muted
-        }
-    }
-}
 
 /// "Try a Sample": one short clip with the starter model, opened when it is done.
 struct TrySampleCard: View {
@@ -217,7 +273,7 @@ struct TrySampleCard: View {
     private func detail(_ model: CatalogModel, _ sm: CatalogSample) -> String {
         switch store.sample {
         case .idle:
-            return "Makes a short clip with \(model.name) (\(sm.height)x\(sm.width), \(sm.frames) frames) from a ready-made prompt, then opens it. About a minute on a 16 GB Mac."
+            return "Makes a short clip with \(model.name) from a ready-made prompt, then opens it."
         case .running(_, let p):
             return p > 0 ? "Making the sample… \(Fmt.percent(p))" : "Starting the sample…"
         case .done:

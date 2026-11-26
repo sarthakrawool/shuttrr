@@ -698,45 +698,54 @@
 
   // ---------- model downloads ----------
   function getCard(r) {
+    // at most three short lines under the name: what it is, the download size, and (only when it does not sit
+    // comfortably) one reason; the rest is in the Details tooltip
     var d = r.download || {}, st = d.state || "", busy = st === "downloading";
-    var meta = [gb(r.size_bytes) + " download", "from Hugging Face", gb(r.free_bytes) + " free on this Mac"];
+    var fit = r.fit || {}, disk = r.disk || {}, noFit = fit.level === "no_fit";
+    var diskShort = !r.installed && !busy && !noFit && (disk.label ? !disk.ok : (r.free_bytes > 0 && r.free_bytes < r.size_bytes - (d.done_bytes || 0)));
+    var meta = diskShort ? '<div class="sh-get__note sh-neg" title="' + esc(disk.label || "") + '">Not enough free disk</div>'
+      : (!r.installed && !busy ? '<div class="sh-get__meta">' + gb(r.size_bytes) + " download</div>" : "");
     var body = "", btn = "";
-    if (r.installed && catalogRestart) body = '<div class="sh-get__note">Downloaded. Quit and reopen Shuttrr to start using it.</div>';
+    if (r.installed && catalogRestart) body = '<div class="sh-get__note">Downloaded. Quit and reopen Shuttrr to use it.</div>';
     else if (r.installed) body = '<div class="sh-get__note">Installed and ready.</div>';
     else if (busy) {
       var pct = d.total_bytes ? Math.min(100, 100 * d.done_bytes / d.total_bytes) : 0;
       body = '<span class="sh-prog sh-prog--wide"><i style="width:' + pct.toFixed(1) + '%"></i></span>' +
-        '<div class="sh-get__note">' + gb(d.done_bytes || 0) + " of " + gb(d.total_bytes || r.size_bytes) + " · " + pct.toFixed(0) + "%. You can keep using this Mac; the download carries on if you close this page.</div>";
+        '<div class="sh-get__note">' + gb(d.done_bytes || 0) + " of " + gb(d.total_bytes || r.size_bytes) + " · " + pct.toFixed(0) + "%</div>";
       btn = '<button class="mac-btn mac-btn--line" data-getstop="' + esc(r.id) + '">Stop</button>';
     } else {
       if (st === "failed") body = '<div class="sh-get__note sh-neg">' + esc(d.error || "The download failed.") + "</div>";
-      else if (st === "stopped" || st === "cancelled") body = '<div class="sh-get__note">Stopped at ' + gb(d.done_bytes || 0) + ". It carries on from there.</div>";
-      var fit = r.fit || {}, disk = r.disk || {};
-      var diskShort = disk.label ? !disk.ok : r.free_bytes < r.size_bytes - (d.done_bytes || 0);
-      var tooBig = !r.fits_this_mac || fit.level === "needs";
-      if (tooBig) body += '<div class="sh-get__note sh-neg">' + esc(fit.detail || ("This model needs a Mac with at least " + gb(r.min_memory_bytes) + " of memory.")) + "</div>";
-      else {
-        if (fit.detail) body += '<div class="sh-get__note">' + esc(fit.detail) + "</div>";
-        if (diskShort) body += '<div class="sh-get__note sh-neg">' + esc(disk.label || "Not enough free disk space for this download.") + "</div>";
-      }
-      btn = '<button class="mac-btn mac-btn--ink" data-get="' + esc(r.id) + '"' + (tooBig || diskShort ? " disabled" : "") + ">" + (st && st !== "done" ? "Resume download" : "Download") + "</button>";
+      else if (st === "stopped" || st === "cancelled") body = '<div class="sh-get__note">Stopped at ' + gb(d.done_bytes || 0) + ". Resume carries on.</div>";
+      else if (fit.level !== "recommended" && fit.reason) body = '<div class="sh-get__note' + (noFit ? " sh-neg" : "") + '">' + esc(fit.reason) + "</div>";
+      if (!noFit) btn = '<button class="mac-btn mac-btn--ink" data-get="' + esc(r.id) + '"' + (diskShort ? " disabled" : "") + ">" + (st && st !== "done" ? "Resume" : "Download") + "</button>";
     }
-    var notes = (r.notes || []).map(function (n) { return '<div class="sh-get__note">' + esc(n) + "</div>"; }).join("");
-    var f = r.fit || {}, badges = "";
-    if (r.recommended && !r.installed) badges += ' <span class="mac-badge sh-badge">Recommended</span>';
-    if (f.label) badges += ' <span class="mac-badge ' + (f.level === "fits" ? "mac-badge--keep" : f.level === "needs" ? "mac-badge--trash" : "sh-badge sh-badge--wait") +
-      '" title="' + esc(f.detail || "") + '">' + esc(f.label) + "</span>";
-    return '<div class="sh-get"><div class="sh-get__main"><div class="sh-get__name">' + esc(r.name) + badges + '</div><div class="sh-get__sub">' + esc(r.summary) +
-      '</div><div class="sh-get__meta">' + meta.join(" · ") + "</div>" + body + notes + '</div><div class="sh-get__act">' + btn + "</div></div>";
+    var details = [fit.reason, r.makes ? r.makes + "." : "", gb(r.size_bytes) + " download from Hugging Face. " + gb(r.free_bytes) + " free on this Mac."]
+      .concat(r.notes || []).filter(Boolean).join("\n");
+    return '<div class="sh-get' + (noFit && !r.installed ? " sh-get--nofit" : "") + '"><div class="sh-get__main"><div class="sh-get__name">' + esc(r.name) +
+      ' <span class="sh-get__info" title="' + esc(details) + '">ⓘ</span></div><div class="sh-get__sub">' + esc(r.summary) +
+      "</div>" + meta + body + '</div><div class="sh-get__act">' + btn + "</div></div>";
+  }
+  var FIT_SECTIONS = [["recommended", "Recommended"], ["barely", "Fits but barely"], ["no_fit", "Doesn't fit this Mac"]];
+  function fitSection(r) { var l = (r.fit || {}).level; return l === "recommended" || l === "no_fit" ? l : "barely"; }
+  function sectionedCards(rows) {
+    return FIT_SECTIONS.map(function (s) {
+      var list = rows.filter(function (r) { return fitSection(r) === s[0]; });
+      if (!list.length) return "";
+      var cards = list.map(getCard).join("");
+      if (s[0] === "no_fit") return '<details class="sh-fitsec sh-fitsec--nofit"><summary>' + s[1] + " (" + list.length + ")</summary>" + cards + "</details>";
+      return '<div class="sh-fitsec"><div class="sh-fitsec__h">' + s[1] + "</div>" + cards + "</div>";
+    }).join("");
   }
   function renderCatalog() {
     var open = catalog.filter(function (r) { return !r.installed || catalogRestart; });
     $("m-get-wrap").hidden = !open.length;
-    $("m-get").innerHTML = open.map(getCard).join("");
+    var nofitOpen = document.querySelector(".sh-fitsec--nofit[open]") !== null;
+    $("m-get").innerHTML = sectionedCards(open);
     var none = catalog.length && !models.some(function (m) { return m.installed && m.family !== "dummy" && !m.error; });
     $("q-setup").innerHTML = none ? '<section class="sh-setup"><div class="sh-setup__head"><div class="sh-setup__title">Set up Shuttrr</div>' +
       '<div class="sh-setup__sub">Download a model to make your first video. It is saved on this Mac and nothing is uploaded.</div></div>' +
-      catalog.map(getCard).join("") + "</section>" : "";
+      sectionedCards(catalog) + "</section>" : "";
+    if (nofitOpen) document.querySelectorAll(".sh-fitsec--nofit").forEach(function (e) { e.open = true; });
   }
   function catalogBusy() { return catalog.some(function (r) { return r.download && r.download.state === "downloading"; }); }
   function loadCatalog() {

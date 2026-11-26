@@ -32,7 +32,7 @@ struct ShutterApp: App {
                 .environmentObject(appDelegate.flow)
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
         .defaultSize(width: OnboardingView.width, height: OnboardingView.height)
         .defaultPosition(.center)
     }

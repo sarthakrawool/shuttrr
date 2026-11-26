@@ -496,15 +496,16 @@ struct CatalogDownload: Decodable, Hashable, Sendable {
     var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : 0 }
 }
 
-/// How a catalog model fits this Mac's memory (its total, from the engine's per-step estimates).
+/// How a catalog model fits this Mac's memory, from the engine's one classifier (catalog.classify_fit):
+/// recommended (measured, full speed under half the memory), barely, no_fit, unknown.
 struct CatalogFit: Decodable, Hashable, Sendable {
-    /// fits, low_memory, needs, unknown
     var level: String = "unknown"
-    /// "Fits", "Fits in Low memory", "Needs 24 GB"; empty when unknown.
+    /// "Recommended", "Fits but barely", "Doesn't fit"; empty when unknown.
     var label: String = ""
-    var detail: String = ""
+    /// One short plain line, e.g. "Needs about 32 GB. This Mac has 16 GB."
+    var reason: String = ""
 
-    enum CodingKeys: String, CodingKey { case level, label, detail }
+    enum CodingKeys: String, CodingKey { case level, label, reason, detail }
 
     init() {}
 
@@ -512,7 +513,28 @@ struct CatalogFit: Decodable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         level = c.value(.level, "unknown")
         label = c.value(.label, "")
-        detail = c.value(.detail, "")
+        let r: String = c.value(.reason, "")
+        reason = r.isEmpty ? c.value(.detail, "") : r
+    }
+
+    var isRecommended: Bool { level == "recommended" }
+    var isBarely: Bool { level == "barely" || level == "unknown" }
+    var isNoFit: Bool { level == "no_fit" }
+}
+
+/// The three sections a model list is shown in, in order.
+enum FitSection: Int, CaseIterable, Identifiable, Sendable {
+    case recommended, barely, noFit
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .recommended: return "Recommended"
+        case .barely: return "Fits but barely"
+        case .noFit: return "Doesn't fit this Mac"
+        }
+    }
+    static func of(_ m: CatalogModel) -> FitSection {
+        m.fit.isRecommended ? .recommended : m.fit.isNoFit ? .noFit : .barely
     }
 }
 
@@ -574,9 +596,11 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     /// The starter model for this Mac (under 24 GB: the smallest Wan).
     var recommended: Bool = false
     var sample: CatalogSample?
+    /// "Makes 320x512 clips on this Mac" (shown only behind Details).
+    var makes: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample
+        case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
         case freeBytes = "free_bytes"
@@ -601,6 +625,7 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         disk = c.optional(.disk) ?? CatalogDisk()
         recommended = c.value(.recommended, false)
         sample = c.optional(.sample)
+        makes = c.value(.makes, "")
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }

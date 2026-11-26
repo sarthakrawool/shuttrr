@@ -325,19 +325,56 @@ def test_doctor_skips_wan_until_installed(cfg):
     assert f"shutter download {STARTER}" in wan[0]["detail"]
 
 
-def test_fit_labels_follow_memory_estimates():
-    # Wan 1.3B on 16 GB: 320x512 x 33 at full speed (measured 6.2 GB); LongCat only in Low memory there
-    f = cat.fit_for(STARTER, 16 * GB, 2 * GB)
-    assert f["level"] == "fits" and f["label"] == "Fits" and "320x512, 33 frames" in f["detail"]
-    lc = cat.fit_for(MID, 16 * GB, 2 * GB)
-    assert lc["level"] == "low_memory" and lc["label"] == "Fits in Low memory"
-    assert cat.fit_for(MID, 64 * GB, 8 * GB)["level"] == "fits"
-    assert cat.fit_for(STARTER, 8 * GB, 2 * GB) == {**cat.fit_for(STARTER, 8 * GB, 2 * GB), "level": "needs",
-                                                     "label": "Needs 16 GB"}
-    assert cat.fit_for(STARTER, 0, 0)["level"] == "unknown"
+def test_fit_classifier_on_16_gb():
+    # Wan 1.3B: measured 6.2 GB at 320x512 x 33 on a 16 GB M5 -> recommended
+    f = cat.classify_fit(STARTER, 16 * GB)
+    assert f["level"] == "recommended" and f["label"] == "Recommended" and f["measured"]
+    assert f["at"] == "320x512, 33 frames" and f["reason"] == "Runs at full speed on this Mac."
+    # LongCat: lowest measured step is 12.3 GB, over 70% of 16 GB -> no fit, never "fits in Low memory"
+    lc = cat.classify_fit(MID, 16 * GB)
+    assert lc["level"] == "no_fit" and lc["label"] == "Doesn't fit"
+    assert lc["reason"] == "Needs about 24 GB. This Mac has 16 GB."
+    # estimates are never recommended; the 14B models do not fit
+    assert cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["level"] != "recommended"
+    assert "Not tested on a Mac this size yet" in cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["reason"]
+    for big in ("wan2.2-t2v-a14b", "wan2.2-i2v-a14b"):
+        assert cat.classify_fit(big, 16 * GB)["level"] == "no_fit"
+    assert cat.classify_fit(STARTER, 8 * GB)["level"] == "no_fit"
+    assert cat.classify_fit(STARTER, 0)["level"] == "unknown"
+    assert cat.fit_for(STARTER, 16 * GB, 2 * GB) == cat.classify_fit(STARTER, 16 * GB)
     # small Macs never default to 480x832 x 81 frames
     assert cat.default_request(STARTER, 16 * GB) == (320, 512, 33)
     assert cat.default_request(STARTER, 32 * GB) == (480, 832, 81)
+
+
+def test_fit_classifier_table_by_mac_size():
+    level = lambda m, g: cat.classify_fit(m, g * GB)["level"]
+    # LongCat: full speed (31.5 / 34.5 GB) is under half only on the big Macs; 24-64 GB only in a lower step
+    assert [level(MID, g) for g in (16, 24, 32, 64, 128)] == ["no_fit", "barely", "barely", "barely", "recommended"]
+    assert cat.classify_fit(MID, 24 * GB)["reason"].startswith("Tight on this Mac.")
+    assert "lower memory step" in cat.classify_fit(MID, 64 * GB)["reason"]
+    # Wan 1.3B is only measured at the small-Mac size: bigger Macs default to 480x832 x 81, an estimate
+    assert [level(STARTER, g) for g in (16, 24, 32, 64, 128)] == ["recommended"] + ["barely"] * 4
+    for m in cat.CATALOG:
+        for g in (16, 24, 32, 64, 128):
+            f = cat.classify_fit(m, g * GB)
+            if f["level"] == "recommended":
+                assert f["measured"] and f["peak_bytes"] <= cat.RECOMMENDED_SHARE * g * GB
+            if f["level"] == "barely":
+                assert f["peak_bytes"] <= cat.BARELY_SHARE * g * GB
+            assert "low memory" not in f["reason"].lower().replace("lower memory", "")
+    assert level("wan2.2-t2v-a14b", 32) == "no_fit" and level("wan2.2-t2v-a14b", 64) == "barely"
+
+
+def test_catalog_rows_are_grouped_by_fit(cfg, monkeypatch):
+    monkeypatch.setattr(cat, "total_memory", lambda: 16 * GB)
+    rows = cat.catalog_rows(cfg)
+    order = {"recommended": 0, "barely": 1, "no_fit": 2}
+    levels = [order[r["fit"]["level"]] for r in rows]
+    assert levels == sorted(levels) and rows[0]["id"] == STARTER and rows[0]["recommended"]
+    by = {r["id"]: r for r in rows}
+    assert by[MID]["fit"]["level"] == "no_fit" and not by[MID]["fits_this_mac"]
+    assert by[STARTER]["makes"] == "Makes 320x512 clips on this Mac"
 
 
 def test_disk_label():
@@ -345,7 +382,7 @@ def test_disk_label():
     ok = cat.disk_for(e, 500 * GB)
     assert ok["ok"] and ok["label"] == ""
     short = cat.disk_for(e, 10 * GB)
-    assert not short["ok"] and short["label"].startswith("Needs ") and "10 GB free" in short["label"]
+    assert not short["ok"] and short["label"].startswith("Not enough free disk") and "10 GB free" in short["label"]
     assert cat.disk_for(e, 1 * GB, installed=True)["ok"]
 
 
@@ -360,5 +397,5 @@ def test_wan_starter_preset_and_sample(cfg, monkeypatch):
     assert not cat.CATALOG[STARTER].get("needs_conversion")
     monkeypatch.setattr(cat, "total_memory", lambda: 64 * GB)
     rows = {r["id"]: r for r in cat.catalog_rows(cfg)}
-    assert not rows[STARTER]["recommended"]                  # only Macs under 24 GB get a recommendation
-    assert rows[STARTER]["sample"] == sm and rows[STARTER]["fit"]["label"] == "Fits"
+    assert not rows[STARTER]["recommended"]                  # 480x832 x 81 is not measured yet
+    assert rows[STARTER]["sample"] == sm and rows[STARTER]["fit"]["level"] == "barely"

@@ -80,9 +80,7 @@ struct ModelsView: View {
                 if !store.needsFirstModel && !moreToDownload.isEmpty {
                     VStack(alignment: .leading, spacing: Theme.Space.s3) {
                         SectionHeader(title: "Download a model")
-                        ForEach(moreToDownload) { model in
-                            ModelDownloadRow(model: model)
-                        }
+                        SectionedModelList(models: moreToDownload)
                     }
                 }
             }

@@ -271,3 +271,13 @@ def test_catalog_lists_downloadable_models(client):
     assert row["installed"] is False and row["size_bytes"] > 30 * 2**30
     assert client.post("/v1/catalog/nope/download").status_code == 404
     assert client.delete("/v1/catalog/longcat-avatar-1.6-8bit/download").status_code == 200
+
+
+def test_catalog_refuses_a_model_that_does_not_fit(client, monkeypatch):
+    from shutter.core import catalog as cat
+    monkeypatch.setattr(cat, "total_memory", lambda: 16 * 2**30)
+    r = client.post("/v1/catalog/wan2.2-t2v-a14b/download")
+    assert r.status_code == 409 and "Needs about" in r.text
+    rows = {m["id"]: m for m in client.get("/v1/catalog").json()["models"]}
+    assert rows["wan2.2-t2v-a14b"]["fit"]["level"] == "no_fit"
+    assert rows["wan2.1-t2v-1.3b-8bit"]["fit"]["level"] == "recommended"

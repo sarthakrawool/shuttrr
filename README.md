@@ -70,15 +70,16 @@ If you prefer, build it yourself from source below.
 git clone https://github.com/sarthakrawool/shuttrr && cd shuttrr
 scripts/install.sh                         # engine in ~/.shutter/venv, Shuttrr.app in ~/Applications
 shutter doctor                             # is this Mac ready?
-shutter download wan2.1-t2v-1.3b-8bit      # starter model: text to video, fits a 16 GB Mac
+shutter download wan2.1-t2v-1.3b-8bit      # starter model: text to video, runs on a 16 GB Mac
 shutter download longcat-avatar-1.6-8bit   # talking video, 37.5 GB from Hugging Face
 ```
 
 **Starter model.** On a Mac with under 24 GB of memory the app recommends
 [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem)
-as the first model: one click in the app, no conversion. Every model in the list says whether it fits this Mac
-("Fits", "Fits in Low memory" or "Needs N GB", from the engine's own memory estimates against the Mac's total
-memory) and how much disk it needs. Once a model is installed, **Try a Sample** on the Models page makes a short
+as the first model: one click in the app, no conversion. The model list has three sections for this Mac:
+**Recommended** (measured here, full speed in at most half the memory), **Fits but barely** (up to 70% of the
+memory, a lower memory step, or not tested on a Mac this size yet) and **Doesn't fit** (no Download button). Shuttrr
+never offers a model on the promise that a low-memory step will squeeze it in. Once a model is installed, **Try a Sample** on the Models page makes a short
 clip from a ready-made prompt (320×512, 17 frames, 12 steps: about a minute on a 16 GB M5) and opens it.
 
 ### Requirements
