@@ -50,10 +50,19 @@ curl -fsSL https://raw.githubusercontent.com/sarthakrawool/shuttrr/main/scripts/
 it. The first-run window checks your Mac, installs the engine into `~/.shutter`, and offers the models. No
 Python, Homebrew or Terminal needed.
 
-> **"Apple could not verify Shuttrr" when you open it?** Shuttrr is free and open source and is not signed
-> with a paid Apple developer certificate, so macOS asks once. Press **Done**, open **System Settings →
-> Privacy & Security**, scroll down and press **Open Anyway** next to Shuttrr, then confirm. You only do
-> this once. If you prefer, build it yourself from source below.
+**"Shuttrr Not Opened" the first time?** Shuttrr is free and open source and isn't signed with a paid Apple developer certificate, so macOS asks once.
+
+1. Press **Done** (not Move to Bin).
+
+   <img src="docs/assets/open-anyway-1-not-opened.png" width="300" alt="macOS box saying Shuttrr Not Opened, with Done and Move to Bin buttons">
+
+2. Open **System Settings**, then **Privacy and Security**, scroll down to "Shuttrr was blocked to protect your Mac." and press **Open Anyway**, then confirm with your password.
+
+   <img src="docs/assets/open-anyway-2-privacy-security.png" width="560" alt="System Settings, Privacy and Security, showing Shuttrr was blocked to protect your Mac with an Open Anyway button">
+
+3. Shuttrr opens. You only do this once. The one-line installer above skips this step entirely.
+
+If you prefer, build it yourself from source below.
 
 **From source.**
 
