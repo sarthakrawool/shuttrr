@@ -247,10 +247,22 @@ class WanAdapter(Adapter):
         choice = M.resolve_mode(request.params, self.mode_defaults(ctx))
         ests = self.rung_estimates(request, s)
         budget = self.budget_for(request, ctx)
+        if budget is not None and ctx is not None and (request.params or {}).get("budget_bytes") is None:
+            # this model's own copies in the pool (a Load, or a warm DiT from the last request) are counted in the
+            # estimates and are not free memory: the request reuses them, or drops them before loading another
+            # copy (ModelSource._release_others). Without this a loaded 5B (5 GB) refused its own request.
+            budget += self._own_pool_bytes(ctx)
         rid = M.fit_to_budget(ests, budget, choice.rung) if choice.step_down else choice.rung
         return {"choice": choice, "rung": rid, "estimates": ests, "budget": budget,
                 "stepped_down_from": choice.rung if rid != choice.rung else None,
                 "fits": budget is None or ests[rid].peak <= budget}
+
+    def _own_pool_bytes(self, ctx: RunContext) -> int:
+        prefix = f"wan/{self.model_id}/"
+        try:
+            return int(sum(e["size_bytes"] for e in ctx.models.stats()["entries"] if str(e["key"]).startswith(prefix)))
+        except Exception:
+            return 0
 
     def estimate(self, request: JobRequest) -> MemoryEstimate:
         s = self.settings_for(request)
