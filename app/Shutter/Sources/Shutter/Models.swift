@@ -96,6 +96,11 @@ enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
+    var arrayValue: [JSONValue]? {
+        if case .array(let a) = self { return a }
+        return nil
+    }
+
     var doubleValue: Double? {
         switch self {
         case .number(let d): return d
@@ -614,9 +619,13 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var makes: String = ""
     /// The memory it uses on this Mac (measured when possible), not its download size.
     var memory: String = ""
+    /// A model under its own licence (Fish Audio Drama 3): the person accepts it before the download.
+    var licence: CatalogLicence?
+    var licenceAccepted = true
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes, memory
+        case licence, licenceAccepted = "licence_accepted"
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
         case freeBytes = "free_bytes"
@@ -643,9 +652,34 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         sample = c.optional(.sample)
         makes = c.value(.makes, "")
         memory = c.value(.memory, "")
+        licence = c.optional(.licence)
+        licenceAccepted = c.value(.licenceAccepted, true)
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }
+    var needsLicence: Bool { licence != nil && !licenceAccepted }
+}
+
+/// The licence a catalog model is under, in short points (the full text is at `url`).
+struct CatalogLicence: Decodable, Hashable, Sendable {
+    var name: String = ""
+    var url: String = ""
+    var points: [String] = []
+
+    enum CodingKeys: String, CodingKey { case name, url, points }
+
+    init(name: String = "", url: String = "", points: [String] = []) {
+        self.name = name
+        self.url = url
+        self.points = points
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = c.value(.name, "")
+        url = c.value(.url, "")
+        points = c.value(.points, [])
+    }
 }
 
 struct CatalogList: Decodable, Sendable {

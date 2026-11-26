@@ -247,6 +247,8 @@ private struct JobRow: View {
                     Button("Cancel", action: onCancel)
                         .buttonStyle(.kit(.line, small: true))
                         .help("Cancel this request")
+                } else if job.state == .done && !job.audioOutputs.isEmpty {
+                    PlayButton(files: job.audioOutputs)
                 } else {
                     Color.clear.frame(height: 1)
                 }

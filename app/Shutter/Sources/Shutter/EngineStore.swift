@@ -542,7 +542,22 @@ final class EngineStore: ObservableObject {
         }
     }
 
-    func startDownload(_ id: String) { catalogAction(id) { try await $0.startDownload(id: id) } }
+    /// The model whose licence the person is asked to accept before its download (shows LicenceSheet).
+    @Published var licenceAsk: CatalogModel?
+
+    func startDownload(_ id: String) {
+        if let m = catalog.first(where: { $0.id == id }), m.needsLicence {
+            licenceAsk = m
+            return
+        }
+        catalogAction(id) { try await $0.startDownload(id: id) }
+    }
+
+    /// "I agree" in LicenceSheet: accepted in the engine's config with the download request.
+    func acceptLicenceAndDownload(_ id: String) {
+        licenceAsk = nil
+        catalogAction(id) { try await $0.startDownload(id: id, acceptLicence: true) }
+    }
     func stopDownload(_ id: String) { catalogAction(id) { try await $0.stopDownload(id: id) } }
 
     private func catalogAction(_ id: String, _ call: @escaping (APIClient) async throws -> CatalogList) {

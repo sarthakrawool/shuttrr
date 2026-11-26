@@ -388,9 +388,87 @@ CATALOG["longcat-avatar-1.6-8bit"]["checked_on"] = [
 ]
 
 
+# Fish Audio Drama 3 (text to speech; shutter/adapters/drama3.py, runtime vendored in shutter/families/drama3).
+# Builds are Fish Audio Materials under the Fish Audio Community License v1.0: a download needs the person to accept
+# it first (`licence`, checked by the download endpoint). `unpublished`: the Hugging Face repo does not exist yet, so
+# the entry is not listed (SHUTTER_SHOW_UNPUBLISHED=1 lists it, for tests). Peaks and speed measured on a Mac Studio
+# M5 Max 128 GB with the low-memory switches (21 takes each, research/fish-memory): frames are codec frames,
+# 21.5 per second of audio.
+DRAMA3_LICENCE = {
+    "name": "Fish Audio Community License v1.0",
+    "url": "https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE",
+    "points": [
+        "Free for personal use, research, and commercial use while your annual revenue is under USD 500,000 "
+        "(above that, Fish Audio needs a separate licence).",
+        "Do not imitate the voice of a real, identifiable person without their consent, and do not use it to "
+        "impersonate, deceive or harass anyone.",
+        "Do not use the audio it makes to train other speech or voice models.",
+        "Do not offer it to other people as a voice or text-to-speech service.",
+        "Built with Fish Audio. Copyright © 39 AI, INC.",
+    ],
+}
+_DRAMA3_STUDIO = {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.3",
+                  "size": "audio", "frames": 0}
+_DRAMA3_NEEDS = ["mlx>=0.31", "tokenizers>=0.20", "soundfile"]
+CATALOG["fish-drama3-5bit"] = {
+    "name": "Fish Audio Drama 3",
+    "summary": "Speech from text, in a voice you give it (a short clip of someone who agreed).",
+    "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
+    "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-5bit", "folder": "Fish-Audio-Drama-3-MLX-5bit",
+    "size_gb": 25.0, "min_memory_gb": 40, "min_total_gb": 48,
+    "unpublished": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
+    "check_files": ["config.json", "codec.safetensors", "tower.safetensors", "tokenizer.json"],
+    "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 35.3}, fps={"resident": 62.2},
+                        notes="calibrated 5-bit experts (GPTQ, group 64): WER 3.5% vs 3.6% for 8-bit")],
+}
+CATALOG["fish-drama3-8bit"] = {
+    "name": "Fish Audio Drama 3 (8-bit)",
+    "summary": "The same voice model at 8 bits: the reference build, for Macs with 64 GB or more.",
+    "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
+    "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-8bit", "folder": "Fish-Audio-Drama-3-MLX-8bit",
+    "size_gb": 43.2, "min_memory_gb": 52, "min_total_gb": 64,
+    "unpublished": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
+    "check_files": ["config.json", "codec.safetensors", "tower.safetensors", "tokenizer.json"],
+    "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 47.5}, fps={"resident": 60.2})],
+}
+AUDIO_FRAMES_PER_S = 44100 / 2048
+
+
+def is_audio(model_id: str) -> bool:
+    return CATALOG.get(model_id, {}).get("kind") == "audio"
+
+
+def licence_accepted(cfg: Config, model_id: str) -> bool:
+    """Whether the person accepted this model's licence (always True for models without one). Kept in config.json
+    as accepted_licences {model id: {"licence", "at"}}."""
+    lic = CATALOG.get(model_id, {}).get("licence")
+    if not lic:
+        return True
+    rec = (getattr(cfg, "accepted_licences", None) or {}).get(model_id) or {}
+    return rec.get("licence") == lic["name"]
+
+
+def accept_licence(cfg: Config, model_id: str) -> None:
+    lic = CATALOG[model_id].get("licence")
+    if not lic:
+        return
+    fresh = Config.load(cfg.path)
+    acc = dict(getattr(fresh, "accepted_licences", None) or {})
+    acc[model_id] = {"licence": lic["name"], "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    fresh.accepted_licences = acc
+    fresh.save()
+    cfg.accepted_licences = acc
+
+
+def show_unpublished() -> bool:
+    return os.environ.get("SHUTTER_SHOW_UNPUBLISHED", "") not in ("", "0", "false")
+
+
 def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]:
     """(height, width, frames) the model makes by default on this Mac, for any catalog adapter."""
     e = CATALOG[model_id]
+    if e.get("kind") == "audio":
+        return 0, 0, 0
     if e["adapter"] == "longcat-avatar":
         from shutter.adapters import longcat as L
         h, w = (480, 832) if 0 < total_bytes < L.SMALL_MAC_BYTES else (704, 1312)
@@ -399,7 +477,10 @@ def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]
 
 
 def _measured_entry(e: dict[str, Any], h: int, w: int, f: int, tiled: bool = False) -> dict[str, Any]:
-    """The model's `checked_on` entry for this exact request size and decode (tiled or not), or {}."""
+    """The model's `checked_on` entry for this exact request size and decode (tiled or not), or {}. Audio models
+    have one size ("audio"): their first entry."""
+    if e.get("kind") == "audio":
+        return next(iter(e.get("checked_on") or []), {})
     for c in e.get("checked_on") or []:
         if c.get("size") == f"{h}x{w}" and int(c.get("frames", 0)) == f and bool(c.get("vae_tile")) == bool(tiled):
             return c
@@ -476,8 +557,11 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
         at = ""
     # the decode this Mac uses by default (small Macs may get the tiled one from the model's preset)
     tiled = _default_tiled(e, total_bytes)
-    entry = _measured_entry(e, h, w, f, tiled) if h else {}
-    peaks = _measured_peaks(e, h, w, f, tiled) if h else {}
+    audio = e.get("kind") == "audio"
+    if audio:
+        at = "speech"
+    entry = _measured_entry(e, h, w, f, tiled) if (h or audio) else {}
+    peaks = _measured_peaks(e, h, w, f, tiled) if (h or audio) else {}
     measured = bool(peaks)
     if not peaks:
         try:
@@ -511,7 +595,10 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     # Wan: Recommended only from a measurement on a Mac this size or smaller, with the full speed peak at most half
     # of this Mac's memory (the rule the Wan builds were measured against). Every model: room for everyday apps.
     strict = e["adapter"] == "wan"
-    if (measured and fast and fast + EVERYDAY_APPS <= usable
+    # Audio (Drama 3, measured on one big Mac): Recommended when the full speed peak is at most 60% of this Mac's
+    # memory, so a browser and the rest of the day still fit next to it; tighter Macs get "Fits but barely".
+    audio_ok = not audio or fast <= total_bytes * 0.6
+    if (measured and fast and fast + EVERYDAY_APPS <= usable and audio_ok
             and (not strict or (fast <= total_bytes // 2 and (not measured_gb or measured_gb <= mac_gb + 0.5)))):
         return out("recommended", "Runs at full speed on this Mac." if fast == peaks.get("resident") else
                    "Runs well on this Mac in a lower memory step.", fast)
@@ -521,6 +608,9 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
                    "Mac is not tested yet.", fast)
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
+    if audio:
+        return out("barely", "Fits, but leaves little memory for other apps while it speaks. Close big apps first.",
+                   fast or low)
     if roomy:
         return out("barely", "Runs only in a lower memory step here. It may be slow.", low)
     return out("barely", TIGHT, low)
@@ -568,6 +658,13 @@ def makes_line(model_id: str, total_bytes: int) -> str:
     except Exception:
         return ""
     e = CATALOG[model_id]
+    if e.get("kind") == "audio":
+        c = _measured_entry(e, 0, 0, 0)
+        fps = max((c.get("fps") or {}).values(), default=0)
+        if fps:
+            return (f"Makes speech about {fps / AUDIO_FRAMES_PER_S:.1f}x faster than real time "
+                    f"(measured on a {c.get('memory_gb')} GB {str(c.get('mac', '')).split(' (')[0]})")
+        return "Makes speech from text"
     if e["adapter"] == "longcat-avatar":
         return f"Makes {'480p' if h < 700 else '720p'} talking videos on this Mac"
     if e["adapter"] == "wan" and e.get("shape"):
@@ -800,6 +897,8 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
         st = read_state(cfg, mid)
         if e.get("hidden") and not installed and not (st and st.get("state") in RUNNING):
             continue
+        if e.get("unpublished") and not installed and not show_unpublished():
+            continue
         if installed and st and st.get("state") in RUNNING + ("stopped", "failed", "cancelled"):
             st = None if st.get("state") not in RUNNING else st
         try:
@@ -829,6 +928,8 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "built_size_bytes": int(e.get("built_size_gb", e["size_gb"]) * GB),
             "size_approximate": bool(e.get("size_approximate")),
             "checked_on": checked,
+            "licence": e.get("licence"),
+            "licence_accepted": licence_accepted(cfg, mid),
         })
     # Recommended, then Fits but barely, then Doesn't fit (stable within each group)
     order = {"recommended": 0, "barely": 1, "unknown": 1, "no_fit": 2}

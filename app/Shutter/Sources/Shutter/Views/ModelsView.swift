@@ -82,6 +82,8 @@ struct ModelsView: View {
         .sheet(isPresented: $showingDownloads) {
             DownloadModelSheet { showingDownloads = false }
                 .environmentObject(store)
+                .onAppear { DownloadSheetState.shared.open = true }
+                .onDisappear { DownloadSheetState.shared.open = false }
         }
         .sheet(item: $defaultsModel) { model in
             ModelDefaultsSheet(model: model) { defaultsModel = nil }
@@ -346,6 +348,13 @@ private struct AvailableRow: View {
     }
 }
 
+/// Whether the Download a Model sheet is up (the licence question then shows on top of it, not on the window).
+@MainActor
+final class DownloadSheetState: ObservableObject {
+    static let shared = DownloadSheetState()
+    @Published var open = false
+}
+
 /// "Download a Model": the catalog in its fit sections. Only the model the person presses Download on is fetched.
 struct DownloadModelSheet: View {
     @EnvironmentObject private var store: EngineStore
@@ -380,5 +389,8 @@ struct DownloadModelSheet: View {
         .frame(width: 640, height: 600)
         .background(Theme.Palette.content)
         .preferredColorScheme(.light)
+        .sheet(item: $store.licenceAsk) { m in
+            LicenceSheet(model: m).environmentObject(store)
+        }
     }
 }

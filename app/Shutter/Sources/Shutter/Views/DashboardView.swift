@@ -68,6 +68,12 @@ struct DashboardView: View {
         HStack(spacing: 0) {
             SidebarView(section: $section, starting: starting)
             .frame(width: Theme.Metric.sidebarWidth)
+            // the licence of a model about to download (Fish Drama 3), unless the Download a Model sheet shows it;
+            // on its own view because SwiftUI shows only one of several sheets chained on the same view
+            .sheet(item: Binding(get: { showingDownloadsElsewhere ? nil : store.licenceAsk },
+                                 set: { store.licenceAsk = $0 })) { m in
+                LicenceSheet(model: m).environmentObject(store)
+            }
             .background(Theme.Palette.sidebarVeil)
 
             Hairline(vertical: true).ignoresSafeArea()
@@ -123,9 +129,15 @@ struct DashboardView: View {
                 if Task.isCancelled { return }
                 let parts = s.split(separator: ":", maxSplits: 1)
                 newJobModel = parts.count > 1 ? String(parts[1]) : nil
+                try? await Task.sleep(nanoseconds: 200_000_000)   // let the sheet read the model first
                 showingNewJob = true
                 FileHandle.standardError.write(Data("[test] New request sheet for \(newJobModel ?? "-")\n".utf8))
                 return
+            }
+            // Testing: SHUTTER_TEST_LICENCE=<catalog id> asks that model's licence once the catalog is in.
+            if let lid = ProcessInfo.processInfo.environment["SHUTTER_TEST_LICENCE"], !lid.isEmpty {
+                for _ in 0..<60 where store.catalog.isEmpty { try? await Task.sleep(nanoseconds: 500_000_000) }
+                store.licenceAsk = store.catalog.first { $0.id == lid }
             }
             // Testing: SHUTTER_TEST_LOAD=<model id> presses Load on that model once the engine answers.
             guard let id = ProcessInfo.processInfo.environment["SHUTTER_TEST_LOAD"], !id.isEmpty else { return }
@@ -169,6 +181,9 @@ struct DashboardView: View {
         store.startingFor < 20 ? "Starting engine…"
             : "Still starting. The first start after an update can take a minute."
     }
+
+    @ObservedObject private var downloadsSheet = DownloadSheetState.shared
+    private var showingDownloadsElsewhere: Bool { downloadsSheet.open }
 
     private func openNewJob(_ model: String?) {
         guard store.connection.isConnected else { return }

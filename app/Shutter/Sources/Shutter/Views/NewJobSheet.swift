@@ -23,6 +23,10 @@ struct NewJobSheet: View {
     @State private var seed = 42
     @State private var priority = 0
     @State private var durationText = ""
+    // Voice models (Fish Audio Drama 3): what the reference clip says, takes, splitting long text
+    @State private var refText = ""
+    @State private var takes = 1
+    @State private var splitText = true
     @State private var submitting = false
     @State private var error: String?
 
@@ -47,6 +51,11 @@ struct NewJobSheet: View {
         var values: RequestValues
     }
 
+    /// The chosen model makes speech (kind "audio"): the sheet shows the voice fields instead of image/duration.
+    private var isVoice: Bool {
+        (store.models.first { $0.id == model }?.kind ?? "") == "audio"
+    }
+
     private var modelChoices: [ModelInfo] {
         store.installedModels.isEmpty ? store.models : store.installedModels
     }
@@ -65,6 +74,9 @@ struct NewJobSheet: View {
             VStack(alignment: .leading, spacing: Theme.Space.s4) {
                 LabeledField("Model") { modelField }
 
+                if isVoice {
+                    voiceFields
+                } else {
                 LabeledField("Prompt") {
                     TextField("", text: $prompt, prompt: Text("Optional"), axis: .vertical)
                         .lineLimit(3...6)
@@ -93,6 +105,7 @@ struct NewJobSheet: View {
                             TextField("", text: $durationText, prompt: Text("Model default")).kitField()
                         }
                     }
+                }
                 }
 
                 if showsAdvanced { advanced }
@@ -148,6 +161,55 @@ struct NewJobSheet: View {
         }
         .task(id: model) { await loadOptions() }
         .task(id: EstimateKey(model: model, values: draft.values)) { await refreshEstimate() }
+    }
+
+    // MARK: Voice (Fish Audio Drama 3)
+
+    private var voiceFields: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s4) {
+            LabeledField("Text to speak") {
+                TextField("", text: $prompt,
+                          prompt: Text("What it should say. [Directions] in brackets set the tone, e.g. [calm, warm]."),
+                          axis: .vertical)
+                    .lineLimit(3...8)
+                    .kitField(height: nil)
+                    .frame(minHeight: Theme.Metric.promptHeight, alignment: .top)
+            }
+            HStack(alignment: .top, spacing: Theme.Space.s4) {
+                LabeledField("Reference voice (optional)") {
+                    PathField(path: $audioPath, placeholder: "~/Music/voice.wav", types: [.audio], title: "voice clip")
+                }
+                LabeledField("Takes") {
+                    Stepper(value: $takes, in: 1...8) {
+                        Text("\(takes)").monospacedDigit()
+                    }
+                    .help("Several takes of the same text with different seeds; pick the best one")
+                }
+                .frame(width: 120)
+            }
+            if !audioPath.isEmpty {
+                LabeledField("What the clip says") {
+                    TextField("", text: $refText, prompt: Text("The exact words spoken in the reference clip"),
+                              axis: .vertical)
+                        .lineLimit(1...3)
+                        .kitField(height: nil)
+                }
+                Text("Only use the voice of someone who agreed to it.")
+                    .font(Theme.Fonts.meta)
+                    .foregroundStyle(Theme.Palette.muted)
+            } else {
+                Text("No clip: Drama 3 speaks in its own built-in voice.")
+                    .font(Theme.Fonts.meta)
+                    .foregroundStyle(Theme.Palette.muted)
+            }
+            Toggle("Split long text into short parts (steadier voice on long scripts)", isOn: $splitText)
+                .toggleStyle(.checkbox)
+                .font(Theme.Fonts.row)
+            LabeledField("Seed") {
+                TextField("", value: $seed, format: .number.grouping(.never)).kitField()
+            }
+            .frame(width: 160)
+        }
     }
 
     // MARK: Advanced
@@ -291,6 +353,16 @@ struct NewJobSheet: View {
             advancedOpen = true
             return
         }
+        if isVoice {
+            if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                error = "Write the text to speak."
+                return
+            }
+            if !audioPath.isEmpty && refText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                error = "Type what the reference clip says, so the voice can be copied."
+                return
+            }
+        }
         var req = NewJobRequest(
             model: model,
             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -304,7 +376,14 @@ struct NewJobSheet: View {
         )
         // The request carries exactly what the sheet shows.
         var params: [String: JSONValue] = [:]
-        if editable {
+        if isVoice {
+            req.image = nil
+            req.durationS = nil
+            if !audioPath.isEmpty { params["ref_text"] = .string(refText.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if takes > 1 { params["takes"] = .number(Double(takes)) }
+            params["max_chars"] = .number(splitText ? 120 : 300)
+        }
+        if editable && !isVoice {
             let v = draft.values
             req.width = v.width
             req.height = v.height

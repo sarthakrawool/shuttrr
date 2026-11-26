@@ -81,6 +81,8 @@ class Config:
     busy_process_pattern: Optional[str] = "h3_generate.py|zig_fasth3|run_mps_avatar|sd-cli"
     # None = no reserve (the default since 0.2.3). A number keeps that many GB free on top of every request.
     headroom_gb: Optional[float] = None
+    # {model id: {"licence": name, "at": ISO time}}: licences the person accepted before a download (Fish Drama 3)
+    accepted_licences: dict = field(default_factory=dict)
     # The watchdog frees caches when swap grows by this much during a request, and stops the request if swap keeps
     # growing (another 1 GB) or does not ease within 10 s.
     swap_growth_mb: float = 1024.0

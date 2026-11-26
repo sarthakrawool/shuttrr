@@ -39,3 +39,20 @@ final class TimeLeftTests: XCTestCase {
         XCTAssertNotEqual(j.state, .failed)
     }
 }
+
+final class VoiceModelTests: XCTestCase {
+    func testAudioOutputsListsEveryTake() throws {
+        let j = try JSONDecoder().decode(Job.self, from: Data(#"{"id":"a","state":"done","result":{"output":"/o/a.wav","outputs":["/o/a.wav","/o/a.s43.wav"],"kind":"audio"}}"#.utf8))
+        XCTAssertEqual(j.audioOutputs, ["/o/a.wav", "/o/a.s43.wav"])
+        let v = try JSONDecoder().decode(Job.self, from: Data(#"{"id":"b","state":"done","result":{"output":"/o/b.mp4"}}"#.utf8))
+        XCTAssertTrue(v.audioOutputs.isEmpty)
+    }
+
+    func testCatalogLicenceDecodes() throws {
+        let m = try JSONDecoder().decode(CatalogModel.self, from: Data(#"{"id":"fish-drama3-5bit","name":"Fish Audio Drama 3","kind":"audio","licence":{"name":"Fish Audio Community License v1.0","url":"https://x","points":["a","b"]},"licence_accepted":false}"#.utf8))
+        XCTAssertTrue(m.needsLicence)
+        XCTAssertEqual(m.licence?.points.count, 2)
+        let w = try JSONDecoder().decode(CatalogModel.self, from: Data(#"{"id":"w","name":"Wan"}"#.utf8))
+        XCTAssertFalse(w.needsLicence)
+    }
+}

@@ -394,6 +394,14 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         fit = cat.classify_fit(mid, total) if total else {"level": "unknown"}
         if fit["level"] == "no_fit" and request.query_params.get("force") not in ("1", "true"):
             return _err(409, f"{cat.CATALOG[mid]['name']} does not fit this Mac. {fit['reason']}")
+        # a model under its own licence (Fish Audio Drama 3) downloads only after the person accepts it
+        if cat.CATALOG[mid].get("licence") and not cat.licence_accepted(engine.config, mid):
+            if request.query_params.get("accept_licence") not in ("1", "true"):
+                lic = cat.CATALOG[mid]["licence"]
+                return JSONResponse({"error": f"Accept the {lic['name']} first.",
+                                     "detail": f"Accept the {lic['name']} first.", "code": "licence_required",
+                                     "licence": lic}, status_code=409)
+            await asyncio.to_thread(cat.accept_licence, engine.config, mid)
         st = cat.read_state(engine.config, mid)
         if not (st and st.get("state") in cat.RUNNING):      # downloading, or converting a Wan download
             env = dict(os.environ, SHUTTER_HOME=str(engine.config.home))

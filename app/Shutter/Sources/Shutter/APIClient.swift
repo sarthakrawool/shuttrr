@@ -150,8 +150,9 @@ struct APIClient: Sendable {
         try await send("GET", "/v1/catalog", slow: true)
     }
 
-    func startDownload(id: String) async throws -> CatalogList {
-        try await send("POST", "/v1/catalog/\(escape(id))/download", body: Data("{}".utf8), slow: true)
+    func startDownload(id: String, acceptLicence: Bool = false) async throws -> CatalogList {
+        let q = acceptLicence ? "?accept_licence=1" : ""
+        return try await send("POST", "/v1/catalog/\(escape(id))/download\(q)", body: Data("{}".utf8), slow: true)
     }
 
     func stopDownload(id: String) async throws -> CatalogList {

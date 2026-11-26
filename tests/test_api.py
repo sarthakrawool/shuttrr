@@ -282,3 +282,17 @@ def test_catalog_refuses_a_model_that_does_not_fit(client, monkeypatch):
     rows = {m["id"]: m for m in client.get("/v1/catalog").json()["models"]}
     assert rows["wan2.2-t2v-a14b"]["fit"]["level"] == "no_fit"
     assert rows["wan2.1-t2v-1.3b-8bit"]["fit"]["level"] == "recommended"
+
+
+def test_licensed_model_needs_acceptance_before_download(client, monkeypatch):
+    """Fish Drama 3: without accept_licence=1 the download is refused with the licence; nothing starts."""
+    from shutter.core import catalog as cat
+    monkeypatch.setattr(cat, "total_memory", lambda: 128 * 2**30)
+    started = []
+    import subprocess
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", lambda args, *a, **k: started.append(args) if "download" in args
+                        else real(args, *a, **k))
+    r = client.post("/v1/catalog/fish-drama3-5bit/download")
+    assert r.status_code == 409 and r.json()["code"] == "licence_required"
+    assert r.json()["licence"]["name"].startswith("Fish Audio Community License") and not started
