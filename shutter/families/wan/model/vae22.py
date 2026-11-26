@@ -200,6 +200,7 @@ class CausalConv3d(nn.Module):
 
         # Decompose 3D conv into sum of 2D convolutions over temporal kernel
         # weight shape: [O, kd, kh, kw, I] → split into kd 2D kernels [O, kh, kw, I]
+        wd = self._kernels()
         outputs = []
         for t in range(T_out):
             t_start = t * self.stride[0]
@@ -207,14 +208,60 @@ class CausalConv3d(nn.Module):
             accum = None
             for d in range(kd):
                 frame = x[:, t_start + d]  # [B, H_padded, W_padded, C]
-                w2d = self.weight[:, d, :, :, :]  # [O, kh, kw, I]
-                conv_out = mx.conv_general(
-                    frame, w2d, stride=(self.stride[1], self.stride[2])
-                )
+                conv_out = conv2d_banded(frame, wd[d], (self.stride[1], self.stride[2]))
                 accum = conv_out if accum is None else accum + conv_out
             outputs.append(accum + self.bias)
 
+        if len(outputs) == 1:
+            return outputs[0][:, None]
         return mx.stack(outputs, axis=1)  # [B, T_out, H_out, W_out, O]
+
+    def _kernels(self):
+        """Shuttrr: the kd 2D kernels as contiguous arrays, made once per loaded weight (slicing the 5D weight on
+        every call copied each kernel again). Same values, so the same results. The 5D weight is then replaced by a
+        marker, so the weights are not held twice; loading new weights replaces the marker and rebuilds the kernels."""
+        c = getattr(self, "_wd_cache", None)
+        if c is None or c[0] is not self.weight:
+            w = self.weight
+            ks = [mx.contiguous(w[:, d]) for d in range(self.kernel_size[0])]
+            mx.eval(ks)
+            marker = mx.zeros((0,))
+            self.weight = marker
+            del w
+            object.__setattr__(self, "_wd_cache", (marker, ks))
+            c = self._wd_cache
+        return c[1]
+
+
+#: Shuttrr: a 3x3 conv whose unfolded input would exceed BAND_BYTES is computed in row bands sized to stay under it.
+#: Metal's conv2d unfolds its whole input: at 704x1280 a 512-channel conv at half resolution needs ~2.5 GB of
+#: workspace. Measured on an M5 (MLX 0.32.5), bands of 64+ rows cost 0-30% time, bands under 32 rows up to 4x, so
+#: bands are as tall as the budget allows (32 rows at least). The rule depends only on the frame's shape, so every
+#: memory step, chunking and tiling gives the same frames; against an unbanded conv the results differ by float
+#: rounding (Metal picks its conv algorithm by shape).
+BAND_BYTES = 512 * 1024**2
+BAND_ROWS_MIN = 32
+
+
+def conv2d_banded(x, w, stride=(1, 1)):
+    """mx.conv_general(x, w, stride) for an already padded x [B, H, W, C] and w [O, kh, kw, C], in row bands when big."""
+    B, H, W, C = x.shape
+    O, kh, kw, _ = w.shape
+    sh, sw = stride
+    Ho, Wo = (H - kh) // sh + 1, (W - kw) // sw + 1
+    row_bytes = Wo * kh * kw * C * 4
+    if kh == 1 or Ho * row_bytes <= BAND_BYTES:
+        return mx.conv_general(x, w, stride=stride)
+    rows = max(BAND_ROWS_MIN, BAND_BYTES // row_bytes)
+    if rows >= Ho:
+        return mx.conv_general(x, w, stride=stride)
+    outs = []
+    for r in range(0, Ho, rows):
+        r2 = min(Ho, r + rows)
+        o = mx.conv_general(x[:, r * sh:(r2 - 1) * sh + kh], w, stride=stride)
+        mx.eval(o)
+        outs.append(o)
+    return mx.concatenate(outs, axis=1)
 
 
 class RMS_norm(nn.Module):
@@ -469,7 +516,7 @@ class Resample(nn.Module):
     def _conv2d(self, x):
         """Apply the Conv2d with padding=1. x: [N, H, W, C]."""
         x = mx.pad(x, [(0, 0), (1, 1), (1, 1), (0, 0)])
-        return mx.conv_general(x, self.resample_weight) + self.resample_bias
+        return conv2d_banded(x, self.resample_weight) + self.resample_bias
 
     def _downsample_conv2d(self, x):
         """Apply strided Conv2d for downsampling. x: [N, H, W, C]."""
@@ -969,7 +1016,9 @@ class Wan22VAEDecoder(nn.Module):
         from .tiling import TilingConfig, decode_with_tiling
 
         if tiling_config is None:
-            tiling_config = TilingConfig.default()
+            # Shuttrr: spatial tiles only; each tile streams frame by frame, so time needs no tiles (and temporal
+            # tiles would cut the causal conv history and blend frames)
+            tiling_config = TilingConfig.spatial_only()
 
         # Check if tiling is actually needed
         b, t, h_px, w_px, c = z.shape
@@ -994,10 +1043,7 @@ class Wan22VAEDecoder(nn.Module):
         # Tile decoder: receives (B,C,T,H,W) channels-first, returns (B,3,T',H',W')
         def tile_decode(tile_latents, **kwargs):
             tile_cl = tile_latents.transpose(0, 2, 3, 4, 1)  # → [B,T,H,W,C]
-            x = self.conv2(tile_cl)
-            out = self.decoder(x, first_chunk=True)
-            out = _unpatchify(out, patch_size=2)
-            out = mx.clip(out, -1.0, 1.0)
+            out = decode_stream(self, tile_cl)      # Shuttrr: frame by frame, already unpatchified + clipped
             return out.transpose(0, 4, 1, 2, 3)  # → [B,3,T',H',W']
 
         result_cf = decode_with_tiling(
@@ -1011,6 +1057,162 @@ class Wan22VAEDecoder(nn.Module):
 
         # Back to channels-last: [B,3,T',H',W'] → [B,T',H',W',3]
         return result_cf.transpose(0, 2, 3, 4, 1)
+
+
+# ----------------------------------------------------------------------------- Shuttrr: streamed decode
+#
+# The decode above runs every latent frame through the decoder at once: at 704x1280 x 121 frames its full-resolution
+# activations alone are ~28 GB. The reference decodes one latent frame at a time with a cache of the last two input
+# frames of every causal conv ("feat_cache") and a "Rep" marker for a temporal upsample's first chunk. The decode
+# below goes one step further: every stage takes ONE frame and passes each frame it makes (one, or two after a
+# temporal upsample) straight on to the next stage, so only one frame per stage is ever alive.
+#
+# Every convolution runs on one frame (batch 1), so the frames do not depend on how frames are grouped: the result is
+# the same whether a caller streams, tiles in time, or (in a future rewrite) batches differently, as long as each op
+# keeps batch 1. Against the all-at-once path above the frames differ only by float rounding (Metal's conv2d picks
+# its algorithm by batch size; measured max abs diff ~2e-6 on random weights), because that path batches 8 frames
+# in its spatial upsample and T frames in its 1x1 convs.
+
+
+def _keep(c):
+    """A cache entry as its own buffer, so it does not keep the layer's whole output alive."""
+    return mx.contiguous(c)
+
+
+def _cconv(conv, x, cache, idx):
+    """CausalConv3d on a chunk with the reference's cache (last CACHE_T input frames seen so far)."""
+    i = idx[0]
+    cache_x = x[:, -CACHE_T:]
+    if cache_x.shape[1] < 2 and cache[i] is not None:
+        cache_x = mx.concatenate([cache[i][:, -1:], cache_x], axis=1)
+    out = conv(x, cache_x=cache[i])
+    cache[i] = _keep(cache_x)
+    idx[0] += 1
+    return out
+
+
+def _res1(block, x, cache, idx):
+    """ResidualBlock on one frame."""
+    h = block.shortcut(x) if block.shortcut is not None else x
+    r = block.residual
+    y = nn.silu(r.layer_0(x))
+    y = _cconv(r.layer_2, y, cache, idx)
+    mx.eval(y)
+    y = nn.silu(r.layer_3(y))
+    y = _cconv(r.layer_6, y, cache, idx)
+    return y + h
+
+
+def _time_up1(m, x, cache, idx):
+    """Resample's temporal upsample on one frame: 1 frame on the first call ("Rep"), 2 frames after."""
+    B, T, H, W, C = x.shape
+    i = idx[0]
+    idx[0] += 1
+    if cache[i] is None:
+        cache[i] = "Rep"
+        return [x]
+    rep = isinstance(cache[i], str)
+    cache_x = x[:, -CACHE_T:]
+    if cache_x.shape[1] < 2:
+        prev = mx.zeros_like(cache_x) if rep else cache[i][:, -1:]
+        cache_x = mx.concatenate([prev, cache_x], axis=1)
+    tc = m.time_conv(x) if rep else m.time_conv(x, cache_x=cache[i])
+    cache[i] = _keep(cache_x)
+    tc = tc.reshape(B, 1, H, W, 2, C)
+    return [tc[:, :, :, :, 0, :], tc[:, :, :, :, 1, :]]
+
+
+def _space_up1(m, x):
+    y = m._conv2d(m._upsample2x(x[:, 0]))
+    return y[:, None]
+
+
+class StreamDecoder:
+    """Wan 2.2 decoder, one frame in, frames out (see the note above). Holds the conv caches between frames."""
+
+    def __init__(self, vae):
+        self.vae = vae
+        self.dec = vae.decoder
+        self.cache = [None] * _count_conv3d(self.dec)
+        # cache slots in the order the reference numbers them: conv1, middle, then each up block, then the head
+        slots, n = [], 1
+        n += 4                                             # middle: two residual blocks, two convs each
+        self.mid_slots = (1, n)
+        for blk in self.dec.upsamples:
+            k = 0
+            for m in blk.upsamples:
+                k += 2 if isinstance(m, ResidualBlock) else (1 if m.mode == "upsample3d" else 0)
+            slots.append((n, n + k))
+            n += k
+        self.blk_slots = slots
+        self.head_slot = n
+        self.first = [True] * len(self.dec.upsamples)
+
+    def _block(self, k, x, sink):
+        blk = self.dec.upsamples[k]
+        idx = [self.blk_slots[k][0]]
+        y = x
+        outs = [y]
+        for m in blk.upsamples:
+            if isinstance(m, Resample):
+                frames = _time_up1(m, y, self.cache, idx) if m.mode == "upsample3d" else [y]
+                outs = []
+                while frames:
+                    o = _space_up1(m, frames.pop(0))
+                    mx.eval(o)
+                    outs.append(o)
+                del o
+            else:
+                y = _res1(m, y, self.cache, idx)
+                mx.eval(y)
+                outs = [y]
+        if blk.avg_shortcut is not None:
+            s = blk.avg_shortcut(x, self.first[k])
+            outs = [o + s[:, j:j + 1] for j, o in enumerate(outs)]
+            mx.eval(outs)
+            del s
+        self.first[k] = False
+        del x, y
+        outs.reverse()
+        while outs:                     # hand each frame on and drop it, so deeper stages run with less held
+            if k + 1 < len(self.dec.upsamples):
+                self._block(k + 1, outs.pop(), sink)
+            else:
+                h = self.dec.head
+                idx = [self.head_slot]
+                y = _cconv(h.layer_2, nn.silu(h.layer_0(outs.pop())), self.cache, idx)
+                y = mx.clip(_unpatchify(y, patch_size=2), -1.0, 1.0)
+                mx.eval(y)
+                sink(y)
+                del y
+
+    def push(self, z1, sink):
+        """One latent frame [B, 1, h, w, 48] (denormalized) -> sink(frame [B, 1, H, W, 3]) for each frame made."""
+        x = self.vae.conv2(z1)
+        idx = [0]
+        x = _cconv(self.dec.conv1, x, self.cache, idx)
+        for layer in self.dec.middle:
+            x = _res1(layer, x, self.cache, idx) if isinstance(layer, ResidualBlock) else layer(x)
+            mx.eval(x)
+        xs = [x]
+        del x
+        self._block(0, xs.pop(), sink)
+
+
+def decode_stream(vae, z, sink=None):
+    """Decode [B, T, h, w, 48] (denormalized) one latent frame at a time into 1 + 4(T-1) frames.
+
+    `sink(frame)` receives each frame ([B, 1, 16h, 16w, 3] in [-1, 1]) as soon as it exists; without a sink they are
+    collected and returned as one array."""
+    sd = StreamDecoder(vae)
+    outs = []
+    put = sink if sink is not None else outs.append
+    for i in range(z.shape[1]):
+        sd.push(z[:, i:i + 1], put)
+    del sd
+    if sink is not None:
+        return None
+    return mx.concatenate(outs, axis=1) if len(outs) > 1 else outs[0]
 
 
 def denormalize_latents(z, mean=None, std=None):

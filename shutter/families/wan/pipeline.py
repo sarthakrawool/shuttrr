@@ -338,9 +338,25 @@ class WanPipeline:
             vae = Wan22VAEDecoder(z_dim=48)
             vae.load_weights([(k, v) for k, v in w.items() if not k.startswith(("encoder.", "conv1."))], strict=False)
             z = denormalize_latents(latents.transpose(1, 2, 3, 0)[None])
-            video = vae.decode_tiled(z) if tiled else vae(z)
-            mx.eval(video)
-            v = np.array(video[0])
+            mx.eval(z)
+            if tiled:
+                video = vae.decode_tiled(z)
+                mx.eval(video)
+                v = np.array(video[0])
+            else:
+                # one frame at a time (vae22.decode_stream): each finished frame goes straight to uint8
+                frames: list = []
+
+                def sink(fr):
+                    a = np.array(fr[0, 0])
+                    frames.append(np.clip((a + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8))
+
+                from shutter.families.wan.model.vae22 import decode_stream
+                decode_stream(vae, z, sink)
+                del vae, w, z
+                gc.collect()
+                mx.clear_cache()
+                return np.stack(frames)
         else:
             from shutter.families.wan.model.vae import WanVAE
             vae = WanVAE(z_dim=16)
