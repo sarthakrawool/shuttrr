@@ -1,7 +1,8 @@
 # Third-party notices
 
 Shuttrr's own code is MIT licensed (see `LICENSE`). This file lists what ships inside this repository or the
-Shuttrr app, and what the installer fetches on the user's Mac. Nothing from these projects is modified.
+Shuttrr app, and what the installer fetches on the user's Mac. Apart from the vendored mlx-video code below,
+nothing from these projects is modified.
 
 ## Bundled in this repository and in Shuttrr.app
 
@@ -13,8 +14,11 @@ Shuttrr app, and what the installer fetches on the user's Mac. Nothing from thes
 | Inter (font) | `shutter/server/static/fonts/Inter-Variable.woff2` | SIL Open Font License 1.1 |
 | Geist Mono (font) | `shutter/server/static/fonts/GeistMono-Variable.woff2` | SIL Open Font License 1.1 |
 
-No third-party source code is vendored. The Metal kernels in `shutter/kernels/` and the app's Swift code are
-Shuttrr's own.
+| [mlx-video](https://github.com/Blaizzy/mlx-video) Wan model code (vendored, adapted) | `shutter/families/wan/model/` | MIT, Copyright (c) 2025 Prince Canuma (`LICENSE.mlx-video` next to the files) |
+
+The Wan model code in `shutter/families/wan/model/` is the only vendored third-party source; it was adapted
+for Shuttrr (bounded-memory VAE decode, loader changes) and keeps its MIT notice. The Metal kernels in
+`shutter/kernels/` and the app's Swift code are Shuttrr's own.
 
 ## Installed on the user's Mac by `scripts/bootstrap.sh` (not shipped in the app)
 
