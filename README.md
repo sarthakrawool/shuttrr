@@ -69,7 +69,7 @@ shutter download longcat-avatar-1.6-8bit   # 37.5 GB from Hugging Face
 | | |
 | --- | --- |
 | Mac | Apple silicon (M1 or newer), macOS 14 or newer |
-| Memory | **24 GB or more** for LongCat. 16 GB Macs are not supported yet (see [Known limits](#known-limits)). |
+| Memory | **24 GB or more** for LongCat. Wan 2.1 1.3B runs on 16 GB. |
 | Disk | About 40 GB free for LongCat |
 
 ## Make your first video
@@ -104,6 +104,23 @@ for the whole request. "Identical" means every frame of the video matched the fu
 | Lower memory | 12.3 GB | 454 s (+7.3%) | identical, 93/93 frames |
 | Lowest memory | 12.9 GB | 451 s (+6.5%) | identical, 93/93 frames |
 
+**Wan 2.1 T2V 1.3B, 33 frames, on a 16 GB M5 MacBook**
+
+320×512, 20 steps:
+
+| Memory step | Peak memory | Time | Output |
+| --- | --- | --- | --- |
+| Full speed (resident) | 6.23 GB | 166 s | reference |
+| Split | 6.23 GB | 153 s | identical |
+| Staged | **4.61 GB** | 163 s | identical |
+| Streamed (wide) | 4.67 GB | 169 s | identical |
+| Streamed (tight) | 4.67 GB | 160 s | identical |
+
+Streamed output equals full-memory output bit for bit. All five steps gave the same frames.
+
+480×832, 30 steps: staged with tiled decode peaked at 6.93 GB and took 676 s. The other steps at 480×832 did
+not fit beside normal apps on 16 GB and were not measured.
+
 Results on other Macs are not measured yet. If you run Shuttrr on a different chip, please share your
 numbers in an issue.
 
@@ -127,8 +144,15 @@ turn it on, and it matches the full decode at 46.6 dB.
 | Model | Kind | Download | Status |
 | --- | --- | --- | --- |
 | [LongCat-Video-Avatar 1.6, 8-bit low-memory](https://huggingface.co/SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem) | talking video from image + audio | 37.5 GB | supported |
+| Wan 2.1 family (T2V 1.3B checked; other 2.1 checkpoints and fine-tunes accepted) | text to video | your own checkpoint, converted to 8-bit low-memory with `shutter convert` | early support |
 
-More model families are in progress.
+Shuttrr accepts Wan 2.1 checkpoints in the official, diffusers and ComfyUI layouts, bare fine-tune files, and
+LoRAs (official, PEFT and kohya names). `shutter inspect <path>` says what a checkpoint is and whether this Mac
+can run it. A bare fine-tune file is only the video model: `shutter convert` takes the text encoder, tokenizer
+and VAE from an installed Wan or LongCat model, or from folders you name.
+
+Shuttrr refuses what it cannot run yet and says why: image-to-video models with a CLIP image branch, VACE,
+Fun / control and camera models, speech-to-video and Animate models, fp8 and scaled-fp8 weights, and GGUF files.
 
 ## Use it from other apps
 
@@ -146,7 +170,8 @@ To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clie
 
 - **16 GB Macs:** LongCat does not fit yet. The guard needs about 12 GB free at 480p, and a 16 GB Mac with a
   browser open had 3.4 to 5.9 GB free in our tests.
-- **Other Macs:** only measured on an M5 Max so far. Smaller chips will be slower, and the lowest steps read
+- **Wan:** 480p at 81 frames, the streamed steps at 480p and the 14B models are not measured yet.
+- **Other Macs:** LongCat is only measured on an M5 Max and Wan on a 16 GB M5 so far. Smaller chips will be slower, and the lowest steps read
   the model from the SSD on every step.
 - **One request at a time.** Shuttrr runs heavy work one request at a time on purpose.
 
