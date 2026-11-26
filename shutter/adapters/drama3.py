@@ -10,7 +10,10 @@ fit and stay fast on a smaller Mac:
 * several takes (seeds) of one line run in one job, batched in one decode when the model code offers it
   (`Drama3Generator.synthesize_batch`), one after another otherwise;
 * the model folder is an option, and `variants` maps memory steps to smaller builds (calibrated 5-bit / 4-bit or
-  mixed precision), so Low memory or Fast's step-down picks the largest build that fits without swap.
+  mixed precision), so Low memory or Fast's step-down picks the largest build that fits without swap;
+* the two SSD streaming steps (stream_wide, stream_tight) run the same 8-bit build with its routed experts read from
+  the SSD into a RAM cache (TF_D3_EXPERT_CACHE_GB): bit-identical audio, about 3x slower, ~13-19 GB lower peak.
+  That is what lets a 48 GB Mac run it. No extra download.
 
 Request: `prompt` is the text ([directions] and <|speaker:N|> tags as Drama 3 reads them), `inputs.audio` the
 reference clip, `seed` the first seed. Params: ref_text (what the clip says; needed with a clip), ref_codes
@@ -22,7 +25,8 @@ each take differs at float level from the one-at-a-time take of the same seed), 
 
 Options (registry config): tensorfold_src (folder that holds the `tensorfold` package; default
 ~/models/drama3-mem/code/src), variants ({step id: model folder}), lossless_variants (step ids whose build gives
-the same audio as the main folder; default: only the main folder), lowmem (True), cache_gb (1), codec_window
+the same audio as the main folder; default: only the main folder), stream_cache_gb ({step id: expert cache GB},
+default {"stream_wide": 24, "stream_tight": 18}; a step set to 0 does not stream), lowmem (True), cache_gb (1), codec_window
 (512), free_encoder (True), keep_warm (True), batch_takes (False), overhead_gb (2.0), peak_gb (override the estimate),
 default_mode / default_efficiency.
 
@@ -52,6 +56,26 @@ LOWMEM_ENV = {"TF_D3_LOWMEM": ("lowmem", True), "TF_D3_DROP_LMHEAD": ("lowmem", 
 DROPPED_BYTES = int(1.8 * GB)
 #: without TF_D3_LOWMEM the load holds the experts twice for a moment
 LOAD_SPIKE = 0.53
+#: expert cache (GB) per SSD streaming step on the main build
+STREAM_CACHE_GB = {"stream_wide": 24.0, "stream_tight": 18.0}
+#: measured MLX peak (GB) of the 8-bit build by expert cache size (Mac Studio M5 Max, 2026-11-26, src_batch
+#: stream test: 0 = everything in memory); every streamed run gave the same tokens as the resident one
+STREAM_MLX_PEAK_GB = {0: 42.7, 18: 28.2, 24: 34.6, 30: 40.5}
+#: the smallest cache the active experts need (8 picked experts x 32 layers, plus room to swap them)
+STREAM_MIN_CACHE_GB = 8.0
+
+
+def stream_mlx_peak_gb(cache_gb: float) -> float:
+    """MLX peak (GB) of the streamed 8-bit build with this expert cache: the measured points, linear between them
+    and along the last segment's slope outside them."""
+    pts = sorted((k, v) for k, v in STREAM_MLX_PEAK_GB.items() if k > 0)
+    c = float(cache_gb)
+    for (a, pa), (b, pb) in zip(pts, pts[1:]):
+        if c <= b or (a, pa) == pts[-2]:
+            if c < a and (a, pa) != pts[0]:
+                continue
+            return round(pa + (pb - pa) * (c - a) / (b - a), 2)
+    return pts[0][1]
 
 
 def _truthy(v: Any) -> bool:
@@ -125,8 +149,23 @@ class Drama3Adapter(Adapter):
         out, current = {}, self.model_dir
         for rid in M.RUNG_IDS:
             current = variants.get(rid, current)
-            out[rid] = current
+            # an SSD streaming step streams the main (8-bit) folder unless a smaller build is set for that step
+            out[rid] = self.model_dir if (self.stream_gb(rid) and rid not in variants) else current
         return out
+
+    def stream_gb(self, rung_id: str) -> float:
+        """Expert cache (GB) when this step streams the experts from the SSD, else 0. Only with the vendored
+        runtime (an external TensorFold checkout may not have the expert cache) and the low-memory switches."""
+        if not rung_id.startswith("stream"):
+            return 0.0
+        if str(self._opt("tensorfold_src", DEFAULT_SRC)) and not _truthy(self._opt("stream_external", False)):
+            return 0.0
+        if not _truthy(self._opt("lowmem", True)):
+            return 0.0
+        conf = dict(STREAM_CACHE_GB)
+        conf.update({k: v for k, v in dict(self._opt("stream_cache_gb", {}) or {}).items()})
+        gb = float(conf.get(rung_id) or 0)
+        return max(gb, STREAM_MIN_CACHE_GB) if gb > 0 else 0.0
 
     def is_lossless(self, rung_id: str) -> bool:
         build = self.builds()[rung_id]
@@ -152,21 +191,51 @@ class Drama3Adapter(Adapter):
 
     def rung_estimates(self, request: JobRequest) -> dict[str, MemoryEstimate]:
         verify = _truthy(request.params.get("verify", False))
-        return {rid: self.estimate_build(d, verify) for rid, d in self.builds().items()}
+        out = {}
+        for rid, d in self.builds().items():
+            est = self.estimate_build(d, verify)
+            gb = self.stream_gb(rid) if Path(d) == self.model_dir else 0.0
+            if gb and self._opt("peak_gb", None) is None:
+                # the measured drop from streaming, applied to the full build's estimate
+                drop = int((STREAM_MLX_PEAK_GB[0] - stream_mlx_peak_gb(gb)) * GB)
+                est = MemoryEstimate(peak=max(0, est.peak - drop), steady=max(0, est.steady - drop),
+                                     note=f"{est.note}; experts stream from the SSD ({gb:g} GB cache)")
+            out[rid] = est
+        return out
 
     def _budget(self, request: JobRequest, ctx: Optional[RunContext]) -> Optional[int]:
         b = request.params.get("budget_bytes")
         if b is not None:
             return int(b)
         if ctx is None:
-            return None
+            # estimate time (the engine admitting the job): this machine's memory now, so Fast steps down to the
+            # SSD streaming steps on a Mac where the whole model does not fit (a 48 GB Mac) instead of waiting
+            if not _truthy(self._opt("auto_budget", True)):
+                return None
+            try:
+                from shutter.core.config import Config
+                from shutter.core.memory import default_probe
+
+                s = default_probe().sample().to_dict()
+                if not s.get("available"):
+                    return None
+                return int(s["available"]) - int(Config.load().headroom_for(int(s.get("total") or 0)) or 0)
+            except Exception:
+                return None
         try:
             s = ctx.memory_sample() or {}
         except Exception:
             return None
         if not s.get("available"):
             return None
-        return int(s["available"]) - int((ctx.settings or {}).get("headroom_bytes") or 0)
+        own = 0
+        try:
+            # this model's own warm copies are counted in the estimates and are not free memory
+            prefix = f"{self.model_id}/drama3/"
+            own = int(sum(e["size_bytes"] for e in ctx.models.stats()["entries"] if str(e["key"]).startswith(prefix)))
+        except Exception:
+            pass
+        return int(s["available"]) - int((ctx.settings or {}).get("headroom_bytes") or 0) + own
 
     def choose(self, request: JobRequest, ctx: Optional[RunContext] = None) -> dict[str, Any]:
         defaults = {k[len("default_"):]: v for k, v in self.options.items()
@@ -179,18 +248,21 @@ class Drama3Adapter(Adapter):
         ests = self.rung_estimates(request)
         budget = self._budget(request, ctx)
         rid = M.fit_to_budget(ests, budget, choice.rung) if choice.step_down else choice.rung
-        return {"choice": choice, "rung": rid, "estimates": ests, "budget": budget, "build": self.builds()[rid],
+        build = self.builds()[rid]
+        return {"choice": choice, "rung": rid, "estimates": ests, "budget": budget, "build": build,
+                "stream_gb": self.stream_gb(rid) if Path(build) == self.model_dir else 0.0,
                 "stepped_down_from": choice.rung if rid != choice.rung else None}
 
     def estimate(self, request: JobRequest) -> MemoryEstimate:
         pick = self.choose(request)
         return pick["estimates"][pick["rung"]]
 
-    def pool_key(self, build: Path) -> str:
-        return f"{self.model_id}/drama3/{Path(build).name}"
+    def pool_key(self, build: Path, stream_gb: float = 0.0) -> str:
+        return f"{self.model_id}/drama3/{Path(build).name}" + (f"/stream{stream_gb:g}" if stream_gb else "")
 
     def pool_keys(self, request: JobRequest) -> list[str]:
-        return [self.pool_key(self.choose(request)["build"])]
+        pick = self.choose(request)
+        return [self.pool_key(pick["build"], pick["stream_gb"])]
 
     def prepare(self, request: JobRequest) -> JobRequest:
         return request.copy()
@@ -219,11 +291,22 @@ class Drama3Adapter(Adapter):
             raise RuntimeError(f"Fish Drama 3 could not load its model code ({where}): {e}") from e
         return self._tf
 
-    def load(self, build: Path) -> Any:
+    def load(self, build: Path, stream_gb: float = 0.0) -> Any:
         tf = self.tensorfold()
         started = time.perf_counter()
-        gen = tf["generate"].Drama3Generator(build)
+        # the expert cache is read when the model loads: set it for this load only, with a fresh cache
+        if stream_gb:
+            from shutter.families.drama3 import expert_cache
+            expert_cache.CACHE = None
+            if hasattr(expert_cache.attach, "_files"):
+                expert_cache.attach._files = None
+            os.environ["TF_D3_EXPERT_CACHE_GB"] = f"{float(stream_gb):g}"
+        try:
+            gen = tf["generate"].Drama3Generator(build)
+        finally:
+            os.environ.pop("TF_D3_EXPERT_CACHE_GB", None)
         gen.shuttr_load_s = time.perf_counter() - started
+        gen.shuttr_stream_gb = float(stream_gb or 0)
         return gen
 
     # ---- the reference voice
@@ -301,22 +384,23 @@ class Drama3Adapter(Adapter):
             raise ValueError("prompt (the text to speak) is empty")
         seeds = take_seeds(req)
         pick = self.choose(req, ctx)
-        rid, build = pick["rung"], Path(pick["build"])
+        rid, build, stream_gb = pick["rung"], Path(pick["build"]), float(pick.get("stream_gb") or 0)
         est = pick["estimates"][rid]
         tf = self.tensorfold()
         clock = time.perf_counter
         started = clock()
 
         ctx.report(0.0, "loading the voice model" + (f" (stepped down to {M.rung(rid)['label']})"
-                                                     if pick["stepped_down_from"] else ""))
+                                                     if pick["stepped_down_from"] else "")
+                   + (" (reads part of it from the SSD: about 3x slower)" if stream_gb else ""))
         loaded: list[float] = []
 
         def loader() -> Any:
-            gen = self.load(build)
+            gen = self.load(build, stream_gb)
             loaded.append(getattr(gen, "shuttr_load_s", 0.0))
             return gen
 
-        gen = ctx.models.get(self.pool_key(build), loader, est.steady or est.peak,
+        gen = ctx.models.get(self.pool_key(build, stream_gb), loader, est.steady or est.peak,
                              keep=_truthy(self._opt("keep_warm", True)))
         ctx.check_cancelled()
         ctx.report(0.05, "reading the reference voice")
@@ -372,7 +456,13 @@ class Drama3Adapter(Adapter):
                   "warm": not loaded, "load_s": round(loaded[0], 2) if loaded else 0.0,
                   "mode": pick["choice"].mode, "rung": rid, "build": build.name,
                   "lossless": self.is_lossless(rid), "stepped_down_from": pick["stepped_down_from"],
-                  "estimate_peak_bytes": est.peak, **info}
+                  "estimate_peak_bytes": est.peak, "stream_gb": stream_gb, **info}
+        if stream_gb:
+            try:
+                from shutter.families.drama3 import expert_cache
+                result["expert_cache"] = expert_cache.stats()
+            except Exception:
+                pass
         try:
             import mlx.core as mx
 

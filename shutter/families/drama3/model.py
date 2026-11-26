@@ -340,15 +340,23 @@ class Drama3(nn.Module):
         bits_spec = os.environ.get("TF_D3_EXPERT_BITS", "")
         if fast.enabled() and not fp8:
             if lowmem:
+                from shutter.families.drama3 import expert_cache
+                streamed = expert_cache.enabled() and not bits_spec
                 for i, layer in enumerate(model.backbone.model.layers):
+                    if streamed:
+                        expert_cache.attach(layer, i, model_dir)
                     mx.eval(layer.parameters())
-                    fast.fuse_layer(layer, experts=True)
+                    fast.fuse_layer(layer, experts=not streamed)
                     if bits_spec:
                         requantize_experts(layer, expert_bits(bits_spec, i))
                     mx.clear_cache()
                 for layer in model.tower.layers:
                     layer.feed_forward.fuse()
                 mx.clear_cache()
+                if streamed:
+                    model.fast_step = expert_cache.make_step(model)
+                    mx.clear_cache()
+                    return model
             else:
                 fast.fuse_model(model, experts=not fp8)
                 if bits_spec:

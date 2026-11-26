@@ -301,3 +301,79 @@ def test_vendored_runtime_is_the_default(tmp_path, monkeypatch):
     a = Drama3Adapter("fish-drama3", tmp_path, {})
     tf = a.tensorfold()
     assert tf["generate"].__name__ == "shutter.families.drama3.generate"
+
+
+# ---- SSD streaming steps (48 GB Macs) ------------------------------------------------------------------------------
+from shutter.adapters import drama3 as D3  # noqa: E402
+
+
+def test_stream_peak_follows_the_measured_points():
+    assert D3.stream_mlx_peak_gb(18) == 28.2 and D3.stream_mlx_peak_gb(24) == 34.6 and D3.stream_mlx_peak_gb(30) == 40.5
+    assert 28.2 < D3.stream_mlx_peak_gb(20) < 34.6
+    assert D3.stream_mlx_peak_gb(12) < 28.2 < D3.stream_mlx_peak_gb(36) - 10
+
+
+def test_stream_steps_stream_the_main_build(tmp_path, fake_tf):
+    a = adapter(tmp_path, fake_tf, stream_external=True)
+    assert [a.stream_gb(r) for r in M.RUNG_IDS] == [0, 0, 0, 24, 18]
+    assert all(p == a.model_dir for p in a.builds().values())
+    assert all(a.is_lossless(r) for r in M.RUNG_IDS)            # same files, same audio
+    e = a.rung_estimates(JobRequest(model="fish-drama3", prompt="hi"))
+    assert e["stream_wide"].peak == e["resident"].peak - int((42.7 - 34.6) * GB)
+    assert e["stream_tight"].peak == e["resident"].peak - int((42.7 - 28.2) * GB)
+    # an external TensorFold checkout (may lack the expert cache): no streaming unless asked
+    assert Drama3Adapter("m", a.model_dir, {"tensorfold_src": str(fake_tf)}).stream_gb("stream_tight") == 0
+    # the person can change the cache, or switch a step off
+    b = Drama3Adapter("fish-drama3", a.model_dir, {"tensorfold_src": str(fake_tf), "stream_external": True,
+                                                   "stream_cache_gb": {"stream_wide": 20, "stream_tight": 0}})
+    assert b.stream_gb("stream_wide") == 20 and b.stream_gb("stream_tight") == 0
+    assert Drama3Adapter("m", a.model_dir, {"stream_cache_gb": {"stream_tight": 2}}).stream_gb("stream_tight") == 8
+
+
+def test_vendored_runtime_streams_by_default(tmp_path):
+    a = Drama3Adapter("fish-drama3", tmp_path, {})
+    assert a.stream_gb("stream_wide") == 24 and a.stream_gb("stream_tight") == 18 and a.stream_gb("resident") == 0
+    assert Drama3Adapter("m", tmp_path, {"lowmem": False}).stream_gb("stream_tight") == 0
+
+
+def test_fast_on_a_48_gb_mac_steps_down_to_streaming(tmp_path, fake_tf):
+    """~38 GB free (a 48 GB Mac with apps open): the whole model does not fit, the 24 GB cache step does."""
+    a = adapter(tmp_path, fake_tf, stream_external=True)
+    pick = a.choose(JobRequest(model="fish-drama3", prompt="hi"), ctx_for(tmp_path, available=38 * GB))
+    assert pick["rung"] == "stream_wide" and pick["stream_gb"] == 24 and pick["build"] == a.model_dir
+    pick = a.choose(JobRequest(model="fish-drama3", prompt="hi"), ctx_for(tmp_path, available=32 * GB))
+    assert pick["rung"] == "stream_tight" and pick["stream_gb"] == 18
+    pick = a.choose(JobRequest(model="fish-drama3", prompt="hi"), ctx_for(tmp_path, available=60 * GB))
+    assert pick["rung"] == "resident" and pick["stream_gb"] == 0
+    assert a.pool_key(a.model_dir, 24).endswith("/stream24") and a.pool_key(a.model_dir) .endswith("drama-3-mlx")
+
+
+def test_estimate_time_uses_this_macs_memory(tmp_path, fake_tf, monkeypatch):
+    """The engine admits jobs on estimate(): without a run context it reads this Mac's memory, so a 48 GB Mac
+    gets the streaming step there too instead of waiting for 44 GB that never comes."""
+    from shutter.core import memory as mem
+
+    class Probe:
+        def sample(self):
+            class S:
+                def to_dict(self):
+                    return {"available": 36 * GB, "total": 48 * GB}
+            return S()
+
+    monkeypatch.setattr(mem, "default_probe", lambda: Probe())
+    a = adapter(tmp_path, fake_tf, stream_external=True)
+    e = a.estimate(JobRequest(model="fish-drama3", prompt="hi"))
+    assert e.peak <= 36 * GB and "SSD" in e.note
+    assert "/stream" in a.pool_keys(JobRequest(model="fish-drama3", prompt="hi"))[0]
+
+
+def test_streamed_run_loads_with_the_expert_cache_set_only_for_that_load(tmp_path, fake_tf, monkeypatch):
+    monkeypatch.delenv("TF_D3_EXPERT_CACHE_GB", raising=False)
+    a = adapter(tmp_path, fake_tf, stream_external=True)
+    pool = Pool()
+    out = a.run(job(tmp_path, params={"mode": "low_memory", "efficiency": 1.0}), ctx_for(tmp_path, pool))
+    import tensorfold.families.drama3.generate as G
+    assert G.LOADS[-1][1].get("TF_D3_EXPERT_CACHE_GB") == "18"
+    assert "TF_D3_EXPERT_CACHE_GB" not in __import__("os").environ
+    assert out["rung"] == "stream_tight" and out["stream_gb"] == 18 and out["lossless"]
+    assert pool.loads[0][0].endswith("/stream18")

@@ -422,11 +422,17 @@ CATALOG["fish-drama3-8bit"] = {
     "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
     "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-8bit", "folder": "Fish-Audio-Drama-3-MLX-8bit",
     "revision": DRAMA3_Q8["revision"], "files": DRAMA3_Q8["files"],
-    "size_gb": round(sum(f["size"] for f in DRAMA3_Q8["files"]) / GB, 1), "min_memory_gb": 52, "min_total_gb": 64,
+    # 64 GB+: everything in memory. 48 GB: the SSD streaming steps (same files, same audio, about 3x slower)
+    "size_gb": round(sum(f["size"] for f in DRAMA3_Q8["files"]) / GB, 1), "min_memory_gb": 48, "min_total_gb": 48,
     # listed, but downloadable only once Hugging Face shows every pinned file (remote_ready)
     "check_remote": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
     "check_files": ["config.json", "codec.safetensors", "tower.safetensors", "tokenizer.json"],
-    "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 47.5}, fps={"resident": 60.2})],
+    # resident: fish_eval peak. Streaming steps: the stream test's MLX peaks (expert cache 24 GB: 34.6, 18 GB: 28.2;
+    # everything in memory there: 42.7) plus the same 4.8 GB the full run used above that, so all four compare alike.
+    # Measured on the Mac Studio with the cache capped, not on a 48 GB Mac.
+    "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 47.5, "stream_wide": 39.4, "stream_tight": 33.0},
+                        fps={"resident": 60.2, "stream_wide": 20.8, "stream_tight": 19.5})],
+    "stream_note": "Fits, about 3x slower",
 }
 AUDIO_FRAMES_PER_S = 44100 / 2048
 
@@ -632,6 +638,19 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
                    "Mac is not tested yet.", fast)
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
+    if audio and fast + EVERYDAY_APPS > usable:
+        # the whole model does not fit with room for apps, but an SSD streaming step does (same audio, slower)
+        streams = {r: v for r, v in peaks.items() if r.startswith("stream") and v + EVERYDAY_APPS <= usable}
+        if streams:
+            r = max(streams, key=streams.get)
+            fps_all = entry.get("fps") or {}
+            slower = (f"about {float(fps_all['resident']) / float(fps_all[r]):.0f}x slower"
+                      if fps_all.get(r) and fps_all.get("resident") else "slower")
+            res = out("barely", f"Fits by reading part of the model from the SSD as it speaks: the same audio, "
+                      f"{slower} (Beta, measured on a Mac Studio, not yet on a Mac this size).", streams[r])
+            res["label"] = e.get("stream_note") or res["label"]
+            res["streams"] = True
+            return res
     if audio:
         where = f" It used {fast / GB:.1f} GB on a {measured_gb:.0f} GB Mac Studio." if measured_gb else ""
         if measured_gb and measured_gb > mac_gb + 0.5:
@@ -687,9 +706,18 @@ def makes_line(model_id: str, total_bytes: int) -> str:
     e = CATALOG[model_id]
     if e.get("kind") == "audio":
         c = _measured_entry(e, 0, 0, 0)
-        fps = max((c.get("fps") or {}).values(), default=0)
+        fps_all = c.get("fps") or {}
+        fps = max(fps_all.values(), default=0)
+        fit = classify_fit(model_id, total_bytes) if fps else {}
+        if fit.get("streams"):
+            # this Mac runs it in an SSD streaming step: quote that step's measured speed
+            step = next((r for r, v in (c.get("peaks_gb") or {}).items()
+                         if int(float(v) * GB) == fit["peak_bytes"]), None)
+            fps = float(fps_all.get(step) or min(fps_all.values()))
         if fps:
-            return (f"Makes speech about {fps / AUDIO_FRAMES_PER_S:.1f}x faster than real time "
+            rate = fps / AUDIO_FRAMES_PER_S
+            speed = (f"about {rate:.1f}x faster than real time" if rate >= 1.15 else "at about real time speed")
+            return (f"Makes speech {speed} "
                     f"(measured on a {c.get('memory_gb')} GB {str(c.get('mac', '')).split(' (')[0]})")
         return "Makes speech from text"
     if e["adapter"] == "longcat-avatar":

@@ -7,7 +7,9 @@ License 2.0 (`pyproject.toml` of that repository; its GitHub page lists MIT). Ch
 - imports renamed from `tensorfold.families.drama3` to `shutter.families.drama3`;
 - low-memory switches read from the environment (`TF_D3_LOWMEM`, `TF_D3_CACHE_GB`, `TF_D3_DROP_LMHEAD`,
   `TF_D3_FREE_ENCODER`, `TF_D3_CODEC_WINDOW`, `TF_D3_EXPERT_BITS`, `TF_D3_EXPERT_CACHE_GB`), all off by default,
-  which give the same audio with a lower memory peak, and loading of calibrated GPTQ expert builds.
+  which give the same audio with a lower memory peak, and loading of calibrated GPTQ expert builds;
+- `expert_cache.py` (new, written for Shuttrr): the routed experts read from the SSD into an LRU cache when
+  `TF_D3_EXPERT_CACHE_GB` is set, hooked into `model.py`'s low-memory load.
 
 Third-party code inside, as stated by TensorFold's THIRD_PARTY_NOTICES.md:
 
