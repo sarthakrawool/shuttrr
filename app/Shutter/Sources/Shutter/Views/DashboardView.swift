@@ -108,6 +108,17 @@ struct DashboardView: View {
         }
         .animation(Motion.smooth, value: store.loadFailure)
         .task {
+            // Testing: SHUTTER_TEST_SHEET=newrequest:<model id> opens the New request sheet for that model.
+            if let s = ProcessInfo.processInfo.environment["SHUTTER_TEST_SHEET"], s.hasPrefix("newrequest") {
+                for _ in 0..<60 where !store.connection.isConnected { try? await Task.sleep(nanoseconds: 500_000_000) }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)   // the launch closes and reopens the window
+                if Task.isCancelled { return }
+                let parts = s.split(separator: ":", maxSplits: 1)
+                newJobModel = parts.count > 1 ? String(parts[1]) : nil
+                showingNewJob = true
+                FileHandle.standardError.write(Data("[test] New request sheet for \(newJobModel ?? "-")\n".utf8))
+                return
+            }
             // Testing: SHUTTER_TEST_LOAD=<model id> presses Load on that model once the engine answers.
             guard let id = ProcessInfo.processInfo.environment["SHUTTER_TEST_LOAD"], !id.isEmpty else { return }
             for _ in 0..<60 where !store.connection.isConnected { try? await Task.sleep(nanoseconds: 500_000_000) }

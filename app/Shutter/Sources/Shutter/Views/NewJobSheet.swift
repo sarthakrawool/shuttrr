@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Sheet for POST /v1/jobs: model, prompt, image path, audio path, framing (Full / Small /
-/// Auto), seed, priority, and an optional duration. Same fields and wording as the dashboard.
+/// Sheet for POST /v1/jobs: model, prompt, image path, audio path, seed, priority, and an Advanced section
+/// (size, frames or duration, steps, guidance, shift, tiled decode, memory step) that starts from the model's
+/// defaults and can be changed freely. An engine without request options shows the plain sheet.
 struct NewJobSheet: View {
     @EnvironmentObject private var store: EngineStore
     @Environment(\.dismiss) private var dismiss
@@ -25,6 +26,27 @@ struct NewJobSheet: View {
     @State private var submitting = false
     @State private var error: String?
 
+    /// Request options of the chosen model; nil while loading and on an engine that has none.
+    @State private var options: RequestOptions?
+    @State private var draft = RequestDraft()
+    @State private var estimate: RequestEstimate?
+    /// Testing: SHUTTER_TEST_ADVANCED=1 opens the Advanced section.
+    @State private var advancedOpen = ProcessInfo.processInfo.environment["SHUTTER_TEST_ADVANCED"] != nil
+    @State private var formHeight: CGFloat = 380
+    /// Memory step for this request: starts from the engine's setting.
+    @State private var mode = "fast"
+    @State private var rungIndex = 0
+    @State private var modeTouched = false
+
+    private var editable: Bool { options?.editable == true }
+    private var showsMemoryStep: Bool { options != nil && store.settings != nil }
+    private var showsAdvanced: Bool { editable || showsMemoryStep }
+
+    private struct EstimateKey: Equatable {
+        var model: String
+        var values: RequestValues
+    }
+
     private var modelChoices: [ModelInfo] {
         store.installedModels.isEmpty ? store.models : store.installedModels
     }
@@ -39,6 +61,7 @@ struct NewJobSheet: View {
             }
             .padding([.top, .horizontal], Theme.Space.s5)
 
+            ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.s4) {
                 LabeledField("Model") { modelField }
 
@@ -65,12 +88,21 @@ struct NewJobSheet: View {
                     LabeledField("Priority") {
                         TextField("", value: $priority, format: .number.grouping(.never)).kitField()
                     }
-                    LabeledField("Duration (seconds)") {
-                        TextField("", text: $durationText, prompt: Text("Model default")).kitField()
+                    if !editable {
+                        LabeledField("Duration (seconds)") {
+                            TextField("", text: $durationText, prompt: Text("Model default")).kitField()
+                        }
                     }
                 }
+
+                if showsAdvanced { advanced }
             }
             .padding(Theme.Space.s5)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { formHeight = $0 }
+            }
+            // Testing: SHUTTER_TEST_SCROLL=bottom shows the end of the form (for screenshots).
+            .defaultScrollAnchor(ProcessInfo.processInfo.environment["SHUTTER_TEST_SCROLL"] == "bottom" ? .bottom : .top)
+            .frame(height: min(formHeight, 520))
 
             if let error {
                 Text(error)
@@ -109,6 +141,122 @@ struct NewJobSheet: View {
             } else if model.isEmpty, let first = modelChoices.first {
                 model = first.id
             }
+            adoptEngineMode()
+        }
+        .onChange(of: store.settings) { _, _ in
+            if !modeTouched { adoptEngineMode() }
+        }
+        .task(id: model) { await loadOptions() }
+        .task(id: EstimateKey(model: model, values: draft.values)) { await refreshEstimate() }
+    }
+
+    // MARK: Advanced
+
+    private var advanced: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s3) {
+            Hairline()
+            HStack(spacing: Theme.Space.s2) {
+                Button {
+                    withAnimation(Motion.smooth) { advancedOpen.toggle() }
+                } label: {
+                    HStack(spacing: Theme.Space.s2) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(advancedOpen ? 90 : 0))
+                        Text("Advanced").font(Theme.Fonts.rowMedium)
+                    }
+                    .foregroundStyle(Theme.Palette.ink)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(advancedOpen ? "Hide advanced settings" : "Show advanced settings")
+                Spacer(minLength: Theme.Space.s3)
+                if editable { EstimateLine(estimate: estimate) }
+            }
+            if editable { WarningLines(estimate: estimate) }
+
+            if advancedOpen {
+                VStack(alignment: .leading, spacing: Theme.Space.s4) {
+                    if editable, let options {
+                        RequestValueFields(draft: $draft, options: options, estimate: estimate)
+                    }
+                    if showsMemoryStep { memoryStep }
+                    if editable, let options {
+                        HStack {
+                            Spacer()
+                            Button("Reset to defaults") { draft = RequestDraft(options.defaults) }
+                                .buttonStyle(.kit(.line, small: true))
+                                .disabled(draft == RequestDraft(options.defaults))
+                                .help("Back to this model's defaults: \(options.defaults.summary)")
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private static let modes = [KitOption(value: "fast", label: "Fast"),
+                                KitOption(value: "low_memory", label: "Low memory")]
+
+    @ViewBuilder
+    private var memoryStep: some View {
+        if let settings = store.settings {
+            LabeledField("Memory step (this request)") {
+                KitSegmented(options: Self.modes,
+                             selection: Binding(get: { mode }, set: { mode = $0; modeTouched = true }))
+                if mode == "low_memory", !settings.ladder.isEmpty {
+                    StepSlider(count: settings.ladder.count,
+                               index: Binding(get: { min(rungIndex, settings.ladder.count - 1) },
+                                              set: { rungIndex = $0; modeTouched = true }),
+                               label: { i in settings.ladder.indices.contains(i) ? settings.ladder[i].label : "" })
+                    if settings.ladder.indices.contains(rungIndex) {
+                        Text(settings.ladder[rungIndex].label)
+                            .font(Theme.Fonts.meta)
+                            .foregroundStyle(Theme.Palette.ink2)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    private func adoptEngineMode() {
+        guard let s = store.settings else { return }
+        mode = s.mode
+        rungIndex = s.index(for: s.efficiency)
+    }
+
+    /// Prefills the Advanced fields from the chosen model's defaults. Older engines (404) and errors leave
+    /// `options` nil, which hides the section.
+    private func loadOptions() async {
+        if options?.model != model {
+            options = nil
+            estimate = nil
+        }
+        guard !model.isEmpty else { return }
+        let loaded = try? await APIClient.current().requestOptions(model: model)
+        guard !Task.isCancelled, let loaded else { return }
+        options = loaded
+        draft = RequestDraft(loaded.defaults)
+        estimate = loaded.estimate
+        // Testing: SHUTTER_TEST_FRAMES=<n> and SHUTTER_TEST_UNTILED=1 change the fields (for screenshots).
+        let env = ProcessInfo.processInfo.environment
+        if let f = env["SHUTTER_TEST_FRAMES"] { draft.frames = f }
+        if env["SHUTTER_TEST_UNTILED"] != nil { draft.vaeTile = false }
+    }
+
+    /// The estimate follows the fields, 300 ms after the last change.
+    private func refreshEstimate() async {
+        guard let options, options.editable, options.model == model else { return }
+        if draft == RequestDraft(options.defaults), let e = options.estimate {
+            estimate = e
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled else { return }
+        if let e = try? await APIClient.current().estimate(model: model, values: draft.values), !Task.isCancelled {
+            estimate = e
         }
     }
 
@@ -138,17 +286,41 @@ struct NewJobSheet: View {
             }
             duration = d
         }
-        let req = NewJobRequest(
+        if editable, let problem = draft.problem {
+            error = problem
+            advancedOpen = true
+            return
+        }
+        var req = NewJobRequest(
             model: model,
             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
             image: imagePath.isEmpty ? nil : (imagePath as NSString).expandingTildeInPath,
             audio: audioPath.isEmpty ? nil : (audioPath as NSString).expandingTildeInPath,
             output: nil,
             framing: framing,
-            durationS: duration,
+            durationS: editable ? nil : duration,
             seed: seed,
             priority: priority
         )
+        // The request carries exactly what the sheet shows.
+        var params: [String: JSONValue] = [:]
+        if editable {
+            let v = draft.values
+            req.width = v.width
+            req.height = v.height
+            req.frames = v.frames
+            req.steps = v.steps
+            req.guidance = v.guidance
+            if let shift = v.shift { params["shift"] = .number(shift) }
+            params["vae_tile"] = .bool(draft.vaeTile)
+        }
+        if showsMemoryStep, let settings = store.settings {
+            req.mode = mode
+            if mode == "low_memory", settings.ladder.indices.contains(rungIndex) {
+                params["efficiency"] = .number(settings.ladder[rungIndex].at)
+            }
+        }
+        if !params.isEmpty { req.params = params }
         submitting = true
         error = nil
         Task { @MainActor in

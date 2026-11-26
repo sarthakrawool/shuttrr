@@ -90,7 +90,7 @@ class WanAdapter(Adapter):
         fps = float(request.fps or cfg.get("sample_fps", 16))
         frames = request.frames or (int(round(request.duration_s * fps)) + 1 if request.duration_s else None) \
             or int(self._opt("default_frames", 0) or cfg.get("frame_num", 81))
-        gs = request.guidance if request.guidance is not None else p.get("guidance")
+        gs = request.guidance if request.guidance is not None else p.get("guidance", self._opt("default_guidance", None))
         default_gs = cfg.get("sample_guide_scale", 5.0)
         if gs is None:
             gs = tuple(default_gs) if isinstance(default_gs, list) else default_gs
@@ -99,7 +99,7 @@ class WanAdapter(Adapter):
         s = Settings(prompt=request.prompt, negative_prompt=request.negative_prompt or "", height=h, width=w,
                      frames=int(frames), steps=int(request.steps or p.get("steps") or self._opt("default_steps", 0)
                                or cfg.get("sample_steps", 40)),
-                     guidance=gs, shift=float(p.get("shift", cfg.get("sample_shift", 5.0))), seed=int(request.seed),
+                     guidance=gs, shift=float(p.get("shift", self._opt("default_shift", cfg.get("sample_shift", 5.0)))), seed=int(request.seed),
                      scheduler=str(p.get("scheduler", "unipc")), image=request.image,
                      vae_tile=_truthy(p.get("vae_tile", self._opt("vae_tile", False))), loras=list(p.get("loras") or []))
         return align(cfg, s)

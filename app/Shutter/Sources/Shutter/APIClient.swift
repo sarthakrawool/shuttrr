@@ -158,6 +158,28 @@ struct APIClient: Sendable {
         try await send("DELETE", "/v1/catalog/\(escape(id))/download", slow: true)
     }
 
+    /// GET /v1/models/<id>/request-options. Nil when the engine has no such endpoint (older engines answer 404).
+    func requestOptions(model: String) async throws -> RequestOptions? {
+        try await orNil404 { try await send("GET", "/v1/models/\(escape(model))/request-options") }
+    }
+
+    /// POST /v1/models/<id>/estimate: time, fit, warnings and issues for these values. Nil on an older engine.
+    func estimate(model: String, values: RequestValues) async throws -> RequestEstimate? {
+        let body = try JSONEncoder().encode(values)
+        return try await orNil404 { try await send("POST", "/v1/models/\(escape(model))/estimate", body: body) }
+    }
+
+    /// PUT /v1/models/<id>/defaults: save the person's own starting values for this model.
+    func saveDefaults(model: String, values: RequestValues) async throws -> RequestOptions {
+        let body = try JSONEncoder().encode(values)
+        return try await send("PUT", "/v1/models/\(escape(model))/defaults", body: body)
+    }
+
+    /// DELETE /v1/models/<id>/defaults: back to this Mac's starting values.
+    func resetDefaults(model: String) async throws -> RequestOptions {
+        try await send("DELETE", "/v1/models/\(escape(model))/defaults")
+    }
+
     func eventsURL() throws -> URL { try url("/v1/events") }
 
     // MARK: Plumbing
@@ -174,6 +196,14 @@ struct APIClient: Sendable {
     private struct SettingsBody: Encodable {
         let mode: String?
         let efficiency: Double?
+    }
+
+    private func orNil404<T>(_ call: () async throws -> T) async throws -> T? {
+        do {
+            return try await call()
+        } catch APIError.http(404, _) {
+            return nil
+        }
     }
 
     private func escape(_ s: String) -> String {

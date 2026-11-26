@@ -152,6 +152,10 @@ The converter itself uses little memory. It reads one tensor at a time and write
 (SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem, SarthakRawool/Wan2.2-TI2V-5B-MLX-8bit-LowMem) at a pinned revision and
 check every file's sha256; nothing is converted. On a Mac under 24 GB the 5B makes 704x1280 x 25 frames, 30 steps,
 with the tiled decode (5.4 GB, about 10 minutes on a 16 GB M5); below 704x1280 its picture goes soft.
+On a base M-series chip (not Pro / Max / Ultra) with 24 GB or more it makes 49 frames instead (about 21 minutes
+on a base M5, 5.9 GB); Pro / Max / Ultra keep the reference recipe (121 frames, 50 steps). These are starting
+values only: every request can set its own size, frames, steps, guidance and shift, and people can save their own
+per-model defaults (docs/REQUEST_OPTIONS.md).
 
 For the models without a published build (the A14B ones), `shutter download <id>` (or the Download button in the
 app) does the following:

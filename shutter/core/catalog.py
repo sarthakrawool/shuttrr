@@ -99,7 +99,8 @@ if WAN13_Q8_TE["files"]:
 # Wan 2.2 TI2V 5B, the Shuttrr 8-bit build converted from the official repo. Peaks are each request's largest stage
 # (denoise or decode), prompt encoded once. Mac Studio runs used an MLX memory limit and 4 steps (the peak does not
 # depend on the step count); they say what a bigger Mac needs and are not used for a 16 GB Mac.
-_M5 = {"mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5"}
+_M5 = {"mac": "MacBook Pro M5 (Mac17,2)", "chip": "Apple M5", "gpu_cores": 10, "memory_gb": 16, "mlx": "0.32.5"}
+_STUDIO = {"mac": "Mac Studio M5 Max (Mac17,14)", "chip": "Apple M5 Max", "gpu_cores": 40, "memory_gb": 128}
 WAN5B_CHECKED = [
     {"date": "2026-11-26", **_M5, "size": "320x512", "frames": 25, "steps": 20, "identical": True,
      "peaks_gb": {"staged": 6.34, "stream_wide": 4.34, "stream_tight": 4.34},
@@ -113,17 +114,21 @@ WAN5B_CHECKED = [
      "peaks_gb": {"stream_tight": 6.33}, "seconds": {"stream_tight": 1354}},
     {"date": "2026-11-26", **_M5, "size": "832x480", "frames": 25, "steps": 30, "image": True,
      "peaks_gb": {"stream_tight": 6.85}, "seconds": {"stream_tight": 259}},
+    # base chips with 24 GB or more: 704x1280 x 49 frames, 30 steps, tiled decode (about 21 min on a base M5)
+    {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 49, "steps": 30, "vae_tile": True,
+     "peaks_gb": {"stream_tight": 5.86}, "seconds": {"stream_tight": 1259},
+     "note": "8-bit text encoder; swap went down during the run (other apps open)"},
     {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 49, "steps": 20, "vae_tile": True,
      "peaks_gb": {"stream_tight": 5.86}, "seconds": {"stream_tight": 987}},
     # the 16 GB default since the quality check (480x832 looked soft): 704x1280 x 25 frames, 30 steps, tiled decode
     {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 25, "steps": 30, "vae_tile": True,
      "peaks_gb": {"stream_tight": 5.44}, "seconds": {"stream_tight": 613},
      "note": "denoise 16.4 s/step at 2.5 GB, tiled decode 119 s; other apps open"},
-    {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.3",
+    {"date": "2026-11-26", **_STUDIO, "mlx": "0.32.3",
      "size": "704x1280", "frames": 49, "steps": 50, "peaks_gb": {"resident": 16.32}, "seconds": {"resident": 548},
      "note": "quality check; 30 steps: 341 s, same peak, as sharp to the eye"},
-    {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.4",
-     "size": "704x1280", "frames": 121, "steps": 4, "identical": True, "memory_limit_gb": {"stream_tight": 16,
+    {"date": "2026-11-26", **_STUDIO, "mlx": "0.32.4",
+     "size": "704x1280", "frames": 121, "steps": 4, "decode_s": 125, "identical": True, "memory_limit_gb": {"stream_tight": 16,
                                                                                           "staged": 16, "resident": 32},
      "peaks_gb": {"resident": 16.37, "staged": 11.74, "stream_tight": 11.34},
      "seconds_per_step": {"resident": 27.6, "staged": 27.7, "stream_tight": 28.1}},
@@ -152,6 +157,13 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
         "small_mac_note": ("This Mac has under {gb} GB of memory, so Wan 2.2 5B makes {h}x{w} clips of {f} frames "
                            "({steps} steps, tiled decode, about 10 minutes on a 16 GB M5) by default. 49 frames "
                            "(2 s) take about 20 minutes; smaller sizes are faster but look soft."),
+        # A base M-series chip (M5, not Pro / Max / Ultra) with 24 GB or more holds the reference recipe but would
+        # take over an hour per clip, so it gets a 2 s clip (about 21 min measured on a base M5, 5.9 GB peak).
+        "base_chip_defaults": (704, 1280, 49, 30),
+        "base_chip_options": {"vae_tile": True},
+        "base_chip_note": ("This Mac has a base {chip} chip, so Wan 2.2 5B makes {h}x{w} clips of {f} frames ({steps} "
+                           "steps, tiled decode) by default instead of the 5 s reference recipe, which would take over "
+                           "an hour here."),
     },
     "wan2.2-t2v-a14b": {
         "name": "Wan 2.2 Text to Video A14B",
@@ -214,6 +226,8 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             **({"small_mac_defaults": tuple(src["small_mac_defaults"])} if src.get("small_mac_defaults") else {}),
             **({"small_mac_note": src["small_mac_note"]} if src.get("small_mac_note") else {}),
             **({"small_mac_options": dict(src["small_mac_options"])} if src.get("small_mac_options") else {}),
+            **{k: (tuple(src[k]) if k == "base_chip_defaults" else src[k])
+               for k in ("base_chip_defaults", "base_chip_options", "base_chip_note") if src.get(k)},
             "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
@@ -270,6 +284,12 @@ def preset_for(model_id: str, total_bytes: int) -> dict[str, Any]:
             "This Mac has under 24 GB of memory, so Shuttrr uses Lowest memory and the half-size final decode.",
             "The half-size decode is not bit-identical to the full one (a 46.6 dB match).",
         ]
+    elif entry["adapter"] == "wan" and _base_chip_big_mac(entry, total_bytes):
+        h, w, f, steps = entry["base_chip_defaults"]
+        out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps,
+                          **entry.get("base_chip_options", {})}
+        out["notes"] = [entry.get("base_chip_note", "").format(chip=chip_info().get("name") or "M-series", h=h, w=w,
+                                                                f=f, steps=steps)]
     elif entry["adapter"] == "wan" and 0 < total_bytes < SMALL_MAC_BYTES:
         h, w, f, steps = small_mac_defaults(model_id)
         out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps,
@@ -292,6 +312,18 @@ def small_mac_defaults(model_id: str) -> tuple[int, int, int, int]:
 
 
 SMALL_MAC_BYTES = 24 * GB
+
+
+def chip_info() -> dict[str, Any]:
+    """This Mac's chip ({"name", "tier", "gpu_cores"}); a function here so tests can stand in another Mac."""
+    from shutter.core.chip import chip_info as _ci
+    return _ci()
+
+
+def _base_chip_big_mac(entry: dict[str, Any], total_bytes: int) -> bool:
+    """A Mac with at least SMALL_MAC_BYTES and a base M-series chip, for a model with base-chip defaults."""
+    return bool(entry.get("base_chip_defaults") and total_bytes >= SMALL_MAC_BYTES
+                and chip_info().get("tier") == "base")
 WAN_SMALL_MAC_DEFAULTS = (320, 512, 33, 20)     # height, width, frames, steps: measured on a 16 GB M5 (docs/WAN.md)
 
 
@@ -326,6 +358,9 @@ def default_request(model_id: str, total_bytes: int) -> tuple[int, int, int]:
     e = CATALOG[model_id]
     if 0 < total_bytes < SMALL_MAC_BYTES:
         h, w, f, _ = small_mac_defaults(model_id)
+        return h, w, f
+    if _base_chip_big_mac(e, total_bytes):
+        h, w, f, _ = e["base_chip_defaults"]
         return h, w, f
     if e.get("shape", {}).get("in_dim") == 48:     # TI2V 5B: 704x1280
         return 704, 1280, 121
@@ -374,6 +409,8 @@ def _measured_entry(e: dict[str, Any], h: int, w: int, f: int, tiled: bool = Fal
 def _default_tiled(e: dict[str, Any], total_bytes: int) -> bool:
     """Whether a Mac with `total_bytes` decodes with the tiled VAE by default (a small Mac, when the model's preset
     turns it on there)."""
+    if _base_chip_big_mac(e, total_bytes):
+        return bool((e.get("base_chip_options") or {}).get("vae_tile"))
     return bool(0 < total_bytes < SMALL_MAC_BYTES and (e.get("small_mac_options") or {}).get("vae_tile"))
 
 
@@ -524,14 +561,132 @@ def memory_line(model_id: str, total_bytes: int) -> str:
 
 
 def makes_line(model_id: str, total_bytes: int) -> str:
-    """One short line on what the model makes by default on this Mac, e.g. "Makes 320x512 clips on this Mac"."""
+    """One short line on what the model makes by default on this Mac, with the expected time when there is one,
+    e.g. "Makes 1 s 704x1280 clips, about 10 min each on this Mac"."""
     try:
-        h, w, _f = default_request_any(model_id, total_bytes)
+        h, w, f = default_request_any(model_id, total_bytes)
     except Exception:
         return ""
-    if CATALOG[model_id]["adapter"] == "longcat-avatar":
+    e = CATALOG[model_id]
+    if e["adapter"] == "longcat-avatar":
         return f"Makes {'480p' if h < 700 else '720p'} talking videos on this Mac"
+    if e["adapter"] == "wan" and e.get("shape"):
+        fps = _wan_fps(e)
+        t = expected_time(model_id, total_bytes)
+        clip = f"{(f - 1) / fps:.0f} s {h}x{w} clips" if fps else f"{h}x{w} clips"
+        if t.get("seconds"):
+            est = "" if t["measured"] else " (estimate)"
+            return f"Makes {clip}, about {_minutes(t['seconds'])} each on this Mac{est}"
+        return f"Makes {clip} on this Mac"
     return f"Makes {h}x{w} clips on this Mac"
+
+
+def _wan_fps(e: dict[str, Any]) -> float:
+    from shutter.families.wan.spec import VARIANTS
+    return float(VARIANTS.get(e.get("variant", ""), {}).get("fps", 16))
+
+
+def _minutes(seconds: float) -> str:
+    m = seconds / 60
+    if m < 1.5:
+        return "1 min"
+    if m < 90:
+        return f"{m:.0f} min"
+    return f"{m / 60:.1f} h"
+
+
+def default_steps(model_id: str, total_bytes: int) -> int:
+    """Steps a catalog Wan model runs by default on this Mac (preset, else the variant's own)."""
+    opt = preset_for(model_id, total_bytes)["options"].get("default_steps")
+    if opt:
+        return int(opt)
+    from shutter.families.wan.spec import VARIANTS
+    return int(VARIANTS.get(CATALOG[model_id].get("variant", ""), {}).get("steps", 50))
+
+
+def _tokens(h: int, w: int, f: int, stride: tuple[int, int, int]) -> int:
+    return ((f - 1) // stride[0] + 1) * (h // stride[1] // 2) * (w // stride[2] // 2)
+
+
+def expected_time(model_id: str, total_bytes: int, h: Optional[int] = None, w: Optional[int] = None,
+                  f: Optional[int] = None, steps: Optional[int] = None,
+                  tiled: Optional[bool] = None) -> dict[str, Any]:
+    """Expected seconds for a Wan request on this Mac (its default unless given), from the model's measured runs:
+    the closest measured run (same size and frames and decode first), scaled by the token count, the steps and
+    this Mac's GPU cores. `measured` is True only for a run measured at exactly this request on this chip.
+    Returns {"seconds", "label", "measured", "basis"}; seconds None when nothing can be said."""
+    e = CATALOG[model_id]
+    none = {"seconds": None, "label": "", "measured": False, "basis": ""}
+    if e.get("adapter") != "wan" or not e.get("shape"):
+        return none
+    if h is None:
+        h, w, f = default_request(model_id, total_bytes)
+    steps = int(steps or default_steps(model_id, total_bytes))
+    tiled = _default_tiled(e, total_bytes) if tiled is None else bool(tiled)
+    stride = (4, 16, 16) if e["shape"].get("out_dim") == 48 else (4, 8, 8)
+    me = chip_info()
+    cores = me.get("gpu_cores") or 0
+    runs = []
+    for c in e.get("checked_on") or []:
+        if c.get("image"):
+            continue
+        ch, cw = (int(x) for x in str(c.get("size", "0x0")).split("x"))
+        secs = c.get("seconds") or {}
+        if secs:
+            per_step, fixed = float(min(secs.values())) / int(c["steps"]), 0.0
+        elif c.get("seconds_per_step"):        # decode measured apart: it does not grow with the steps
+            per_step, fixed = float(min(c["seconds_per_step"].values())), float(c.get("decode_s", 0))
+        else:
+            continue
+        total_s = (per_step, fixed)
+        exact = (ch, cw, int(c["frames"]), bool(c.get("vae_tile"))) == (h, w, f, tiled)
+        same_chip = bool(me.get("name")) and c.get("chip") == me.get("name") and (not cores or
+                                                                                  c.get("gpu_cores") == cores)
+        rank = (0 if exact else 1, 0 if same_chip else 1,
+                abs(_tokens(ch, cw, int(c["frames"]), stride) - _tokens(h, w, f, stride)))
+        runs.append((rank, c, total_s, ch, cw))
+    if not runs:
+        return none
+    runs.sort(key=lambda r: r[0])
+    rank, c, total_s, ch, cw = runs[0]
+    per_step, fixed = total_s
+    scale = _tokens(h, w, f, stride) / max(1, _tokens(ch, cw, int(c["frames"]), stride))
+    if cores and c.get("gpu_cores"):
+        scale *= float(c["gpu_cores"]) / cores
+    seconds = (per_step * steps + fixed) * scale
+    measured = rank[0] == 0 and rank[1] == 0 and steps == int(c["steps"])
+    gb = f"{c['memory_gb']} GB " if c.get("memory_gb") else ""
+    mac = str(c.get("mac") or "").split(" (")[0]
+    basis = (f"measured on a {gb}{mac}" if measured else f"scaled from a run on a {gb}{mac}") if mac else ""
+    label = f"About {_minutes(seconds)} on this Mac" + ("" if measured else " (estimate)")
+    return {"seconds": round(seconds), "label": label, "measured": measured, "basis": basis}
+
+
+def request_peak(model_id: str, total_bytes: int, h: int, w: int, f: int,
+                 tiled: bool) -> tuple[int, dict[str, Any]]:
+    """(peak bytes at the lowest memory step, a fit verdict) for one request on this Mac: measured when this exact
+    request was measured, else the engine's estimate (whole-model steps only, as classify_fit)."""
+    e = CATALOG[model_id]
+    peaks = _measured_peaks(e, h, w, f, tiled)
+    measured = bool(peaks)
+    if not peaks:
+        try:
+            peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
+        except Exception:
+            peaks = {}
+    if not peaks:
+        return 0, {"level": "unknown", "reason": ""}
+    low = min(peaks.values())
+    if not total_bytes:
+        return low, {"level": "unknown", "reason": ""}
+    usable = max(0, total_bytes - macos_baseline(total_bytes))
+    tag = "measured" if measured else "an estimate"
+    if low > usable:
+        return low, {"level": "no_fit", "reason": f"Needs about {low / GB:.1f} GB ({tag}); this Mac can give "
+                     f"about {usable / GB:.0f} GB."}
+    if low + EVERYDAY_APPS > usable:
+        return low, {"level": "barely", "reason": f"About {low / GB:.1f} GB ({tag}): tight on this Mac."}
+    return low, {"level": "recommended", "reason": f"About {low / GB:.1f} GB ({tag})."}
 
 
 def fit_for(model_id: str, total_bytes: int, headroom: int = 0) -> dict[str, Any]:
@@ -694,8 +849,12 @@ def register(cfg: Config, model_id: str, folder: Path, total_bytes: Optional[int
     preset = preset_for(model_id, total_memory() if total_bytes is None else total_bytes)
     cfg = Config.load(cfg.path)   # re-read: the engine may have saved settings while we downloaded
     spec = dict(cfg.models.get(model_id) or {})
-    options = dict(preset["options"])
-    options.update(spec.get("options") or {})
+    # this Mac's starting values, then whatever the person saved themselves (options.user_keys); other old
+    # options a previous version wrote give way to the new preset
+    old = dict(spec.get("options") or {})
+    user = set(old.get("user_keys") or [])
+    options = {k: v for k, v in old.items() if k not in preset["options"] or k in user}
+    options.update({k: v for k, v in preset["options"].items() if k not in user})
     spec.update(adapter=e["adapter"], dir=str(folder), options=options)
     cfg.models[model_id] = spec
     for k, v in preset["settings"].items():

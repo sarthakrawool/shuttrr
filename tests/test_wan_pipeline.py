@@ -439,3 +439,15 @@ def test_adapter_small_mac_defaults(tmp_path):
     assert (s.height, s.width, s.frames, s.steps) == (480, 832, 17, 12)
     plain = WanAdapter("tiny", build, {}).settings_for(JobRequest(model="tiny", prompt="x"))
     assert (plain.height, plain.width) != (320, 512) or plain.frames != 33
+
+
+def test_adapter_saved_guidance_and_shift(tmp_path):
+    """A person's saved defaults for guidance and shift are used; a request's own values still win."""
+    from shutter.adapters.wan import WanAdapter
+    from shutter.types import JobRequest
+    build = make_build(tmp_path, None)
+    ad = WanAdapter("tiny", build, {"default_guidance": 4.0, "default_shift": 3.0})
+    s = ad.settings_for(JobRequest(model="tiny", prompt="x"))
+    assert (s.guidance, s.shift) == (4.0, 3.0)
+    s = ad.settings_for(JobRequest(model="tiny", prompt="x", guidance=6.0, params={"shift": 7.0}))
+    assert (s.guidance, s.shift) == (6.0, 7.0)

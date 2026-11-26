@@ -8,6 +8,7 @@ struct ModelsView: View {
     @Environment(\.openWindow) private var openWindow
     let onNewJob: (String?) -> Void
     @State private var showingDownloads = false
+    @State private var defaultsModel: ModelInfo?
 
     init(onNewJob: @escaping (String?) -> Void) {
         self.onNewJob = onNewJob
@@ -65,7 +66,8 @@ struct ModelsView: View {
                         VStack(spacing: 0) {
                             AvailableHeader()
                             ForEach(store.models) { model in
-                                AvailableRow(model: model) { onNewJob(model.id) }
+                                AvailableRow(model: model, onNewJob: { onNewJob(model.id) },
+                                             onDefaults: { defaultsModel = model })
                             }
                         }
                     }
@@ -80,6 +82,18 @@ struct ModelsView: View {
         .sheet(isPresented: $showingDownloads) {
             DownloadModelSheet { showingDownloads = false }
                 .environmentObject(store)
+        }
+        .sheet(item: $defaultsModel) { model in
+            ModelDefaultsSheet(model: model) { defaultsModel = nil }
+        }
+        .task {
+            // Testing: SHUTTER_TEST_SHEET=defaults:<model id> opens that model's Defaults sheet.
+            guard let s = ProcessInfo.processInfo.environment["SHUTTER_TEST_SHEET"], s.hasPrefix("defaults:") else { return }
+            let id = String(s.dropFirst("defaults:".count))
+            for _ in 0..<60 {
+                if let m = store.models.first(where: { $0.id == id }) { defaultsModel = m; return }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
         }
     }
 
@@ -188,11 +202,12 @@ private struct AvailableHeader: View {
 }
 
 /// One model: name with its state under it, then one clear button (Load, Loading, Unload, or Cancel while it waits
-/// for memory) and a ⋯ menu with View in Finder and Test.
+/// for memory) and a ⋯ menu with View in Finder, Defaults and Test.
 private struct AvailableRow: View {
     @EnvironmentObject private var store: EngineStore
     let model: ModelInfo
     let onNewJob: () -> Void
+    let onDefaults: () -> Void
 
     private var pending: Bool { store.modelPending.contains(model.id) }
     private var folderExists: Bool { !model.dir.isEmpty && FileManager.default.fileExists(atPath: model.dir) }
@@ -309,6 +324,8 @@ private struct AvailableRow: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.dir)])
             }
             .disabled(!folderExists)
+            Button("Defaults…", action: onDefaults)
+                .disabled(!store.connection.isConnected)
             Button("Test", action: onNewJob)
                 .disabled(!model.installed)
         } label: {

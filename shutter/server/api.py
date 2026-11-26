@@ -419,6 +419,75 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         await asyncio.sleep(0.3)
         return JSONResponse(await asyncio.to_thread(_catalog))
 
+    # ---- request options, estimates and the person's own defaults (docs/REQUEST_OPTIONS.md)
+    def _ro_call(fn, mid, *args):
+        from shutter.core import request_options as ro
+        try:
+            return 200, fn(engine.config, mid, *args)
+        except KeyError:
+            return 404, f"unknown model '{mid}'"
+        except ro.OptionsError as e:
+            return 400, str(e)
+
+    async def _json_body(request: Request) -> Any:
+        body = await request.body()
+        return json.loads(body) if body.strip() else {}
+
+    async def get_request_options(request: Request) -> Response:
+        from shutter.core import request_options as ro
+        code, val = await asyncio.to_thread(_ro_call, ro.request_options, request.path_params["model_id"])
+        return JSONResponse(val) if code == 200 else _err(code, val)
+
+    async def post_estimate(request: Request) -> Response:
+        from shutter.core import request_options as ro
+        try:
+            data = await _json_body(request)
+        except ValueError:
+            return _err(400, "body must be JSON")
+        if not isinstance(data, dict):
+            return _err(400, "body must be a JSON object")
+        code, val = await asyncio.to_thread(_ro_call, ro.estimate, request.path_params["model_id"], data)
+        return JSONResponse(val) if code == 200 else _err(code, val)
+
+    def _apply_options(mid: str) -> None:
+        """Give the running adapter the saved options (the config file is the source)."""
+        saved = type(engine.config).load(engine.config.path).models.get(mid)
+        if saved is not None:
+            engine.config.models[mid] = saved
+        try:
+            ad = engine.registry._adapters.get(mid)
+            if ad is not None:
+                ad.options.clear()
+                ad.options.update((saved or {}).get("options") or {})
+        except Exception:
+            pass
+
+    async def put_defaults(request: Request) -> Response:
+        from shutter.core import request_options as ro
+        mid = request.path_params["model_id"]
+        try:
+            data = await _json_body(request)
+        except ValueError:
+            return _err(400, "body must be JSON")
+        if not isinstance(data, dict):
+            return _err(400, "body must be a JSON object")
+        code, val = await asyncio.to_thread(_ro_call, ro.save_defaults, mid, data)
+        if code != 200:
+            return _err(code, val)
+        await asyncio.to_thread(_apply_options, mid)
+        code, val = await asyncio.to_thread(_ro_call, ro.request_options, mid)
+        return JSONResponse(val) if code == 200 else _err(code, val)
+
+    async def delete_defaults(request: Request) -> Response:
+        from shutter.core import request_options as ro
+        mid = request.path_params["model_id"]
+        code, val = await asyncio.to_thread(_ro_call, ro.reset_defaults, mid)
+        if code != 200:
+            return _err(code, val)
+        await asyncio.to_thread(_apply_options, mid)
+        code, val = await asyncio.to_thread(_ro_call, ro.request_options, mid)
+        return JSONResponse(val) if code == 200 else _err(code, val)
+
     async def dashboard(request: Request) -> Response:
         try:
             return HTMLResponse(DASHBOARD.read_text(encoding="utf-8"))
@@ -431,6 +500,10 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         Route("/v1/models", models),
         Route("/v1/models/{model_id}/load", load_model, methods=["POST"]),
         Route("/v1/models/{model_id}/unload", unload_model, methods=["POST"]),
+        Route("/v1/models/{model_id}/request-options", get_request_options, methods=["GET"]),
+        Route("/v1/models/{model_id}/estimate", post_estimate, methods=["POST"]),
+        Route("/v1/models/{model_id}/defaults", put_defaults, methods=["PUT"]),
+        Route("/v1/models/{model_id}/defaults", delete_defaults, methods=["DELETE"]),
         Route("/v1/catalog", get_catalog, methods=["GET"]),
         Route("/v1/catalog/{model_id}/download", start_download, methods=["POST"]),
         Route("/v1/catalog/{model_id}/download", stop_download, methods=["DELETE"]),

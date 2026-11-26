@@ -823,11 +823,197 @@ struct NewJobRequest: Encodable, Sendable {
     var height: Int? = nil
     var frames: Int? = nil
     var steps: Int? = nil
+    var guidance: Double? = nil
+    /// "fast" or "low_memory" for this request only; nil = the engine's setting.
+    var mode: String? = nil
 
     enum CodingKeys: String, CodingKey {
         // `framing` is not sent: the engine no longer has it.
         case model, prompt, image, audio, output, durationS = "duration_s", seed, priority, params
-        case width, height, frames, steps
+        case width, height, frames, steps, guidance, mode
+    }
+}
+
+// MARK: - Request options, estimates and saved defaults (docs/REQUEST_OPTIONS.md)
+
+/// The editable values of a request. Nil = not set (left out when encoded).
+struct RequestValues: Codable, Equatable, Sendable {
+    var width: Int?
+    var height: Int?
+    var frames: Int?
+    var steps: Int?
+    var guidance: Double?
+    var shift: Double?
+    var fps: Double?
+    var vaeTile: Bool?
+
+    enum CodingKeys: String, CodingKey { case width, height, frames, steps, guidance, shift, fps, vaeTile = "vae_tile" }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        width = c.optionalInt(.width)
+        height = c.optionalInt(.height)
+        frames = c.optionalInt(.frames)
+        steps = c.optionalInt(.steps)
+        guidance = c.optional(.guidance)
+        shift = c.optional(.shift)
+        fps = c.optional(.fps)
+        vaeTile = c.optional(.vaeTile)
+    }
+
+    var isEmpty: Bool { self == RequestValues() }
+
+    /// "1280x704 · 25 frames · 30 steps · guidance 5 · shift 5 · tiled decode on"
+    var summary: String {
+        var parts: [String] = []
+        if let width, let height { parts.append("\(width)x\(height)") }
+        if let frames { parts.append("\(frames) frames") }
+        if let steps { parts.append("\(steps) steps") }
+        if let guidance { parts.append("guidance \(Self.text(guidance))") }
+        if let shift { parts.append("shift \(Self.text(shift))") }
+        if let vaeTile { parts.append("tiled decode \(vaeTile ? "on" : "off")") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 5.0 -> "5", 3.5 -> "3.5"
+    static func text(_ d: Double) -> String { String(format: "%g", (d * 1000).rounded() / 1000) }
+}
+
+struct SizePreset: Decodable, Identifiable, Equatable, Sendable {
+    var width: Int = 0
+    var height: Int = 0
+    var label: String = ""
+    var id: String { "\(width)x\(height)" }
+
+    enum CodingKeys: String, CodingKey { case width, height, label }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        width = c.int(.width)
+        height = c.int(.height)
+        label = c.value(.label, "")
+        if label.isEmpty { label = "\(width)x\(height)" }
+    }
+}
+
+struct RequestLimits: Decodable, Equatable, Sendable {
+    var sizeMultiple: Int?
+    var minSide: Int?
+    var maxArea: Int?
+    var framesMin: Int?
+    var framesMax: Int?
+    var framesRule: String = ""
+    var stepsMin: Int?
+    var stepsMax: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case sizeMultiple = "size_multiple", minSide = "min_side", maxArea = "max_area"
+        case framesMin = "frames_min", framesMax = "frames_max", framesRule = "frames_rule"
+        case stepsMin = "steps_min", stepsMax = "steps_max"
+    }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sizeMultiple = c.optionalInt(.sizeMultiple)
+        minSide = c.optionalInt(.minSide)
+        maxArea = c.optionalInt(.maxArea)
+        framesMin = c.optionalInt(.framesMin)
+        framesMax = c.optionalInt(.framesMax)
+        framesRule = c.value(.framesRule, "")
+        stepsMin = c.optionalInt(.stepsMin)
+        stepsMax = c.optionalInt(.stepsMax)
+    }
+
+    /// The nearest frame count the model takes (4n+1 when the rule says so, inside min...max).
+    func snapFrames(_ frames: Int) -> Int {
+        var f = max(1, frames)
+        if framesRule == "4n+1" { f = Int((Double(f - 1) / 4).rounded()) * 4 + 1 }
+        if let framesMin { f = max(f, framesMin) }
+        if let framesMax { f = min(f, framesMax) }
+        return f
+    }
+}
+
+/// A value the engine would change, with the value it would use instead.
+struct RequestIssue: Decodable, Identifiable, Equatable, Sendable {
+    var field: String = ""
+    var message: String = ""
+    var fix: JSONValue?
+    var id: String { field + "|" + message }
+
+    enum CodingKeys: String, CodingKey { case field, message, fix }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        field = c.value(.field, "")
+        message = c.value(.message, "")
+        fix = c.optional(.fix)
+        if fix == .null { fix = nil }
+    }
+}
+
+struct RequestEstimate: Decodable, Equatable, Sendable {
+    var seconds: Double?
+    var label: String = ""
+    var measured: Bool = false
+    var basis: String = ""
+    var peakBytes: Int?
+    var fitLevel: String = ""
+    var fitReason: String = ""
+    var warnings: [String] = []
+    var issues: [RequestIssue] = []
+
+    enum CodingKeys: String, CodingKey { case seconds, label, measured, basis, peakBytes = "peak_bytes", fit, warnings, issues }
+    private struct Fit: Decodable {
+        var level: String?
+        var reason: String?
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        seconds = c.optional(.seconds)
+        label = c.value(.label, "")
+        measured = c.value(.measured, false)
+        basis = c.value(.basis, "")
+        peakBytes = c.optionalInt(.peakBytes)
+        let fit: Fit? = c.optional(.fit)
+        fitLevel = fit?.level ?? ""
+        fitReason = fit?.reason ?? ""
+        warnings = c.value(.warnings, [])
+        issues = c.value(.issues, [])
+    }
+
+    func issues(for fields: String...) -> [RequestIssue] { issues.filter { fields.contains($0.field) } }
+}
+
+/// GET /v1/models/{id}/request-options (also the answer of PUT and DELETE .../defaults).
+struct RequestOptions: Decodable, Equatable, Sendable {
+    var model: String = ""
+    var editable: Bool = false
+    var defaults = RequestValues()
+    var macDefaults = RequestValues()
+    var userDefaults = RequestValues()
+    var sizes: [SizePreset] = []
+    var limits = RequestLimits()
+    var estimate: RequestEstimate?
+
+    enum CodingKeys: String, CodingKey {
+        case model, editable, defaults, macDefaults = "mac_defaults", userDefaults = "user_defaults"
+        case sizes, limits, estimate
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model = c.value(.model, "")
+        editable = c.value(.editable, false)
+        defaults = c.value(.defaults, RequestValues())
+        macDefaults = c.value(.macDefaults, RequestValues())
+        userDefaults = c.value(.userDefaults, RequestValues())
+        sizes = c.value(.sizes, [])
+        limits = c.value(.limits, RequestLimits())
+        estimate = c.optional(.estimate)
     }
 }
 

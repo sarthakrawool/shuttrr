@@ -417,7 +417,7 @@ def test_catalog_rows_are_grouped_by_fit(cfg, monkeypatch):
     by = {r["id"]: r for r in rows}
     assert by[MID]["fit"]["level"] == "no_fit" and not by[MID]["fits_this_mac"]
     assert by["wan2.2-t2v-a14b"]["fit"]["level"] == "no_fit" and not by["wan2.2-t2v-a14b"]["fits_this_mac"]
-    assert by[STARTER]["makes"] == "Makes 320x512 clips on this Mac"
+    assert by[STARTER]["makes"].startswith("Makes 2 s 320x512 clips, about ")
 
 
 def test_disk_label():
