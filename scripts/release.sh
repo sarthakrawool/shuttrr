@@ -75,6 +75,26 @@ LEN="$(printf '%s' "$SIG_ATTRS" | sed -n 's/.*length="\([0-9]*\)".*/\1/p')"
 "$SPARKLE_BIN/sign_update" --account "$KEY_ACCOUNT" --verify "$OUT/Shuttrr.zip" "$SIG" >/dev/null \
     || die "the signature does not verify"
 
+# Release notes inside the appcast, so Sparkle's update window shows them (a link would load the whole GitHub
+# page). From --notes: "- " lines become a list, other lines paragraphs. Without --notes: a link to the release.
+NOTES_XML="      <sparkle:releaseNotesLink>https://github.com/$OWNER/$REPO/releases/tag/$TAG</sparkle:releaseNotesLink>"
+if [[ -n "$NOTES" ]]; then
+    NOTES_HTML="$(python3 - "$NOTES" "$VERSION" <<'PY'
+import html, sys
+lines = [l.rstrip() for l in open(sys.argv[1], encoding="utf-8")]
+out, items = [f"<h2>Shuttrr {html.escape(sys.argv[2])}</h2>"], []
+def flush():
+    if items: out.append("<ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>"); items.clear()
+for l in lines:
+    if l.startswith(("- ", "* ")): items.append(html.escape(l[2:].strip()))
+    elif l.strip(): flush(); out.append(f"<p>{html.escape(l.strip())}</p>")
+flush()
+print("".join(out).replace("]]>", "]]&gt;"))
+PY
+)"
+    NOTES_XML="      <description><![CDATA[$NOTES_HTML]]></description>"
+fi
+
 PUBDATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
 cat > "$OUT/appcast.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
@@ -90,7 +110,7 @@ cat > "$OUT/appcast.xml" <<XML
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$MIN_MACOS</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/$OWNER/$REPO/releases/tag/$TAG</sparkle:releaseNotesLink>
+$NOTES_XML
       <enclosure url="$BASE/Shuttrr.zip" length="$LEN" type="application/octet-stream" sparkle:edSignature="$SIG"/>
     </item>
   </channel>
