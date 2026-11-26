@@ -174,14 +174,14 @@ def test_catalog_measured_runs_lower_the_estimate(tmp_path, monkeypatch):
 # ----------------------------------------------------------------------------- through the engine
 
 
-def _engine(tmp_path, build, probe=None):
+def _engine(tmp_path, build, probe=None, mid="tiny"):
     from shutter.core.config import Config
     from shutter.core.engine import Engine
     from shutter.core.memory import FakeProbe
     from shutter.core.registry import Registry
     cfg = Config(home=str(tmp_path / "home"), memory_poll_s=0.01, busy_process_pattern=None,
                  protected_process_pattern=None, omlx_url=None, dummy_model=False,
-                 models={"tiny": {"adapter": "wan", "dir": str(build),
+                 models={mid: {"adapter": "wan", "dir": str(build),
                                   "options": {"default_size": [H, W], "default_frames": FRAMES,
                                               "default_steps": STEPS, "stream_nocache": False,
                                               "measured_path": str(tmp_path / "m.json")}}})
@@ -280,5 +280,62 @@ def test_engine_settings_ladder_shows_measured_peaks_of_an_installed_model(tmp_p
         rows = {r["id"]: r for r in st["ladder"]}
         assert rows["resident"]["peak_bytes"] == int(6.23 * GB) and rows["staged"]["seconds"] == 163.0
         assert "peak_bytes" not in rows["stream_tight"]
+    finally:
+        eng.stop(timeout=10)
+
+
+def _as_q8_encoder_layout(build):
+    """Rename text_encoder/ to text_encoder_q8/ the way the 0.2.6 catalog revision ships it."""
+    import json
+    (build / "text_encoder").rename(build / "text_encoder_q8")
+    man = json.loads((build / "shuttrr.json").read_text())
+    te = man["parts"]["text_encoder"]
+    te["files"] = [f.replace("text_encoder/", "text_encoder_q8/", 1) for f in te.get("files", [])]
+    (build / "shuttrr.json").write_text(json.dumps(man))
+
+
+@pytest.mark.parametrize("layout", ["bf16_encoder_709d9c4f", "q8_encoder_a3029232"])
+def test_catalog_wan13_id_loads_with_either_encoder_revision(tmp_path, fixed_prompt, latents_out, no_mp4, layout):
+    """Load works for the catalog id of Wan 2.1 1.3B whichever revision is on disk: the earlier one with the bf16
+    text encoder (text_encoder/) and the 0.2.6 one (text_encoder_q8/). Load only touches the DiT, so the encoder
+    folder must not matter; the row says Loaded with measured bytes and Unload frees it."""
+    from shutter.types import JobState
+    mid = "wan2.1-t2v-1.3b-8bit"
+    build = make_build(tmp_path, None)
+    if layout.startswith("q8"):
+        _as_q8_encoder_layout(build)
+    eng = _engine(tmp_path, build, mid=mid)
+    try:
+        row = next(r for r in eng.models() if r["id"] == mid)
+        assert row["can_load"] is True and row["load_hint"] == ""
+        job = eng.load_model(mid)
+        _wait(lambda: eng.get(job.id).state in (JobState.DONE, JobState.FAILED))
+        assert eng.get(job.id).state == JobState.DONE, eng.get(job.id).message
+        row = next(r for r in eng.models() if r["id"] == mid)
+        assert row["state"] == "loaded" and row["held"] and row["loaded_bytes"] > 0
+        assert not row.get("load_error")
+        assert eng.unload_model(mid)
+        assert next(r for r in eng.models() if r["id"] == mid)["state"] == "not_loaded"
+    finally:
+        eng.stop(timeout=10)
+
+
+def test_load_error_text_is_never_a_python_exception(tmp_path, fixed_prompt, latents_out, monkeypatch):
+    """A failure inside warm() reaches the app as a plain sentence, not "RuntimeError: ..."."""
+    from shutter.types import JobState
+    build = make_build(tmp_path, None)
+    eng = _engine(tmp_path, build)
+
+    def boom(self, job, ctx):
+        raise RuntimeError("tiny cannot be loaded ahead of a request; it loads when a request needs it")
+    monkeypatch.setattr(WanAdapter, "warm", boom)
+    try:
+        job = eng.load_model("tiny")
+        _wait(lambda: eng.get(job.id).state in (JobState.DONE, JobState.FAILED))
+        j = eng.get(job.id)
+        assert j.state == JobState.FAILED
+        row = _row(eng)
+        for text in (j.message or "", row.get("load_error") or ""):
+            assert "RuntimeError" not in text and "Traceback" not in text
     finally:
         eng.stop(timeout=10)

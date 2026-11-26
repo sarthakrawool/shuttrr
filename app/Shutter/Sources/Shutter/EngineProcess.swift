@@ -197,7 +197,7 @@ final class EngineProcess: ObservableObject {
         }
     }
 
-    private func append(_ text: String) {
+    func append(_ text: String) {
         let combined = partialLine + text
         var parts = combined.components(separatedBy: "\n")
         partialLine = parts.removeLast() // incomplete trailing line (or "")

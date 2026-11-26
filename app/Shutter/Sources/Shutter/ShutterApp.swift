@@ -45,6 +45,21 @@ struct ShutterApp: App {
 
 /// Finds the process listening on the engine's port and stops it, but only when it is a Shuttrr engine
 /// (`shutter serve` or `shutterd`); an unrelated process on the port is never touched.
+/// Compares the engine's reported version with the one bundled in the app.
+enum EngineVersionCheck {
+    static func normalized(_ v: String) -> String {
+        var t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasPrefix("v") || t.hasPrefix("V") { t.removeFirst() }
+        return t
+    }
+
+    /// True when both versions are known and differ. An engine that reports no version is left alone.
+    static func mismatch(running: String, bundled: String) -> Bool {
+        let r = normalized(running), b = normalized(bundled)
+        return !r.isEmpty && !b.isEmpty && r != b
+    }
+}
+
 enum EngineStopper {
     static func port(of base: String) -> Int {
         URLComponents(string: base)?.port ?? 8484
@@ -75,6 +90,15 @@ enum EngineStopper {
 
     static func command(of pid: pid_t) -> String {
         run("/bin/ps", ["-o", "command=", "-p", String(pid)]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// True when the listener on the app's port is the engine installed in ~/.shutter (the one the app manages).
+    /// A development engine started from a source checkout is left alone.
+    static func installedEngineListening(onPortOf base: String, home: String) -> Bool {
+        listeners(port: port(of: base)).contains { pid in
+            let c = command(of: pid)
+            return pid != getpid() && isShuttrrEngine(c) && c.contains(home + "/")
+        }
     }
 
     static func stopShuttrrEngine(onPortOf base: String, seconds: Double) {
@@ -226,12 +250,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let autoStart = !needsOnboarding && UserDefaults.standard.bool(forKey: EngineProcess.autoStartKey)
         // After an app update the bundled engine is newer than ~/.shutter/engine: upgrade it first (models,
         // settings and outputs stay), then start it as usual. A failed upgrade keeps the old engine.
+        // While the app runs, an engine answering with another version than the bundled one (left over from an
+        // earlier Shuttrr, or still the old one after an update) is replaced: see engineVersionSeen.
+        store.onSystem = { [weak self] sys in self?.engineVersionSeen(sys.version) }
         if !needsOnboarding && EngineUpgrader.needsUpgrade {
+            engineFixInProgress = true
             Task { @MainActor in
                 // An engine from the previous version may still be on the port (started by hand): stop it first.
                 EngineStopper.stopShuttrrEngine(onPortOf: APIClient.current().base, seconds: 5)
                 EngineUpgrader.shared.run { [weak self] _ in
-                    guard let self, autoStart, !self.engine.isRunning else { return }
+                    guard let self else { return }
+                    self.engineFixInProgress = false
+                    guard autoStart, !self.engine.isRunning else { return }
                     self.engine.start()
                     self.store.refreshNow()
                 }
@@ -244,6 +274,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     store.refreshNow()
                 }
             }
+        }
+    }
+
+    /// True while the launch-time upgrade or a version fix is replacing the engine.
+    private var engineFixInProgress = false
+    /// Engine versions already replaced in this run (never loop on an engine that keeps coming back old).
+    private var engineVersionsFixed: Set<String> = []
+
+    /// The engine on the app's port answers with `running`. When that is not the version bundled in this app and the
+    /// engine is the installed Shuttrr engine (~/.shutter), stop it, bring ~/.shutter/engine up to the bundled version
+    /// if it is older, and start the new one. Before 0.2.7 an engine from an earlier version could keep serving after
+    /// the app was updated (or after it was started by hand), so new features such as Load for Wan failed with
+    /// the old engine's errors. A running request is never interrupted: the check waits until the queue is idle.
+    func engineVersionSeen(_ running: String) {
+        guard !engineFixInProgress, !SetupRunner.needsOnboarding, !EngineUpgrader.shared.isRunning,
+              let bundled = EngineUpgrader.bundledVersion,
+              EngineVersionCheck.mismatch(running: running, bundled: bundled),
+              !engineVersionsFixed.contains(running), !store.hasActiveJob,
+              EngineStopper.installedEngineListening(onPortOf: APIClient.current().base,
+                                                       home: SetupRunner.shutterHome.path) else { return }
+        engineVersionsFixed.insert(running)
+        engineFixInProgress = true
+        engine.append("[Engine \(running) is running but this Shuttrr ships engine \(bundled): restarting it]\n")
+        engine.stopAndWait(seconds: 5)
+        EngineStopper.stopShuttrrEngine(onPortOf: APIClient.current().base, seconds: 5)
+        let startNew: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.engineFixInProgress = false
+            if !self.engine.isRunning { self.engine.start() }
+            self.store.refreshNow()
+        }
+        if EngineUpgrader.needsUpgrade {
+            EngineUpgrader.shared.run { _ in startNew() }
+        } else {
+            startNew()
         }
     }
 

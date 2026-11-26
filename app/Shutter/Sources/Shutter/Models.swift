@@ -467,9 +467,10 @@ struct LoadFailure: Identifiable, Equatable {
     }
 
     static func other(modelID: String, name: String, reason: String) -> LoadFailure {
-        let first = reason.split(separator: "\n").first.map(String.init) ?? reason
-        return LoadFailure(modelID: modelID, title: "\(name) could not be loaded", body: first,
-                           help: "Copy Diagnostics collects the details for a bug report.", isMemory: false)
+        LoadFailure(modelID: modelID, title: "\(name) could not be loaded",
+                    body: PlainError.sentence(reason, fallback: "Something went wrong while loading it.",
+                                              modelID: modelID, name: name),
+                    help: "Copy Diagnostics collects the details for a bug report.", isMemory: false)
     }
 }
 
@@ -748,7 +749,7 @@ struct Job: Decodable, Identifiable, Sendable {
         finishedAt = c.optional(.finishedAt)
         progress = c.value(.progress, 0.0)
         stage = c.value(.stage, "")
-        message = c.value(.message, "")
+        message = PlainError.ifTechnical(c.value(.message, ""), fallback: "Something went wrong. Copy Diagnostics has the details.")
         result = c.value(.result, [:])
         node = c.value(.node, "local")
         request = c.value(.request, JobRequestInfo())
@@ -1031,5 +1032,46 @@ extension Job {
             break
         }
         return out
+    }
+}
+
+/// Turns an error text from the engine into a sentence a person can read. Engines from 0.2.5 on already send plain
+/// sentences; an older engine (or an unexpected failure) can send Python exception text such as
+/// "RuntimeError: wan2.1-t2v-1.3b-8bit cannot be loaded ahead of a request" or a traceback. The card never shows
+/// those: the exception name is dropped, the model id becomes its display name, and tracebacks or code-like text are
+/// replaced by `fallback`. The full text stays in the engine log (Copy Diagnostics).
+enum PlainError {
+    static let exceptionPrefix =
+        #"^([A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*(Error|Exception|Refused|Unavailable|Unsupported|Interrupt|Exit|Cancelled):\s*"#
+
+    static func sentence(_ raw: String, fallback: String, modelID: String = "", name: String = "") -> String {
+        let lines = raw.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if lines.contains(where: { $0.hasPrefix("Traceback") || $0.hasPrefix("File \"") }) { return fallback }
+        guard var s = lines.first else { return fallback }
+        while let r = s.range(of: exceptionPrefix, options: .regularExpression) { s.removeSubrange(r) }
+        if !modelID.isEmpty && !name.isEmpty { s = s.replacingOccurrences(of: modelID, with: name) }
+        s = s.trimmingCharacters(in: .whitespaces)
+        if s.isEmpty { return fallback }
+        // Code in the text (object reprs, addresses, call syntax, paths in quotes) reads as noise: show the fallback.
+        let code = [#"<[^>]*>"#, #"0x[0-9a-fA-F]{4,}"#, #"[A-Za-z_]\w*\([^)]*\)\s*$"#, #"\{.*:.*\}"#]
+        if code.contains(where: { s.range(of: $0, options: .regularExpression) != nil }) { return fallback }
+        if let f = s.first, f.isLowercase, s.prefix(while: { $0 != " " }).allSatisfy(\.isLetter) {
+            s = f.uppercased() + s.dropFirst()
+        }
+        if let last = s.last, !".!?)".contains(last) { s += "." }
+        return s
+    }
+
+    /// True for Python exception text: "SomethingError: ..." or a traceback.
+    static func isTechnical(_ raw: String) -> Bool {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.range(of: exceptionPrefix, options: .regularExpression) != nil
+            || t.contains("Traceback (most recent call last)")
+    }
+
+    /// Plain text passes through unchanged (progress lines such as "loading model" too); exception text is cleaned.
+    static func ifTechnical(_ raw: String, fallback: String) -> String {
+        isTechnical(raw) ? sentence(raw, fallback: fallback) : raw
     }
 }

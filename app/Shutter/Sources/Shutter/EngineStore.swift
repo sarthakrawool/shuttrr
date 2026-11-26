@@ -23,6 +23,8 @@ final class EngineStore: ObservableObject {
     private var lastClientsFetch = Date.distantPast
     @Published private(set) var history: [MemoryPoint] = []
     @Published var lastError: String?
+    /// Called after every successful /v1/system poll (AppDelegate checks the engine version against the app's).
+    var onSystem: ((SystemInfo) -> Void)?
     /// Fast / Low memory (GET /v1/settings). Nil until the engine answers; an engine that
     /// has no /v1/settings keeps it nil and the Mode control stays hidden.
     @Published private(set) var settings: EngineSettings?
@@ -143,6 +145,7 @@ final class EngineStore: ObservableObject {
             let list = try await api.jobs(limit: 50)
             system = sys
             jobs = list.filter { !$0.isModelOperation }
+            onSystem?(sys)
             failures = 0
             if connection != .connected {
                 connection = .connected

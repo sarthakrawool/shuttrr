@@ -14,6 +14,7 @@ let package = Package(
             dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Shutter",
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
-        )
+        ),
+        .testTarget(name: "ShutterTests", dependencies: ["Shutter"], path: "Tests/ShutterTests"),
     ]
 )

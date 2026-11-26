@@ -9,7 +9,7 @@ import SwiftUI
 // with Shuttrr's EdDSA key (scripts/release.sh, private key in the release Mac's Keychain); Sparkle refuses an
 // archive whose signature does not match SUPublicEDKey.
 //
-// Ask first (since 0.2.2): Shuttrr checks at launch and once a day. When a newer version is on GitHub, Sparkle's
+// Ask first (since 0.2.2): Shuttrr checks at launch and every 3 hours (once a day before 0.2.7). When a newer version is on GitHub, Sparkle's
 // window says "Shuttrr 0.2.x is now available, you have 0.2.y", shows the release notes and offers Install Update /
 // Remind Me Later / Skip This Version. Nothing is downloaded until the person says yes; then Sparkle offers
 // "Install and Relaunch". Quitting stops the engine first (AppDelegate.applicationShouldTerminate), and after the
@@ -43,6 +43,10 @@ final class UpdateChecker: NSObject, ObservableObject {
             d.set(true, forKey: "updatesAskFirstMigrated")
         }
     }
+
+    /// Every 3 hours while Shuttrr is open (it usually stays open in the menu bar). Was once a day until 0.2.7,
+    /// which left an app open since the morning on the old version all day.
+    nonisolated static let checkInterval: TimeInterval = 3 * 3600
 
     private var enabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
 
@@ -78,7 +82,7 @@ final class UpdateChecker: NSObject, ObservableObject {
         guard let u = controller?.updater else { return }
         u.automaticallyChecksForUpdates = on
         u.automaticallyDownloadsUpdates = false      // ask first; also undoes 0.2.1's stored YES
-        u.updateCheckInterval = 24 * 3600
+        u.updateCheckInterval = Self.checkInterval
     }
 
     /// The switch in Settings changed.
