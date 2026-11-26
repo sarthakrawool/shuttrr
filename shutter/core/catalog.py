@@ -168,13 +168,13 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
     "wan2.2-t2v-a14b": {
         "name": "Wan 2.2 Text to Video A14B",
         "summary": "Best-quality video from a text prompt. Very large and slow.",
-        "source_repo": "Wan-AI/Wan2.2-T2V-A14B", "source_size_gb": 126,
+        "source_repo": "Wan-AI/Wan2.2-T2V-A14B", "source_size_gb": 126, "min_total_gb": 64,
         "shape": dict(dim=5120, in_dim=16, out_dim=16, ffn_dim=13824, num_layers=40, dual=True),
     },
     "wan2.2-i2v-a14b": {
         "name": "Wan 2.2 Image to Video A14B",
         "summary": "Brings a photo to life, guided by a prompt. Very large.",
-        "source_repo": "Wan-AI/Wan2.2-I2V-A14B", "source_size_gb": 126,
+        "source_repo": "Wan-AI/Wan2.2-I2V-A14B", "source_size_gb": 126, "min_total_gb": 64,
         "shape": dict(dim=5120, in_dim=36, out_dim=16, ffn_dim=13824, num_layers=40, dual=True),
     },
 }
@@ -229,6 +229,8 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             **{k: (tuple(src[k]) if k == "base_chip_defaults" else src[k])
                for k in ("base_chip_defaults", "base_chip_options", "base_chip_note") if src.get(k)},
             "hidden": bool(src.get("hidden")),
+            # never promise a big unmeasured model fits a small Mac: the A14B ones need 64 GB until measured
+            **({"min_total_gb": src["min_total_gb"]} if src.get("min_total_gb") else {}),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
             "check_files": ["shuttrr.json", WAN_TE, "tokenizer", "vae"],

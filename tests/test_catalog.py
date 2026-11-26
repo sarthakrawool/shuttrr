@@ -403,7 +403,8 @@ def test_fit_classifier_table_by_mac_size():
             if f["level"] == "barely":
                 assert f["peak_bytes"] <= usable
             if f["level"] == "no_fit":
-                assert f["peak_bytes"] > usable or g * GB < cat.CATALOG[m]["min_memory_gb"] * GB
+                assert (f["peak_bytes"] > usable or g * GB < cat.CATALOG[m]["min_memory_gb"] * GB
+                        or g * GB < int(cat.CATALOG[m].get("min_total_gb") or 0) * GB)
             assert "low memory" not in f["reason"].lower().replace("lower memory", "")
     assert level("wan2.2-t2v-a14b", 24) == "no_fit" and level("wan2.2-t2v-a14b", 64) == "barely"
 

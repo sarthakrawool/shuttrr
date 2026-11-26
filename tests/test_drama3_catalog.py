@@ -38,3 +38,11 @@ def test_licence_acceptance_is_saved(tmp_path):
     assert not cat.licence_accepted(cfg, "fish-drama3-8bit")
     cat.accept_licence(cfg, "fish-drama3-8bit")
     assert cat.licence_accepted(Config.load(str(tmp_path / "config.json")), "fish-drama3-8bit")
+
+
+def test_a14b_does_not_fit_under_64_gb_until_measured():
+    for mid in ("wan2.2-t2v-a14b", "wan2.2-i2v-a14b"):
+        for g in (16, 32, 48):
+            f = cat.classify_fit(mid, g * GB, baseline=3 * GB)
+            assert f["level"] == "no_fit" and "64 GB" in f["reason"], (mid, g, f)
+        assert cat.classify_fit(mid, 64 * GB, baseline=3 * GB)["level"] == "barely"
