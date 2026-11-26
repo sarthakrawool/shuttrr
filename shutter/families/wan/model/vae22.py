@@ -1075,8 +1075,11 @@ class Wan22VAEDecoder(nn.Module):
 
 
 def _keep(c):
-    """A cache entry as its own buffer, so it does not keep the layer's whole output alive."""
-    return mx.contiguous(c)
+    """A cache entry as its own buffer, evaluated now: a lazy entry would keep its whole input graph alive until the
+    next frame uses it."""
+    c = mx.contiguous(c)
+    mx.eval(c)
+    return c
 
 
 def _cconv(conv, x, cache, idx):

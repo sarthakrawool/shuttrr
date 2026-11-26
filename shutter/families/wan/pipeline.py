@@ -319,7 +319,8 @@ class WanPipeline:
         from shutter.families.wan.model.vae22 import Wan22VAEEncoder
         img = preprocess_image(s.image, s.width, s.height)
         vae = Wan22VAEEncoder(z_dim=self.cfg["vae_z_dim"])
-        vae.load_weights(list(w.items()), strict=False)
+        vae.load_weights([(k, v) for k, v in w.items() if k.startswith(("encoder.", "conv1."))], strict=False)
+        w = None
         z = vae.encode(img)
         mx.eval(z)
         z = z[0].transpose(3, 0, 1, 2)
@@ -337,6 +338,9 @@ class WanPipeline:
             from shutter.families.wan.model.vae22 import Wan22VAEDecoder, denormalize_latents
             vae = Wan22VAEDecoder(z_dim=48)
             vae.load_weights([(k, v) for k, v in w.items() if not k.startswith(("encoder.", "conv1."))], strict=False)
+            # the decoder re-lays out its conv kernels on first use and drops its own 5D copies; the dict would
+            # keep them alive (2 GB more)
+            w = None
             z = denormalize_latents(latents.transpose(1, 2, 3, 0)[None])
             mx.eval(z)
             if tiled:
