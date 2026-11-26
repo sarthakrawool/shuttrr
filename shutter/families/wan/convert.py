@@ -40,6 +40,7 @@ from shutter.families.base import Checkpoint
 GB = 1024**3
 BLOCKS_PER_SHARD = 4
 FP32_KEEP = (".modulation",)          # kept in float32, as the reference keeps them
+T5_BLOCKS_PER_SHARD = 2               # umT5-XXL blocks are ~0.8 GB in bf16; 6 at once pushed a 16 GB Mac into swap
 
 
 class ConvertError(RuntimeError):
@@ -237,8 +238,8 @@ def convert_t5(files: list[str], layout: str, out_dir: Path, report: Callable[[s
     files_out.append("rest.safetensors")
     weight_map = {k: "rest.safetensors" for k in shard}
     ids = sorted(by_block)
-    for start in range(0, len(ids), 6):
-        g = ids[start:start + 6]
+    for start in range(0, len(ids), T5_BLOCKS_PER_SHARD):
+        g = ids[start:start + T5_BLOCKS_PER_SHARD]
         shard = {}
         for i in g:
             for a, b in by_block[i]:
@@ -261,12 +262,21 @@ def convert_t5(files: list[str], layout: str, out_dir: Path, report: Callable[[s
 def convert_vae(files: list[str], kind: str, out_dir: Path, include_encoder: bool) -> dict[str, Any]:
     mx = _mx()
     src = _open(files)
-    raw = {n: src.get(n) for n in src.names()}
-    src.close()
     if kind == "wan2.2":
+        # one tensor at a time: the 2.8 GB float32 file read whole plus its numpy transposes swapped a 16 GB Mac
         from shutter.families.wan.model.vae22 import sanitize_wan22_vae_weights
-        w = sanitize_wan22_vae_weights(raw, include_encoder=include_encoder)
+        w = {}
+        for n in src.names():
+            if not include_encoder and (n.startswith("encoder.") or n.startswith("conv1.")):
+                continue
+            for k, v in sanitize_wan22_vae_weights({n: src.get(n)}, include_encoder=include_encoder).items():
+                v = v.astype(mx.float32)
+                mx.eval(v)
+                w[k] = v
+        src.close()
     else:
+        raw = {n: src.get(n) for n in src.names()}
+        src.close()
         w = {}
         for k, v in raw.items():
             if not include_encoder and (k.startswith("encoder.") or k.startswith("conv1.")):
