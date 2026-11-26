@@ -65,3 +65,41 @@ WAN13_Q8_TE: dict[str, Any] = {"revision": 'a3029232d32ac0ed6ac5f7b2c7bf7b30df0a
     {'path': 'vae/model.safetensors', 'size': 293194152, 'sha256': 'b30ffda32731cb257669265130b4485dbf2ceb23cda77d6de9b8ebbf1411cb1b'},
 ]}
 
+
+# Wan 2.2 TI2V 5B, revision 8ed5e8e3 (2026-11-26, Shuttrr 0.2.7): 8-bit DiT, umT5 text encoder in 8 bits, 14.3 GB
+# (sample clips under samples/ are not part of the download)
+WAN5B_Q8: dict[str, Any] = {"revision": '8ed5e8e3af147751a7f1951bd6831414ad994ae1', "files": [
+    {'path': '.gitattributes', 'size': 1889, 'sha256': None},
+    {'path': 'LICENSE', 'size': 11357, 'sha256': None},
+    {'path': 'NOTICE', 'size': 1253, 'sha256': None},
+    {'path': 'README.md', 'size': 6728, 'sha256': None},
+    {'path': 'dit/blocks-00-03.safetensors', 'size': 696002963, 'sha256': '9875e25f69ec09eef2facbee68a3de3192b4fad73614b429e94e724d918928e7'},
+    {'path': 'dit/blocks-04-07.safetensors', 'size': 696002943, 'sha256': '35d965f6a7f45b7a316ed9dcd8895c0f71bf0e78b72884cd3ae49cefb0588918'},
+    {'path': 'dit/blocks-08-11.safetensors', 'size': 696002985, 'sha256': '92be27e155c68874411072a379d23dcaa65dfa4c63465babeedfe60418282fa0'},
+    {'path': 'dit/blocks-12-15.safetensors', 'size': 696003115, 'sha256': '908f82eca3caa2ac127e4edda7162c1e8386851f859b9c7b7f5538df10e462df'},
+    {'path': 'dit/blocks-16-19.safetensors', 'size': 696003169, 'sha256': 'db8554c650b5391f1156db0a4de28b630c93d6dd82bf3ceaac45aba1c55c126d'},
+    {'path': 'dit/blocks-20-23.safetensors', 'size': 696003137, 'sha256': 'de972a46c6df0e6ae9c86a0a7f7ddd4f6caadfe9419b54c54c38db8db479d488'},
+    {'path': 'dit/blocks-24-27.safetensors', 'size': 696003125, 'sha256': '056db9252f25f1f8183334cb0604943f8a919eaffba0919154214161beb0f098'},
+    {'path': 'dit/blocks-28-29.safetensors', 'size': 348001535, 'sha256': 'bc5a90dfb667c7eb9633c56d3ccbe10761b16da3d54e8bbac6824d3fcfa75d48'},
+    {'path': 'dit/rest.safetensors', 'size': 180186882, 'sha256': 'bc02bdf87a8cb454542f60a84c7947a039a6a4cb0d5c37da14c4be957a54cae3'},
+    {'path': 'shuttrr.json', 'size': 6142, 'sha256': None},
+    {'path': 'text_encoder_q8/blocks-00-01.safetensors', 'size': 410038988, 'sha256': '7b0bece0e55ed5302de1bde9b21ac71335ed523e08ffa8f39d608b88ef1cf493'},
+    {'path': 'text_encoder_q8/blocks-02-03.safetensors', 'size': 410038984, 'sha256': 'b25e1ad3a0fc523a26dc2e41c5a2adb7004c2a72fa91bf7b9ca732eca60174ce'},
+    {'path': 'text_encoder_q8/blocks-04-05.safetensors', 'size': 410038964, 'sha256': '2f26e2446c4913bd1d62f46cdec5b3c9dde621ce67ca8c44bb48eca81af0c237'},
+    {'path': 'text_encoder_q8/blocks-06-07.safetensors', 'size': 410038976, 'sha256': 'eea95a310a1102753332b6033c445ab694bfd9fa49f429a78bc300297341b55b'},
+    {'path': 'text_encoder_q8/blocks-08-09.safetensors', 'size': 410038980, 'sha256': '238aa262748dce6987bcdd4ddcad65b5468e5791ed996a25685e4616be2fc1aa'},
+    {'path': 'text_encoder_q8/blocks-10-11.safetensors', 'size': 410039026, 'sha256': '019a7fea5c50a03b59f3a21e9730bba8e41065b2f874ee871df85bdd4e5ff831'},
+    {'path': 'text_encoder_q8/blocks-12-13.safetensors', 'size': 410039030, 'sha256': 'f2f2ef5acc8b980bb5166f2f716a01c87de7f5ee6af36cf49fdd21fd4aff0d56'},
+    {'path': 'text_encoder_q8/blocks-14-15.safetensors', 'size': 410039014, 'sha256': '42bc9085f3a6474217e7e05c17184b1c55cbec604858d173ec88ede58278456b'},
+    {'path': 'text_encoder_q8/blocks-16-17.safetensors', 'size': 410039046, 'sha256': '3c98c06f5095bbb0dec1811bc87f9af8796cf9c3bc3f162333780e431e23744e'},
+    {'path': 'text_encoder_q8/blocks-18-19.safetensors', 'size': 410039032, 'sha256': '1c45af4333e4561380d00446a5c6636be7f4211453ab8c43e5b3fcddf06611ba'},
+    {'path': 'text_encoder_q8/blocks-20-21.safetensors', 'size': 410038988, 'sha256': 'f65ca3883038deca3d728675dfcab21f37fcef52fa3ac4ff648fc4be43b506fb'},
+    {'path': 'text_encoder_q8/blocks-22-23.safetensors', 'size': 410039036, 'sha256': '6b496dad10ff55b509f9919ad3f2af9ab81ea951bda5f6d59fa5417e2cf20515'},
+    {'path': 'text_encoder_q8/model.safetensors.index.json', 'size': 33880, 'sha256': None},
+    {'path': 'text_encoder_q8/rest.safetensors', 'size': 1115791820, 'sha256': '7d91f5d5c41f90d594be0139571addc1917ed2d98996ff612b70df8e40735b7a'},
+    {'path': 'tokenizer/special_tokens_map.json', 'size': 6623, 'sha256': None},
+    {'path': 'tokenizer/spiece.model', 'size': 4548313, 'sha256': 'e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458'},
+    {'path': 'tokenizer/tokenizer.json', 'size': 16837417, 'sha256': '6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b'},
+    {'path': 'tokenizer/tokenizer_config.json', 'size': 61728, 'sha256': None},
+    {'path': 'vae/model.safetensors', 'size': 2818778924, 'sha256': '20a7c9b2ee722156244b7459172a00b42cccba6327a2266e38474ca1e6a412dd'},
+]}

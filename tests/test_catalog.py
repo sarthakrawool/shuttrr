@@ -241,16 +241,21 @@ def test_wan_rows(cfg, monkeypatch):
     # on a 16 GB Mac the published Wan 1.3B build is the recommended starter, listed first
     assert list(rows)[0] == STARTER and rows[STARTER]["recommended"] and not rows[MID]["recommended"]
     assert WAN not in rows                                   # the convert-it-yourself 1.3B is hidden
-    for mid, repo in (("wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B"),
-                      ("wan2.2-t2v-a14b", "Wan-AI/Wan2.2-T2V-A14B"), ("wan2.2-i2v-a14b", "Wan-AI/Wan2.2-I2V-A14B")):
+    for mid, repo in (("wan2.2-t2v-a14b", "Wan-AI/Wan2.2-T2V-A14B"), ("wan2.2-i2v-a14b", "Wan-AI/Wan2.2-I2V-A14B")):
         r = rows[mid]
         e = cat.CATALOG[mid]
         assert r["kind"] == "video" and r["source"] == repo and e["source_repo"] == repo and e["adapter"] == "wan"
         assert r["needs_conversion"] and r["size_approximate"] and not r["installed"]
-        # measured: the 1.3B and the 5B; the A14B models not yet
-        assert bool(r["checked_on"]) == (mid == "wan2.2-ti2v-5b")
+        assert not r["checked_on"]                           # the A14B models are not measured yet
         assert r["built_size_bytes"] < r["size_bytes"]
         assert r["dir"].endswith(f"{mid}-shuttrr-8bit")
+    # the 5B is a published build: fetched as is from the pinned revision, no conversion
+    r, e = rows["wan2.2-ti2v-5b"], cat.CATALOG["wan2.2-ti2v-5b"]
+    assert r["source"] == "SarthakRawool/Wan2.2-TI2V-5B-MLX-8bit-LowMem" and e["source_repo"] == "Wan-AI/Wan2.2-TI2V-5B"
+    assert not r["needs_conversion"] and not r["size_approximate"] and r["checked_on"] and not r["installed"]
+    assert e["revision"] and e["files"] and r["dir"].endswith("Wan2.2-TI2V-5B-MLX-8bit-LowMem")
+    assert abs(r["size_bytes"] - sum(f["size"] for f in e["files"])) < 0.1 * GB
+    assert not any(f["path"].startswith("samples/") for f in e["files"])
     # the smallest Mac comes from the family memory check: one GB less fails it
     from shutter.families import family
     for mid in ("wan2.1-t2v-1.3b", "wan2.2-i2v-a14b"):
@@ -345,8 +350,8 @@ def test_converting_state_reads_as_stopped_when_the_process_died(cfg):
 def test_doctor_skips_wan_until_installed(cfg):
     rows = cat.doctor(cfg)
     wan = [r for r in rows if r["check"].startswith("Wan")]
-    # only the published starter build is offered; models that are converted on download are not worth a line
-    assert [r["check"] for r in wan] == [cat.CATALOG[STARTER]["name"]]
+    # only the published builds are offered; models that are converted on download are not worth a line
+    assert [r["check"] for r in wan] == [cat.CATALOG[STARTER]["name"], cat.CATALOG["wan2.2-ti2v-5b"]["name"]]
     assert f"shutter download {STARTER}" in wan[0]["detail"]
 
 
@@ -442,18 +447,18 @@ def test_wan_starter_preset_and_sample(cfg, monkeypatch):
 def test_wan22_5b_fit_and_small_mac_defaults():
     m = "wan2.2-ti2v-5b"
     fit = lambda g: cat.classify_fit(m, g * GB, baseline=3 * GB)
-    # 16 GB: measured on a 16 GB M5 at 480x832 x 49; resident does not fit there, so the quickest measured step
-    # (staged, 6.92 GB, at most half of 16 GB) is its full speed -> Recommended
+    # 16 GB: the model's own size with the tiled decode, measured on a 16 GB M5 at 704x1280 x 25 frames
+    # (stream_tight, 5.84 GB, at most half of 16 GB) -> Recommended
     f16 = fit(16)
-    assert f16["level"] == "recommended" and f16["measured"] and f16["at"] == "480x832, 49 frames"
-    assert abs(f16["peak_bytes"] / GB - 6.92) < 0.01
+    assert f16["level"] == "recommended" and f16["measured"] and f16["at"] == "704x1280, 25 frames"
+    assert abs(f16["peak_bytes"] / GB - 5.84) < 0.01
     # 24-64 GB default to 704x1280 x 121, measured only on a 128 GB Mac Studio: never Recommended from that
     for g in (24, 32, 64):
         assert fit(g)["level"] == "barely" and "Measured only on a 128 GB Mac" in fit(g)["reason"]
     assert fit(8)["level"] == "no_fit"
-    assert cat.default_request(m, 16 * GB) == (480, 832, 49)
+    assert cat.default_request(m, 16 * GB) == (704, 1280, 25)
     p = cat.preset_for(m, 16 * GB)
-    assert p["options"] == {"default_size": [480, 832], "default_frames": 49, "default_steps": 30}
+    assert p["options"] == {"default_size": [704, 1280], "default_frames": 25, "default_steps": 30, "vae_tile": True}
     assert "Wan 2.2 5B" in p["notes"][0]
     # the 1.3B keeps the family's small-Mac defaults
     assert cat.preset_for(STARTER, 16 * GB)["options"]["default_size"] == [320, 512]

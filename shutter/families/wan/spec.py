@@ -28,7 +28,7 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "wan2.2-i2v-a14b": dict(label="Wan 2.2 I2V A14B", task="i2v", version="2.2", dual=True, steps=40, shift=5.0,
                             guidance=(3.5, 3.5), boundary=0.900, fps=16, frames=81, size=(720, 1280),
                             max_area=704 * 1280, vae="wan2.1"),
-    "wan2.2-ti2v-5b": dict(label="Wan 2.2 TI2V 5B", task="ti2v", version="2.2", dual=False, steps=40, shift=5.0,
+    "wan2.2-ti2v-5b": dict(label="Wan 2.2 TI2V 5B", task="ti2v", version="2.2", dual=False, steps=50, shift=5.0,
                            guidance=5.0, fps=24, frames=121, size=(704, 1280), max_area=704 * 1280, vae="wan2.2"),
 }
 

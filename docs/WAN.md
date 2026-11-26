@@ -148,7 +148,13 @@ verdict   ready to convert
 The converter itself uses little memory. It reads one tensor at a time and writes a few blocks per file, so a
 14B model converts on a 16 GB Mac. One exception: a `.pth` text encoder is loaded whole (about 11 GB) by PyTorch.
 
-`shutter download wan2.2-ti2v-5b` (or the Download button in the app) does the following:
+`shutter download wan2.1-t2v-1.3b-8bit` and `shutter download wan2.2-ti2v-5b` fetch published Shuttrr builds
+(SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem, SarthakRawool/Wan2.2-TI2V-5B-MLX-8bit-LowMem) at a pinned revision and
+check every file's sha256; nothing is converted. On a Mac under 24 GB the 5B makes 704x1280 x 25 frames, 30 steps,
+with the tiled decode (5.4 GB, about 10 minutes on a 16 GB M5); below 704x1280 its picture goes soft.
+
+For the models without a published build (the A14B ones), `shutter download <id>` (or the Download button in the
+app) does the following:
 
 1. Checks before downloading:
    * the Mac passes the memory check, otherwise the download is refused with the reason;

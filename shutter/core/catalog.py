@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from shutter.core.config import Config
-from shutter.core.pinned_files import WAN13_BF16_TE, WAN13_Q8_TE
+from shutter.core.pinned_files import WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE
 
 GB = 1024**3
 
@@ -115,6 +115,13 @@ WAN5B_CHECKED = [
      "peaks_gb": {"stream_tight": 6.85}, "seconds": {"stream_tight": 259}},
     {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 49, "steps": 20, "vae_tile": True,
      "peaks_gb": {"stream_tight": 5.86}, "seconds": {"stream_tight": 987}},
+    # the 16 GB default since the quality check (480x832 looked soft): 704x1280 x 25 frames, 30 steps, tiled decode
+    {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 25, "steps": 30, "vae_tile": True,
+     "peaks_gb": {"stream_tight": 5.44}, "seconds": {"stream_tight": 613},
+     "note": "denoise 16.4 s/step at 2.5 GB, tiled decode 119 s; other apps open"},
+    {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.3",
+     "size": "704x1280", "frames": 49, "steps": 50, "peaks_gb": {"resident": 16.32}, "seconds": {"resident": 548},
+     "note": "quality check; 30 steps: 341 s, same peak, as sharp to the eye"},
     {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.4",
      "size": "704x1280", "frames": 121, "steps": 4, "identical": True, "memory_limit_gb": {"stream_tight": 16,
                                                                                           "staged": 16, "resident": 32},
@@ -137,12 +144,14 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
         "source_repo": "Wan-AI/Wan2.2-TI2V-5B", "source_size_gb": 34,
         "shape": dict(dim=3072, in_dim=48, out_dim=48, ffn_dim=14336, num_layers=30),
         "checked_on": WAN5B_CHECKED,
-        # 16 GB M5: 480x832 x 49 frames (2 s at 24 fps), 30 steps peaks at 6.9 GB and takes ~8 min. 320x512 is
-        # faster but this model's picture falls apart that small (it was trained at 704x1280).
-        "small_mac_defaults": (480, 832, 49, 30),
+        # 16 GB M5: the model's own size, 704x1280, with the tiled decode: 25 frames (1 s at 24 fps), 30 steps
+        # peaks at 5.8 GB and takes ~10 min. Below 704x1280 the picture goes soft (measured: 480x832 has about a
+        # quarter of the fine detail at any step count), so a smaller size is not offered as the default.
+        "small_mac_defaults": (704, 1280, 25, 30),
+        "small_mac_options": {"vae_tile": True},
         "small_mac_note": ("This Mac has under {gb} GB of memory, so Wan 2.2 5B makes {h}x{w} clips of {f} frames "
-                           "({steps} steps, about 8 minutes on a 16 GB M5) by default. 704x1280 works with the "
-                           "tiled decode (vae_tile) but takes about 16 minutes for 49 frames."),
+                           "({steps} steps, tiled decode, about 10 minutes on a 16 GB M5) by default. 49 frames "
+                           "(2 s) take about 20 minutes; smaller sizes are faster but look soft."),
     },
     "wan2.2-t2v-a14b": {
         "name": "Wan 2.2 Text to Video A14B",
@@ -204,6 +213,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "checked_on": list(src.get("checked_on", [])),   # Macs it was measured on; empty until it is
             **({"small_mac_defaults": tuple(src["small_mac_defaults"])} if src.get("small_mac_defaults") else {}),
             **({"small_mac_note": src["small_mac_note"]} if src.get("small_mac_note") else {}),
+            **({"small_mac_options": dict(src["small_mac_options"])} if src.get("small_mac_options") else {}),
             "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
@@ -213,6 +223,19 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
 
 
 CATALOG.update(_wan_entries())
+
+# Wan 2.2 TI2V 5B is published as a Shuttrr build too (8-bit DiT, 8-bit umT5, Wan 2.2 VAE): a download fetches that
+# pinned revision as is, with no conversion. Its shape, measurements and small-Mac defaults stay as above.
+_w5 = CATALOG["wan2.2-ti2v-5b"]
+for _k in ("needs_conversion", "source_folder", "size_approximate", "built_size_gb"):
+    _w5.pop(_k, None)
+_w5.update({
+    "repo": "SarthakRawool/Wan2.2-TI2V-5B-MLX-8bit-LowMem",
+    "folder": "Wan2.2-TI2V-5B-MLX-8bit-LowMem",
+    "check_files": ["shuttrr.json", "dit", WAN_TE, "tokenizer", "vae"],
+    "revision": WAN5B_Q8["revision"], "files": WAN5B_Q8["files"],
+    "size_gb": round(sum(f["size"] for f in WAN5B_Q8["files"]) / GB, 1),
+})
 
 
 class DownloadError(RuntimeError):
@@ -249,7 +272,8 @@ def preset_for(model_id: str, total_bytes: int) -> dict[str, Any]:
         ]
     elif entry["adapter"] == "wan" and 0 < total_bytes < SMALL_MAC_BYTES:
         h, w, f, steps = small_mac_defaults(model_id)
-        out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps}
+        out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps,
+                          **entry.get("small_mac_options", {})}
         if entry.get("small_mac_note"):
             out["notes"] = [entry["small_mac_note"].format(gb=SMALL_MAC_BYTES // GB, h=h, w=w, f=f, steps=steps)]
         else:
@@ -339,17 +363,23 @@ def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]
     return default_request(model_id, total_bytes)
 
 
-def _measured_entry(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, Any]:
-    """The model's `checked_on` entry for this exact request size (untiled decode), or {}."""
+def _measured_entry(e: dict[str, Any], h: int, w: int, f: int, tiled: bool = False) -> dict[str, Any]:
+    """The model's `checked_on` entry for this exact request size and decode (tiled or not), or {}."""
     for c in e.get("checked_on") or []:
-        if c.get("size") == f"{h}x{w}" and int(c.get("frames", 0)) == f and not c.get("vae_tile"):
+        if c.get("size") == f"{h}x{w}" and int(c.get("frames", 0)) == f and bool(c.get("vae_tile")) == bool(tiled):
             return c
     return {}
 
 
-def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, int]:
+def _default_tiled(e: dict[str, Any], total_bytes: int) -> bool:
+    """Whether a Mac with `total_bytes` decodes with the tiled VAE by default (a small Mac, when the model's preset
+    turns it on there)."""
+    return bool(0 < total_bytes < SMALL_MAC_BYTES and (e.get("small_mac_options") or {}).get("vae_tile"))
+
+
+def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int, tiled: bool = False) -> dict[str, int]:
     """Measured peak (bytes) per memory step for this exact request size, from the model's `checked_on`; {} if none."""
-    c = _measured_entry(e, h, w, f)
+    c = _measured_entry(e, h, w, f, tiled)
     return {r: int(float(g) * GB) for r, g in (c.get("peaks_gb") or {}).items()}
 
 
@@ -407,13 +437,15 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     except Exception:
         h = w = f = 0
         at = ""
-    entry = _measured_entry(e, h, w, f) if h else {}
-    peaks = _measured_peaks(e, h, w, f) if h else {}
+    # the decode this Mac uses by default (small Macs may get the tiled one from the model's preset)
+    tiled = _default_tiled(e, total_bytes)
+    entry = _measured_entry(e, h, w, f, tiled) if h else {}
+    peaks = _measured_peaks(e, h, w, f, tiled) if h else {}
     measured = bool(peaks)
     if not peaks:
         try:
             if e["adapter"] == "wan":
-                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
+                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
             elif e["adapter"] == "longcat-avatar":
                 peaks = _longcat_estimates(total_bytes)
         except Exception:
@@ -465,17 +497,18 @@ def memory_line(model_id: str, total_bytes: int) -> str:
         h, w, f = default_request_any(model_id, total_bytes)
     except Exception:
         return ""
-    peaks = _measured_peaks(e, h, w, f)
+    tiled = _default_tiled(e, total_bytes)
+    peaks = _measured_peaks(e, h, w, f, tiled)
     where = ""
     if peaks:
-        c = next((c for c in e.get("checked_on") or [] if c.get("size") == f"{h}x{w}"), {})
+        c = _measured_entry(e, h, w, f, tiled)
         mac = str(c.get("mac") or "").split(" (")[0]
         gb = f" {c['memory_gb']} GB" if c.get("memory_gb") else ""
         where = f" (measured on a{gb} {mac})" if mac else " (measured)"
     else:
         try:
             if e["adapter"] == "wan":
-                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
+                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
             elif e["adapter"] == "longcat-avatar":
                 peaks = _longcat_estimates(total_bytes)
         except Exception:
@@ -683,7 +716,8 @@ def register_build(cfg: Config, model_id: str, folder: Path, adapter: str = "wan
 
 def _hf_download(repo: str, folder: Path, revision: Optional[str] = None) -> None:
     from huggingface_hub import snapshot_download
-    snapshot_download(repo_id=repo, local_dir=str(folder), revision=revision or None)
+    # sample clips on the model page are not part of the model
+    snapshot_download(repo_id=repo, local_dir=str(folder), revision=revision or None, ignore_patterns=["samples/*"])
 
 
 def _hf_total(repo: str) -> int:
