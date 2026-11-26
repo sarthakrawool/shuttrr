@@ -38,7 +38,10 @@ CATALOG: dict[str, dict[str, Any]] = {
         "repo": "SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem",
         "folder": "LongCat-Video-Avatar-1.6-MLX-8bit-LowMem",
         "size_gb": 37.5,
-        "min_memory_gb": 16,
+        "min_memory_gb": 24,
+        # Hard minimum: below 24 GB the lowest step (12.3 GB measured) leaves almost nothing for macOS and apps,
+        # so the catalog says "Doesn't fit" whatever the estimate (classify_fit).
+        "min_total_gb": 24,
         "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48", "sentencepiece",
                   "librosa", "Pillow", "imageio", "imageio-ffmpeg", "ftfy", "pyloudnorm"],
         "check_files": ["dit", "text_encoder", "vae", "code/longcat_video_avatar/generation.py"],
@@ -315,6 +318,7 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
       recommended  measured at this size, and its full speed peak fits in usable with 4 GB to spare for everyday apps
       barely       its lowest step's peak fits in usable (or it is only an estimate)
       no_fit       its lowest step's peak is more than usable, or the Mac is under the model's smallest Mac
+                   (`min_total_gb`, an explicit minimum total memory, wins over any estimate)
     Uses the measured peaks when there are any for this size (and only those), otherwise the engine's estimates.
     Returns {"level", "label", "reason", "detail", "peak_bytes", "measured", "at", "usable_bytes"}."""
     e = CATALOG[model_id]
@@ -353,6 +357,9 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
         return {"level": level, "label": FIT_LABELS[level], "reason": reason, "detail": reason,
                 "peak_bytes": int(peak), "measured": measured, "at": at, "usable_bytes": usable}
 
+    min_total = int(e.get("min_total_gb") or 0)
+    if min_total and total_bytes < min_total * GB:
+        return out("no_fit", f"Needs a Mac with {min_total} GB or more. This Mac has {mac_gb:.0f} GB.", low)
     if total_bytes < floor_gb * GB or not peaks or low > usable:
         need = _mac_size_for(low, floor_gb)
         if need <= mac_gb:

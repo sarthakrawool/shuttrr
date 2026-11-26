@@ -359,9 +359,10 @@ def test_fit_classifier_on_16_gb():
     f = cat.classify_fit(STARTER, 16 * GB)
     assert f["level"] == "recommended" and f["label"] == "Recommended" and f["measured"]
     assert f["at"] == "320x512, 33 frames" and f["reason"] == "Runs at full speed on this Mac."
-    # LongCat: lowest measured step is 12.3 GB, inside 16 GB - 3 GB for macOS -> fits, but barely (tight)
+    # LongCat has an explicit minimum of 24 GB total memory: on 16 GB it doesn't fit, whatever the estimate
     lc = cat.classify_fit(MID, 16 * GB)
-    assert lc["level"] == "barely" and lc["label"] == "Fits but barely" and lc["reason"] == cat.TIGHT
+    assert lc["level"] == "no_fit" and lc["label"] == "Doesn't fit"
+    assert lc["reason"] == "Needs a Mac with 24 GB or more. This Mac has 16 GB."
     assert lc["usable_bytes"] == 13 * GB
     # the user's example: a model that peaks at 12 GB on a 24 GB Mac is never "doesn't fit"
     assert cat.classify_fit(MID, 24 * GB)["level"] in ("barely", "recommended")
@@ -380,9 +381,10 @@ def test_fit_classifier_on_16_gb():
 
 def test_fit_classifier_table_by_mac_size():
     level = lambda m, g: cat.classify_fit(m, g * GB)["level"]
-    # LongCat: full speed (31.5 / 34.5 GB) plus 4 GB for apps fits from 64 GB; below only in a lower step
-    assert [level(MID, g) for g in (16, 24, 32, 64, 128)] == ["barely", "barely", "barely", "recommended", "recommended"]
-    assert cat.classify_fit(MID, 16 * GB)["reason"].startswith("Tight on this Mac.")
+    # LongCat: under 24 GB doesn't fit (explicit minimum); full speed (31.5 / 34.5 GB) plus 4 GB for apps fits
+    # from 64 GB; at 24-32 GB only in a lower step
+    assert [level(MID, g) for g in (16, 24, 32, 64, 128)] == ["no_fit", "barely", "barely", "recommended", "recommended"]
+    assert cat.classify_fit(MID, 16 * GB)["reason"] == "Needs a Mac with 24 GB or more. This Mac has 16 GB."
     assert "lower memory step" in cat.classify_fit(MID, 24 * GB)["reason"]
     # Wan 1.3B is only measured at the small-Mac size: bigger Macs default to 480x832 x 81, an estimate
     assert [level(STARTER, g) for g in (16, 24, 32, 64, 128)] == ["recommended"] + ["barely"] * 4
@@ -407,7 +409,7 @@ def test_catalog_rows_are_grouped_by_fit(cfg, monkeypatch):
     levels = [order[r["fit"]["level"]] for r in rows]
     assert levels == sorted(levels) and rows[0]["id"] == STARTER and rows[0]["recommended"]
     by = {r["id"]: r for r in rows}
-    assert by[MID]["fit"]["level"] == "barely" and by[MID]["fits_this_mac"]
+    assert by[MID]["fit"]["level"] == "no_fit" and not by[MID]["fits_this_mac"]
     assert by["wan2.2-t2v-a14b"]["fit"]["level"] == "no_fit" and not by["wan2.2-t2v-a14b"]["fits_this_mac"]
     assert by[STARTER]["makes"] == "Makes 320x512 clips on this Mac"
 
