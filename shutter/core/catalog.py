@@ -169,6 +169,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "built_size_gb": built,
             "min_memory_gb": min_gb,
             "checked_on": list(src.get("checked_on", [])),   # Macs it was measured on; empty until it is
+            **({"small_mac_defaults": tuple(src["small_mac_defaults"])} if src.get("small_mac_defaults") else {}),
             "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
@@ -213,14 +214,23 @@ def preset_for(model_id: str, total_bytes: int) -> dict[str, Any]:
             "The half-size decode is not bit-identical to the full one (a 46.6 dB match).",
         ]
     elif entry["adapter"] == "wan" and 0 < total_bytes < SMALL_MAC_BYTES:
-        h, w, f, steps = WAN_SMALL_MAC_DEFAULTS
+        h, w, f, steps = small_mac_defaults(model_id)
         out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps}
-        out["notes"] = [
-            f"This Mac has under {SMALL_MAC_BYTES // GB} GB of memory, so Wan makes {h}x{w} clips of {f} frames by "
-            "default. Short 480x832 clips work with the tiled decode (vae_tile); 81-frame 480x832 clips need a "
-            f"Mac with {SMALL_MAC_BYTES // GB} GB or more.",
-        ]
+        if entry.get("small_mac_note"):
+            out["notes"] = [entry["small_mac_note"].format(gb=SMALL_MAC_BYTES // GB, h=h, w=w, f=f, steps=steps)]
+        else:
+            out["notes"] = [
+                f"This Mac has under {SMALL_MAC_BYTES // GB} GB of memory, so Wan makes {h}x{w} clips of {f} frames "
+                "by default. Short 480x832 clips work with the tiled decode (vae_tile); 81-frame 480x832 clips need "
+                f"a Mac with {SMALL_MAC_BYTES // GB} GB or more.",
+            ]
     return out
+
+
+def small_mac_defaults(model_id: str) -> tuple[int, int, int, int]:
+    """(height, width, frames, steps) a Wan model makes by default on a Mac under SMALL_MAC_BYTES: the model's own
+    measured choice when it has one (`small_mac_defaults`), else the family's."""
+    return tuple(CATALOG[model_id].get("small_mac_defaults") or WAN_SMALL_MAC_DEFAULTS)
 
 
 SMALL_MAC_BYTES = 24 * GB
@@ -257,7 +267,7 @@ def default_request(model_id: str, total_bytes: int) -> tuple[int, int, int]:
     """(height, width, frames) a Wan model makes by default on a Mac with `total_bytes` of memory."""
     e = CATALOG[model_id]
     if 0 < total_bytes < SMALL_MAC_BYTES:
-        h, w, f, _ = WAN_SMALL_MAC_DEFAULTS
+        h, w, f, _ = small_mac_defaults(model_id)
         return h, w, f
     if e.get("shape", {}).get("in_dim") == 48:     # TI2V 5B: 704x1280
         return 704, 1280, 121
@@ -295,12 +305,29 @@ def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]
     return default_request(model_id, total_bytes)
 
 
-def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, int]:
-    """Measured peak (bytes) per memory step for this exact request size, from the model's `checked_on`; {} if none."""
+def _measured_entry(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, Any]:
+    """The model's `checked_on` entry for this exact request size (untiled decode), or {}."""
     for c in e.get("checked_on") or []:
         if c.get("size") == f"{h}x{w}" and int(c.get("frames", 0)) == f and not c.get("vae_tile"):
-            return {r: int(float(g) * GB) for r, g in (c.get("peaks_gb") or {}).items()}
+            return c
     return {}
+
+
+def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, int]:
+    """Measured peak (bytes) per memory step for this exact request size, from the model's `checked_on`; {} if none."""
+    c = _measured_entry(e, h, w, f)
+    return {r: int(float(g) * GB) for r, g in (c.get("peaks_gb") or {}).items()}
+
+
+def _fast_peak(c: dict[str, Any], peaks: dict[str, int]) -> int:
+    """Peak of the step a request runs at full speed: resident when it was measured; otherwise (a model whose
+    resident step does not fit the Mac it was measured on) the quickest measured step, by its measured time."""
+    if peaks.get("resident"):
+        return peaks["resident"]
+    secs = {r: float(t) for r, t in (c.get("seconds") or {}).items() if r in peaks}
+    if secs:
+        return peaks[min(secs, key=secs.get)]
+    return 0
 
 
 def macos_baseline(total_bytes: int) -> int:
@@ -324,7 +351,9 @@ def _mac_size_for(peak: int, floor_gb: int) -> int:
 def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None) -> dict[str, Any]:
     """How a catalog model fits a Mac with `total_bytes` of memory (its total, not what is free right now), at the
     size it would make by default there. usable = total - what macOS keeps (`macos_baseline`, its wired memory):
-      recommended  measured at this size, and its full speed peak fits in usable with 4 GB to spare for everyday apps
+      recommended  measured at this size, and its full speed peak (resident, or the quickest measured step when
+                   resident was not measured) fits in usable with 4 GB to spare for everyday apps; for Wan also
+                   measured on a Mac this size or smaller and at most half of the Mac's memory
       barely       its lowest step's peak fits in usable (or it is only an estimate)
       no_fit       its lowest step's peak is more than usable, or the Mac is under the model's smallest Mac
                    (`min_total_gb`, an explicit minimum total memory, wins over any estimate)
@@ -344,6 +373,7 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     except Exception:
         h = w = f = 0
         at = ""
+    entry = _measured_entry(e, h, w, f) if h else {}
     peaks = _measured_peaks(e, h, w, f) if h else {}
     measured = bool(peaks)
     if not peaks:
@@ -359,7 +389,8 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
         # untested model by its lowest step that keeps the whole model in memory
         peaks = {r: v for r, v in peaks.items() if not r.startswith("stream")} or peaks
     low = min(peaks.values()) if peaks else 0
-    fast = peaks.get("resident", 0)
+    fast = _fast_peak(entry, peaks) if measured else peaks.get("resident", 0)
+    measured_gb = float(entry.get("memory_gb") or 0)
     floor_gb = int(e.get("min_memory_gb") or 0)
 
     def out(level: str, reason: str, peak: int) -> dict[str, Any]:
@@ -374,8 +405,13 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
         if need <= mac_gb:
             need = next((g for g in MAC_SIZES_GB if g > mac_gb), int(mac_gb) * 2)
         return out("no_fit", f"Needs about {need} GB. This Mac has {mac_gb:.0f} GB.", low)
-    if measured and fast and fast + EVERYDAY_APPS <= usable:
-        return out("recommended", "Runs at full speed on this Mac.", fast)
+    # Wan: Recommended only from a measurement on a Mac this size or smaller, with the full speed peak at most half
+    # of this Mac's memory (the rule the Wan builds were measured against). Every model: room for everyday apps.
+    strict = e["adapter"] == "wan"
+    if (measured and fast and fast + EVERYDAY_APPS <= usable
+            and (not strict or (fast <= total_bytes // 2 and (not measured_gb or measured_gb <= mac_gb + 0.5)))):
+        return out("recommended", "Runs at full speed on this Mac." if fast == peaks.get("resident") else
+                   "Runs well on this Mac in a lower memory step.", fast)
     roomy = low + EVERYDAY_APPS <= usable
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)

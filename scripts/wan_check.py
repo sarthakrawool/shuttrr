@@ -300,7 +300,11 @@ def run_one(spec: dict[str, Any]) -> dict[str, Any]:
     frames, info = pipe.generate(s, models, keep_warm=True)
     seconds = time.perf_counter() - t0
     meter.close()
-    peak = int(mx.get_peak_memory()) if hasattr(mx, "get_peak_memory") else (meter.summary()["peak_bytes"] or 0)
+    # the meter resets MLX's peak at every stage, so get_peak_memory() alone is only the last stage's (the decode);
+    # the request's peak is the largest stage peak
+    stage_peaks = [v for v in (meter.summary().get("stage_peak_bytes") or {}).values() if v]
+    last = int(mx.get_peak_memory()) if hasattr(mx, "get_peak_memory") else 0
+    peak = max([last] + [int(v) for v in stage_peaks]) or (meter.summary()["peak_bytes"] or 0)
     out = Path(spec["out_dir"])
     out.mkdir(parents=True, exist_ok=True)
     files = []

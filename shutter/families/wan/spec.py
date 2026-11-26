@@ -148,8 +148,14 @@ def stage_needs(cfg: dict[str, Any], height: int, width: int, frames: int, *, cf
     # not measured yet and keeps the older 6 copies. Tiling caps the size at 512 px.
     hh, ww = (min(height, 512), min(width, 512)) if tiled_decode else (height, width)
     frames_out = 1 + 4 * (g["t"] - 1)
-    copies = 18 if cfg["vae_z_dim"] == 16 else 6
-    decode = int(hh * ww * 96 * 4 * 4 * copies) + frames_out * height * width * 3 * 4
+    if cfg["vae_z_dim"] == 16:
+        decode = int(hh * ww * 96 * 4 * 4 * 18) + frames_out * height * width * 3 * 4
+    else:
+        # Wan 2.2 VAE, streamed one frame at a time (vae22.StreamDecoder): the conv caches (two frames per causal
+        # conv, ~6.6 KB a pixel) plus one frame's activations and conv workspace; it does not grow with the frame
+        # count. Measured on an M5 (MLX 0.32.5), without the 2.07 GB of weights: 2.26 GB at 320x512, 4.21 GB at
+        # 480x832 -> 0.9 GB + 8.3 KB a pixel. The finished frames are kept as uint8.
+        decode = int(0.9 * GB + hh * ww * 8.3 * 1024) + frames_out * height * width * 3
     encode = 512 * 4096 * 4 * 6
     return StageNeeds(encode=encode, image=decode // 2, denoise=per_block + resid + cross + rope,
                       decode=decode, carried=latents + text)
@@ -168,8 +174,10 @@ def part_sizes(cfg: dict[str, Any], quant_bits: Optional[int] = 8, image_encoder
     embed = 256384 * 4096 * 2
     t5_block = (4 * 4096 * 4096 + 3 * 4096 * 10240 + 2 * 4096 + 32 * 64) * 4
     parts.append(PartSize("text_encoder", "text_encoder", embed + 24 * t5_block, 24, t5_block, embed=embed))
-    vae_bytes = int((0.51 if cfg["vae_z_dim"] == 16 else 2.8) * GB)          # float32 decoder (+ encoder)
+    # float32 weights: the Wan 2.1 decoder; the Wan 2.2 decoder (2.07 GB) and its encoder (0.56 GB), as built
+    vae_bytes = int((0.51 if cfg["vae_z_dim"] == 16 else 2.07) * GB)
+    enc_bytes = int((0.51 if cfg["vae_z_dim"] == 16 else 0.56) * GB)
     parts.append(PartSize("vae", "decoder", vae_bytes))
     if image_encoder:
-        parts.append(PartSize("vae_encoder", "image_encoder", vae_bytes))
+        parts.append(PartSize("vae_encoder", "image_encoder", enc_bytes))
     return parts
