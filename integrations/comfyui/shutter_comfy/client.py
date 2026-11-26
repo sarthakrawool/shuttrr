@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from typing import Any, Dict, List, Optional
 
-PACK_VERSION = "0.2.11"
+PACK_VERSION = "0.2.12"
 DEFAULT_URL = os.environ.get("SHUTTER_URL", "http://127.0.0.1:8484")
 CLIENT_NAME = f"comfyui-shutter/{PACK_VERSION}"
 

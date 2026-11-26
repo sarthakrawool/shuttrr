@@ -116,8 +116,33 @@ final class EngineStore: ObservableObject {
 
     // MARK: Lifecycle
 
+    // MARK: Starting (0.2.12): skeleton placeholders until the engine first answers
+
+    /// True until the engine answers for the first time since Shuttrr opened.
+    @Published private(set) var everConnected = false
+    /// Set when the engine has not answered within `startTimeout` seconds: the normal "cannot reach" page shows.
+    @Published private(set) var startTimedOut = false
+    /// Seconds since Shuttrr opened, for "Still starting…" (updated every 5 s while starting).
+    @Published private(set) var startingFor: Double = 0
+    /// Testing: SHUTTER_START_TIMEOUT=<seconds> shortens it.
+    static let startTimeout: Double = Double(ProcessInfo.processInfo.environment["SHUTTER_START_TIMEOUT"] ?? "") ?? 90
+
+    /// Skeleton placeholders instead of the page: the engine has not answered yet, has not given up and (when
+    /// `engineExited`) did not just exit with an error.
+    func isStarting(engineExited: Bool) -> Bool {
+        !everConnected && !startTimedOut && !engineExited
+    }
+
     func start() {
         guard pollTask == nil else { return }
+        Task { @MainActor [weak self] in
+            let t0 = Date()
+            while let self, !self.everConnected, !self.startTimedOut {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                self.startingFor = Date().timeIntervalSince(t0)
+                if self.startingFor >= Self.startTimeout && !self.everConnected { self.startTimedOut = true }
+            }
+        }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let delay = await self?.pollOnce() else { return }
@@ -162,6 +187,7 @@ final class EngineStore: ObservableObject {
             failures = 0
             if connection != .connected {
                 connection = .connected
+                everConnected = true
                 lastModelsFetch = .distantPast
             }
             appendHistory(sys.memory)
@@ -202,7 +228,9 @@ final class EngineStore: ObservableObject {
             system = nil
             eventsTask?.cancel()
             eventsTask = nil
-            // 2, 4, 8, 16, 30, 30 ... seconds
+            // While the engine is starting (it has not answered yet since Shuttrr opened): every second, so the page
+            // appears as soon as it is up. Afterwards: 2, 4, 8, 16, 30, 30 ... seconds
+            if !everConnected && !startTimedOut { return 1 }
             return min(30, 2 * pow(2, Double(min(failures - 1, 5))))
         }
     }

@@ -66,7 +66,7 @@ struct DashboardView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(section: $section)
+            SidebarView(section: $section, starting: starting)
             .frame(width: Theme.Metric.sidebarWidth)
             .background(Theme.Palette.sidebarVeil)
 
@@ -84,10 +84,18 @@ struct DashboardView: View {
                     .padding(.top, Theme.Space.s4)
                     .sectionTransition()
                 }
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .id(section)
-                    .transition(.opacity.combined(with: .offset(y: 6)))
+                Group {
+                    if starting {
+                        EngineStartingView(section: section, detail: startingDetail)
+                            .transition(.opacity)
+                    } else {
+                        content
+                            .id(section)
+                            .transition(.opacity.combined(with: .offset(y: 6)))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(Motion.smooth, value: starting)
                 Hairline()
                 statusBar
             }
@@ -148,6 +156,18 @@ struct DashboardView: View {
         // Opening Requests clears the red failed badge; failures that land while it is open count as seen too.
         .onChange(of: section) { _, s in store.requestsOpen = s == .queue }
         .onAppear { store.requestsOpen = section == .queue }
+    }
+
+    /// Skeleton placeholders while the engine starts (until it first answers, it exits, or 90 s pass).
+    private var starting: Bool {
+        // Testing: SHUTTER_TEST_SKELETON=1 keeps the placeholders on (for screenshots)
+        if ProcessInfo.processInfo.environment["SHUTTER_TEST_SKELETON"] != nil { return true }
+        return store.isStarting(engineExited: engine.lastExit != nil && !engine.isRunning)
+    }
+
+    private var startingDetail: String {
+        store.startingFor < 20 ? "Starting engine…"
+            : "Still starting. The first start after an update can take a minute."
     }
 
     private func openNewJob(_ model: String?) {
@@ -247,7 +267,7 @@ struct DashboardView: View {
         }
         switch store.connection {
         case .connecting: return "Connecting…"
-        case .disconnected(let why): return why
+        case .disconnected(let why): return starting ? "Starting engine…" : why
         case .connected:
             let n = store.jobs.filter { filter.includes($0.state) && QueueView.matches($0, query) }.count
             let shown = (query.isEmpty && filter == .all) ? "" : " shown"
@@ -283,10 +303,12 @@ struct DashboardView: View {
 struct SidebarView: View {
     @EnvironmentObject private var store: EngineStore
     @Binding var section: DashboardSection
+    var starting = false
     @Namespace private var selection
 
-    init(section: Binding<DashboardSection>) {
+    init(section: Binding<DashboardSection>, starting: Bool = false) {
         self._section = section
+        self.starting = starting
     }
 
     var body: some View {
@@ -305,7 +327,9 @@ struct SidebarView: View {
 
             ForEach(DashboardSection.allCases) { s in
                 SidebarRow(symbol: s.symbol, title: s.rawValue, isOn: section == s, namespace: selection) {
-                    if s == .queue && store.unseenFailures > 0 {
+                    if starting && s != .server && s != .settings {
+                        SkeletonBlock(width: 22, height: 10, radius: 5)
+                    } else if s == .queue && store.unseenFailures > 0 {
                         FailedBadge(count: store.unseenFailures)
                     } else if let t = countText(for: s) { t }
                 } action: {
@@ -440,7 +464,10 @@ struct EngineStatusView: View {
         .help(engine.isRunning ? "Started by Shuttrr" : "Started outside Shuttrr")
     }
 
+    private var starting: Bool { store.isStarting(engineExited: engine.lastExit != nil && !engine.isRunning) }
+
     private var word: String {
+        if starting && !store.connection.isConnected { return "starting" }
         switch store.connection {
         case .connected: return "live"
         case .connecting: return "connecting"
@@ -449,6 +476,7 @@ struct EngineStatusView: View {
     }
 
     private var dotColor: Color {
+        if starting && !store.connection.isConnected { return Theme.Palette.muted }
         switch store.connection {
         case .connected: return Theme.Palette.good
         case .connecting: return Theme.Palette.muted
