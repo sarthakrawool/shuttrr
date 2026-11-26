@@ -1094,15 +1094,71 @@ def _cconv(conv, x, cache, idx):
     return out
 
 
+def _norm_silu_ops(x, gamma, scale):
+    l2_sq = mx.sum(x * x, axis=-1, keepdims=True)
+    y = x * mx.rsqrt(mx.maximum(l2_sq, mx.array(1e-24))) * scale * gamma
+    return y * mx.sigmoid(y)
+
+
+_norm_silu_fused = mx.compile(_norm_silu_ops)
+
+
+def _norm_silu(x, gamma, scale):
+    """RMS_norm then SiLU. On Metal in one compiled kernel: the same float32 ops in the same order as
+    RMS_norm.__call__ + nn.silu, bit for bit (checked), 2x faster for this op. On the CPU the compiled kernel rounds
+    differently, so the CPU keeps the separate ops."""
+    if mx.default_device() == mx.gpu:
+        return _norm_silu_fused(x, gamma, scale)
+    return nn.silu(x * mx.rsqrt(mx.maximum(mx.sum(x * x, axis=-1, keepdims=True), mx.array(1e-24))) * scale * gamma)
+
+
+@mx.compile
+def _sum3_bias(a, b, c, bias):
+    """((a + b) + c) + bias, the accumulation order of CausalConv3d, in one pass."""
+    return ((a + b) + c) + bias
+
+
+def _pad_hw(x, ph, pw):
+    return x if not (ph or pw) else mx.pad(x, [(0, 0), (ph, ph), (pw, pw), (0, 0)])
+
+
+def _cconv1(conv, x, cache, idx, rep=False):
+    """CausalConv3d (kd=3) on ONE frame [B, 1, H, W, C] with a cache of the last two spatially padded input frames.
+
+    The same three per-frame 2D convs as CausalConv3d.__call__ on concat(cache, x) (zero frames where the history
+    is short), on the same padded values, summed in the same order, so the result is identical; it only skips
+    re-concatenating and re-padding the two cached frames on every call. `rep`: the temporal upsample's "Rep" state
+    (history of zeros, as the reference)."""
+    i = idx[0]
+    idx[0] += 1
+    kd = conv.kernel_size[0]
+    ph, pw = conv._pad_h, conv._pad_w
+    f = _pad_hw(x[:, 0], ph, pw)
+    hist = [] if (cache[i] is None or rep) else list(cache[i])
+    zero = None
+    while len(hist) < kd - 1:
+        if zero is None:
+            zero = mx.zeros_like(f)
+        hist.insert(0, zero)
+    win = hist + [f]
+    wd = conv._kernels()
+    st = (conv.stride[1], conv.stride[2])
+    outs = [conv2d_banded(win[d], wd[d], st) for d in range(kd)]
+    out = _sum3_bias(outs[0], outs[1], outs[2], conv.bias)
+    nxt = (win[-2], f)
+    mx.eval(out, *[a for a in nxt if a is not zero])
+    cache[i] = nxt
+    return out[:, None]
+
+
 def _res1(block, x, cache, idx):
     """ResidualBlock on one frame."""
     h = block.shortcut(x) if block.shortcut is not None else x
     r = block.residual
-    y = nn.silu(r.layer_0(x))
-    y = _cconv(r.layer_2, y, cache, idx)
-    mx.eval(y)
-    y = nn.silu(r.layer_3(y))
-    y = _cconv(r.layer_6, y, cache, idx)
+    y = _norm_silu(x, r.layer_0.gamma, r.layer_0.scale)
+    y = _cconv1(r.layer_2, y, cache, idx)
+    y = _norm_silu(y, r.layer_3.gamma, r.layer_3.scale)
+    y = _cconv1(r.layer_6, y, cache, idx)
     return y + h
 
 
@@ -1115,12 +1171,8 @@ def _time_up1(m, x, cache, idx):
         cache[i] = "Rep"
         return [x]
     rep = isinstance(cache[i], str)
-    cache_x = x[:, -CACHE_T:]
-    if cache_x.shape[1] < 2:
-        prev = mx.zeros_like(cache_x) if rep else cache[i][:, -1:]
-        cache_x = mx.concatenate([prev, cache_x], axis=1)
-    tc = m.time_conv(x) if rep else m.time_conv(x, cache_x=cache[i])
-    cache[i] = _keep(cache_x)
+    idx[0] -= 1
+    tc = _cconv1(m.time_conv, x, cache, idx, rep=rep)     # "Rep": a zero history, as the reference
     tc = tc.reshape(B, 1, H, W, 2, C)
     return [tc[:, :, :, :, 0, :], tc[:, :, :, :, 1, :]]
 
@@ -1183,7 +1235,7 @@ class StreamDecoder:
             else:
                 h = self.dec.head
                 idx = [self.head_slot]
-                y = _cconv(h.layer_2, nn.silu(h.layer_0(outs.pop())), self.cache, idx)
+                y = _cconv1(h.layer_2, _norm_silu(outs.pop(), h.layer_0.gamma, h.layer_0.scale), self.cache, idx)
                 y = mx.clip(_unpatchify(y, patch_size=2), -1.0, 1.0)
                 mx.eval(y)
                 sink(y)
@@ -1193,7 +1245,7 @@ class StreamDecoder:
         """One latent frame [B, 1, h, w, 48] (denormalized) -> sink(frame [B, 1, H, W, 3]) for each frame made."""
         x = self.vae.conv2(z1)
         idx = [0]
-        x = _cconv(self.dec.conv1, x, self.cache, idx)
+        x = _cconv1(self.dec.conv1, x, self.cache, idx)
         for layer in self.dec.middle:
             x = _res1(layer, x, self.cache, idx) if isinstance(layer, ResidualBlock) else layer(x)
             mx.eval(x)

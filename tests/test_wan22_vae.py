@@ -76,3 +76,24 @@ def test_banded_conv(monkeypatch):
     # strided (encoder downsample) too
     xs = mx.random.normal((1, 41, 21, 8))
     assert mx.max(mx.abs(V.conv2d_banded(xs, w, (2, 2)) - mx.conv_general(xs, w, stride=(2, 2)))).item() < 1e-4
+
+
+def test_fused_norm_silu_is_exact():
+    import mlx.nn as nn
+    mx.random.seed(5)
+    n = V.RMS_norm(32)
+    n.gamma = mx.random.normal((32,)) * 0.1 + 1
+    x = mx.random.normal((1, 1, 6, 7, 32))
+    assert mx.array_equal(V._norm_silu(x, n.gamma, n.scale), nn.silu(n(x))).item()
+
+
+def test_single_frame_conv_matches_chunk_conv():
+    """_cconv1 (padded history, fused sum) == CausalConv3d on the concatenated chunk, frame by frame."""
+    vae = _decoder(seed=7)
+    conv = vae.decoder.upsamples[0].upsamples[0].residual.layer_2
+    xs = mx.random.normal((1, 4, 3, 5, conv._kernels()[0].shape[-1]))
+    whole = conv(xs)                                   # all frames at once, zero history
+    cache, out = [None], []
+    for t in range(4):
+        out.append(V._cconv1(conv, xs[:, t:t + 1], cache, [0]))
+    assert mx.array_equal(mx.concatenate(out, axis=1), whole).item()
