@@ -188,7 +188,31 @@ def convert_dit(files: list[str], layout: str, out_dir: Path, *, bits: Optional[
 # ----------------------------------------------------------------------------- text encoder
 
 
+def _copy_quantized_t5(files: list[str], out_dir: Path, report: Callable[[str], None]) -> dict[str, Any]:
+    """An already 8-bit Shuttrr text encoder (text_encoder_q8/): copied as it is (hard links when on the same disk)."""
+    from shutter.core.text_encode import INDEX, folder_quantization
+    src_dir = Path(files[0]).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    names = sorted(Path(f).name for f in files)
+    for n in names + [INDEX]:
+        dst = out_dir / n
+        if dst.exists():
+            dst.unlink()
+        try:
+            dst.hardlink_to(src_dir / n)
+        except OSError:
+            shutil.copyfile(src_dir / n, dst)
+    q = folder_quantization(out_dir) or {"bits": 8, "group_size": 64}
+    report(f"  text encoder: copied the {q['bits']}-bit copy")
+    names.sort(key=lambda n: (n != "rest.safetensors", n))
+    return {"role": "text_encoder", "files": [f"{out_dir.name}/{f}" for f in names], "n_blocks": 24,
+            "total_bytes": sum((out_dir / f).stat().st_size for f in names), "dtype": "U32",
+            "quant": q}
+
+
 def convert_t5(files: list[str], layout: str, out_dir: Path, report: Callable[[str], None] = print) -> dict[str, Any]:
+    if layout == "mlx-q":
+        return _copy_quantized_t5(files, out_dir.with_name(out_dir.name + "_q8"), report)
     mx = _mx()
     src = _open(files)
     names = src.names()

@@ -173,7 +173,7 @@ turn it on, and it matches the full decode at 46.6 dB.
 | Model | Kind | Download | Status |
 | --- | --- | --- | --- |
 | [LongCat-Video-Avatar 1.6, 8-bit low-memory](https://huggingface.co/SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem) | talking video from image + audio | 37.5 GB | supported |
-| [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem) | text to video | 13.2 GB, one click (`shutter download wan2.1-t2v-1.3b-8bit`) | supported, starter model on 16 GB Macs |
+| [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem) | text to video | 7.9 GB (7.3 GiB), one click (`shutter download wan2.1-t2v-1.3b-8bit`) | supported, starter model on 16 GB Macs |
 | Wan 2.1 family (other 2.1 checkpoints and fine-tunes) | text to video | your own checkpoint, converted to 8-bit low-memory with `shutter convert` | early support |
 
 Shuttrr accepts Wan 2.1 checkpoints in the official, diffusers and ComfyUI layouts, bare fine-tune files, and

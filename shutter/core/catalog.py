@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from shutter.core.config import Config
+from shutter.core.pinned_files import WAN13_BF16_TE, WAN13_Q8_TE
 
 GB = 1024**3
 
@@ -27,6 +28,9 @@ __all__ = ["CATALOG", "catalog_rows", "download", "cancel", "read_state", "prese
            "register_build"]
 
 RUNNING = ("downloading", "converting")
+
+#: a Wan build's text encoder: text_encoder/ (bf16) or text_encoder_q8/ (8-bit); either one makes the build complete
+WAN_TE = ("text_encoder_q8", "text_encoder")
 
 # Folders that hold the model itself. `code/` is the MLX port the adapter imports.
 CATALOG: dict[str, dict[str, Any]] = {
@@ -70,7 +74,7 @@ CATALOG["wan2.1-t2v-1.3b-8bit"] = {
     "adapter": "wan", "family": "wan", "variant": "wan2.1-t2v-1.3b",
     "repo": "SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem",
     "folder": "Wan2.1-T2V-1.3B-MLX-8bit-LowMem",
-    "size_gb": 12.3,          # GiB (13.2 GB), the published repo
+    "size_gb": 12.3,          # GiB, the published repo (set from the pinned file list below)
     "min_memory_gb": 16,
     "shape": WAN13_SHAPE,
     "starter": True,
@@ -79,8 +83,13 @@ CATALOG["wan2.1-t2v-1.3b-8bit"] = {
                "width": 512, "height": 320, "frames": 17, "steps": 12, "seed": 42},
     "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
               "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
-    "check_files": ["shuttrr.json", "dit", "text_encoder", "tokenizer", "vae"],
+    "check_files": ["shuttrr.json", "dit", WAN_TE, "tokenizer", "vae"],
+    # exactly this revision is fetched and checked; a copy of an earlier one (bf16 text encoder) still counts
+    "revision": WAN13_Q8_TE["revision"], "files": WAN13_Q8_TE["files"],
+    "legacy": [WAN13_BF16_TE],
 }
+if WAN13_Q8_TE["files"]:
+    CATALOG["wan2.1-t2v-1.3b-8bit"]["size_gb"] = round(sum(f["size"] for f in WAN13_Q8_TE["files"]) / GB, 1)
 
 
 # Other Wan models. No 8-bit builds of these are published yet, so a download fetches the official repo (bf16 / fp32) into
@@ -163,7 +172,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
-            "check_files": ["shuttrr.json", "text_encoder", "tokenizer", "vae"],
+            "check_files": ["shuttrr.json", WAN_TE, "tokenizer", "vae"],
         }
     return out
 
@@ -469,11 +478,26 @@ def _write_state(cfg: Config, model_id: str, **fields: Any) -> None:
 def already_downloaded(folder: Path, entry: dict[str, Any], files: Optional[list[dict[str, Any]]]) -> bool:
     """True when the model's main files are there and every file in Hugging Face's list has its exact size (no
     partial file left from a stopped download). Without a file list (offline) this is never True: a download then
-    goes through Hugging Face's own resume, which skips finished files."""
-    if not files or not is_complete(folder, entry):
+    goes through Hugging Face's own resume, which skips finished files. A complete copy of one of the entry's
+    `legacy` revisions also counts (it keeps working, so it is not fetched again)."""
+    if not is_complete(folder, entry):
         return False
     if any(folder.glob(".cache/huggingface/download/**/*.incomplete")):
         return False
+    if files and _sizes_match(folder, files):
+        return True
+    return legacy_revision(folder, entry) is not None
+
+
+def legacy_revision(folder: Path, entry: dict[str, Any]) -> Optional[str]:
+    """The earlier revision `folder` is a complete copy of (every file of its pinned list, same sizes), else None."""
+    for old in entry.get("legacy") or []:
+        if old.get("files") and _sizes_match(folder, old["files"]):
+            return old.get("revision") or "earlier"
+    return None
+
+
+def _sizes_match(folder: Path, files: list[dict[str, Any]]) -> bool:
     for f in files:
         p = folder / str(f.get("path") or f.get("rfilename") or "")
         size = f.get("size")
@@ -483,7 +507,10 @@ def already_downloaded(folder: Path, entry: dict[str, Any], files: Optional[list
 
 
 def is_complete(folder: Path, entry: dict[str, Any]) -> bool:
-    return folder.is_dir() and all((folder / f).exists() for f in entry["check_files"])
+    """The model's main files are there. A check_files item that is a tuple is satisfied by any one of its paths."""
+    def there(f: Any) -> bool:
+        return any((folder / x).exists() for x in f) if isinstance(f, (tuple, list)) else (folder / f).exists()
+    return folder.is_dir() and all(there(f) for f in entry["check_files"])
 
 
 def folder_bytes(folder: Path) -> int:
@@ -581,9 +608,9 @@ def register_build(cfg: Config, model_id: str, folder: Path, adapter: str = "wan
     return spec
 
 
-def _hf_download(repo: str, folder: Path) -> None:
+def _hf_download(repo: str, folder: Path, revision: Optional[str] = None) -> None:
     from huggingface_hub import snapshot_download
-    snapshot_download(repo_id=repo, local_dir=str(folder))
+    snapshot_download(repo_id=repo, local_dir=str(folder), revision=revision or None)
 
 
 def _hf_total(repo: str) -> int:
@@ -668,9 +695,16 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
                                      total_of=total_of, poll_s=poll_s)
     dest.mkdir(parents=True, exist_ok=True)
     files: Optional[list[dict[str, Any]]] = None
-    if files_of is not None or total_of is None:
+    if files_of is not None:
         try:
-            files = list((files_of or _hf_files)(e["repo"]))
+            files = list(files_of(e["repo"]))
+        except Exception:
+            files = None
+    elif e.get("files"):
+        files = list(e["files"])   # the pinned revision's list: no request needed, checksums known ahead
+    elif total_of is None:
+        try:
+            files = list(_hf_files(e["repo"]))
         except Exception:
             files = None   # offline or Hugging Face unreachable: sizes are checked against nothing, said below
     try:
@@ -686,9 +720,13 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
     if already_downloaded(dest, e, files):
         # Every file is there with Hugging Face's size: nothing to fetch. Register it (if it was not) and stop.
         preset = register(cfg, model_id, dest)
+        old = None if files and _sizes_match(dest, files) else legacy_revision(dest, e)
+        detail = "Already downloaded: every file is there with the size Hugging Face lists"
+        if old:
+            detail += " (an earlier version of this model, which keeps working)"
+            base["total_bytes"] = total = folder_bytes(dest)
         done = dict(state="done", done_bytes=total, notes=preset["notes"], verified="sizes", already=True,
-                    verified_detail="Already downloaded: every file is there with the size Hugging Face lists",
-                    **base)
+                    verified_detail=detail, legacy_revision=old, **base)
         _write_state(cfg, model_id, **done)
         if on_progress:
             on_progress(done)
@@ -727,7 +765,10 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
     t = threading.Thread(target=watch, daemon=True)
     t.start()
     try:
-        (fetch or _hf_download)(e["repo"], dest)
+        if fetch is not None:
+            fetch(e["repo"], dest)
+        else:
+            _hf_download(e["repo"], dest, e.get("revision"))
     except KeyboardInterrupt:
         stop.set()
         _write_state(cfg, model_id, state="cancelled", done_bytes=folder_bytes(dest), **base)
@@ -766,6 +807,7 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
                f"(first: {bad[0]}). They were removed. Start the download again to fetch them")
         _write_state(cfg, model_id, state="failed", done_bytes=folder_bytes(dest), error=msg, **base)
         raise DownloadError(msg)
+    _remove_stale(dest, e, files)
     preset = register(cfg, model_id, dest)
     verified = {"sha256": "every file's size and checksum match Hugging Face's list",
                 "sizes": "every file's size matches Hugging Face's list (no checksums were published)",
@@ -777,6 +819,21 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
     if on_progress:
         on_progress(done)
     return done
+
+
+def _remove_stale(dest: Path, e: dict[str, Any], files: Optional[list[dict[str, Any]]]) -> None:
+    """After a checked download of the pinned revision: delete files that only an earlier revision had (a stopped
+    download of the old version resumed as the new one would otherwise keep, e.g., the 11 GB bf16 text encoder)."""
+    if not files or not e.get("legacy"):
+        return
+    keep = {f["path"] for f in files}
+    for old in e["legacy"]:
+        for f in old.get("files") or []:
+            if f["path"] not in keep:
+                try:
+                    (dest / f["path"]).unlink()
+                except OSError:
+                    pass
 
 
 def _wan_preflight(model_id: str, cfg: Config, e: dict[str, Any], src_dir: Path, dest: Path,

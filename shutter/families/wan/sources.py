@@ -84,6 +84,7 @@ def candidate_dirs(roots: Iterable[Path], exclude: Iterable[Path] = ()) -> list[
         if not root.is_dir():
             continue
         if (root / "shuttrr.json").exists() or (root / "text_encoder").is_dir() \
+                or (root / "text_encoder_q8").is_dir() \
                 or (root / "components").is_dir():
             add(root)
             continue

@@ -42,7 +42,7 @@ Conventions:
   "output": null,                       // output path; default <outputs>/<id>.<ext>
   "priority": 0,
   "params": {"mode": "low_memory", "efficiency": 0.75},   // adapter-specific, passed through
-  "client": "comfyui-shutter/0.2.5"     // optional, recorded on the job (not part of the request)
+  "client": "comfyui-shutter/0.2.6"     // optional, recorded on the job (not part of the request)
 }
 ```
 
@@ -80,7 +80,7 @@ Conventions:
   "eta_s": 12.5,                         // only while running and progress > 1%
   "result": {"output": "/…/outputs/d98530c84d6c.mp4", "seconds": 0.002, "peak_bytes": 17179869184, "…": "…"},
   "node": "local",
-  "client": "comfyui-shutter/0.2.5",     // null when no client was named
+  "client": "comfyui-shutter/0.2.6",     // null when no client was named
   "request": { "model": "…", "prompt": "…", "negative_prompt": "", "width": null, "height": null,
                "frames": null, "duration_s": null, "fps": null, "steps": 2, "guidance": null,
                "seed": 42, "inputs": {}, "output": "…", "priority": 0, "params": {} }
@@ -167,7 +167,7 @@ The ComfyUI pack uses `fits` to decide whether to unload ComfyUI's own models be
 
 ```json
 {"window_s": 600,
- "clients": [{"client": "comfyui-shutter/0.2.5", "requests": 3, "requests_total": 5,
+ "clients": [{"client": "comfyui-shutter/0.2.6", "requests": 3, "requests_total": 5,
               "first_seen": 1795589100.2, "last_seen": 1795589400.9, "idle_s": 4.2}]}
 ```
 

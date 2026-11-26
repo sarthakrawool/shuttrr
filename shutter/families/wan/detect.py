@@ -156,18 +156,18 @@ def dit_part(name: str, files: list[Path], h: dict[str, dict[str, Any]], layout:
 
 
 def _find_t5(root: Path) -> Optional[Part]:
-    for cand in (root / "text_encoder", root / "components" / "text_encoder", root / "split_files" / "text_encoders",
-                 root):
+    for cand in (root / "text_encoder_q8", root / "text_encoder", root / "components" / "text_encoder",
+                 root / "split_files" / "text_encoders", root):
         if not cand.is_dir():
             continue
-        files = [f for f in _st_files(cand) if cand.name == "text_encoder" or "umt5" in f.name.lower()
+        files = [f for f in _st_files(cand) if cand.name.startswith("text_encoder") or "umt5" in f.name.lower()
                  or "t5" in f.name.lower() or cand == root]
         # keep only files whose own tensors are umT5 (a folder may also hold the DiT)
         files = [f for f in files if K.t5_layout(read_header(f)) or
                  any(k.startswith(("blocks.", "encoder.block.")) and ".attn." in k or "SelfAttention" in k
                      for k in read_header(f)) and not K.dit_layout(read_header(f))]
         groups = [files]
-        if cand.name == "text_encoder":
+        if cand.name.startswith("text_encoder"):
             # a sharded copy (a Shuttrr build): the embedding and the blocks sit in different files
             groups.append(_st_files(cand))
         for files in groups:
@@ -176,9 +176,11 @@ def _find_t5(root: Path) -> Optional[Part]:
             h = read_headers(files)
             lay = K.t5_layout(h)
             if lay:
+                # an 8-bit Shuttrr copy (text_encoder_q8/): MLX names, packed weights with scales and biases
+                q8 = lay == "wan" and any(k.endswith(".scales") for k in h)
                 return Part("text_encoder", "text_encoder", [str(f) for f in files],
-                            "hf-t5" if lay == "hf" else "official", sum(v["nbytes"] for v in h.values()),
-                            n_blocks=24, dtype=_dominant_dtype(h))
+                            "mlx-q" if q8 else ("hf-t5" if lay == "hf" else "official"),
+                            sum(v["nbytes"] for v in h.values()), n_blocks=24, dtype=_dominant_dtype(h))
     pth = sorted(root.glob("models_t5_umt5*.pth"))
     if pth:
         return Part("text_encoder", "text_encoder", [str(pth[0])], "pth", pth[0].stat().st_size, n_blocks=24)

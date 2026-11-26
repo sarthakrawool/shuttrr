@@ -244,6 +244,13 @@ class WanPipeline:
         src = self.man.get("source", {}).get("fingerprint", "")
         return hashlib.sha1((src + json.dumps(self.man["parts"]["text_encoder"].get("files", []))).encode()).hexdigest()[:16]
 
+    def _text_encoder_dir(self) -> Path:
+        """The folder of the text encoder's files as shuttrr.json lists them: text_encoder/ (bf16) in older builds,
+        text_encoder_q8/ (8-bit) in the published 1.3B since 0.2.6. Both load the same way."""
+        files = (self.man.get("parts", {}).get("text_encoder") or {}).get("files") or []
+        first = next((f for f in files if "/" in f), "")
+        return self.build / (first.split("/")[0] if first else "text_encoder")
+
     def encode_prompt(self, text: str):
         import mlx.core as mx
         cleaned = clean_text(text)
@@ -256,7 +263,7 @@ class WanPipeline:
             tok = AutoTokenizer.from_pretrained(str(self.build / "tokenizer"))
             enc = tok(cleaned, max_length=512, padding="max_length", truncation=True, return_tensors="np")
             ids, mask = mx.array(enc["input_ids"]), mx.array(enc["attention_mask"])
-            weights = lazy_weights(self.build / "text_encoder", "model.safetensors.index.json", mx)
+            weights = lazy_weights(self._text_encoder_dir(), "model.safetensors.index.json", mx)
             n_blocks = len({k.split(".")[1] for k in weights if k.startswith("blocks.")})
             emb_shape = weights["token_embedding.weight"].shape
             umt5 = T5Encoder(vocab_size=emb_shape[0], dim=emb_shape[1], dim_attn=emb_shape[1],

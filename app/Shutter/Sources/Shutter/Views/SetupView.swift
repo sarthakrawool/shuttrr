@@ -121,7 +121,7 @@ struct ModelDownloadRow: View {
         .animation(Motion.smooth, value: state)
     }
 
-    /// "12.3 GB download", or the disk warning.
+    /// "7.3 GB download", or the disk warning.
     @ViewBuilder private var meta: some View {
         if diskShort {
             line("Not enough free disk", danger: true)

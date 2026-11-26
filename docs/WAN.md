@@ -12,14 +12,27 @@ file or a fine-tune. `shutter download` does the same for the models in the cata
 
 `wan2.1-t2v-1.3b-8bit` is a ready-made Shuttrr build on Hugging Face:
 [SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem)
-(13.2 GB, 25 files). `shutter download wan2.1-t2v-1.3b-8bit` fetches it and checks every file's size and sha256;
-no conversion runs on your Mac. It is self-contained: the DiT, umT5 text encoder, tokenizer and VAE all come from
+(7.9 GB, 7.3 GiB, 25 files). `shutter download wan2.1-t2v-1.3b-8bit` fetches one pinned revision and
+checks every file's size and sha256 against the list in `shutter/core/pinned_files.py`; no conversion runs on your
+Mac. It is self-contained: the DiT, umT5 text encoder, tokenizer and VAE all come from
 the official `Wan-AI/Wan2.1-T2V-1.3B` release. The release's `.pth` files were copied to safetensors with
 `scripts/pth_to_safetensors.py` (no PyTorch, and the pickle's code never runs: only the names a plain state dict
 uses are accepted), then converted with `shutter convert`.
 
 Checked before upload on the 16 GB M5 MacBook, 320x512, 33 frames, 20 steps, prompt encoded once: resident
 6.48 GB / 139 s, stream_tight 4.94 GB / 131 s, frames identical bit for bit.
+
+**Text encoder in 8 bits (0.2.6).** The umT5 encoder is stored in `text_encoder_q8/`: every large 2D weight
+quantized with `mx.quantize` (8 bits, group size 64, bf16 scales and biases; `shutter.core.text_encode.quantize_folder`,
+deterministic), 11.36 GB -> 6.04 GB. `lazy_weights` dequantizes each tensor lazily, so the prompt is still encoded
+one block at a time with the same forward. The token embedding is dequantized only for the prompt's rows, so the prompt stage
+peaks at 1.4 GB (fox prompt, 16 GB M5) instead of 2.1 GB with the bf16 encoder. Against the bf16 encoder: cosine per token 0.99976 on average (10
+prompts + the negative prompt), fox clip PSNR 30.6 dB / SSIM 0.969, MLX peak 6.03 GB either way. Revision
+`709d9c4f` (Shuttrr 0.2.0-0.2.5) had `text_encoder/` in bf16 (13.2 GB in all); a complete copy of it still counts
+as downloaded (`legacy` in the catalog entry) and runs unchanged, since the engine reads whichever folder
+`shuttrr.json` lists. A stopped download of the old revision, resumed by 0.2.6, fetches the new files and deletes
+the old bf16 encoder once the check passes. Other Wan builds that borrow the text encoder from an installed 1.3B
+copy its 8-bit folder as it is.
 
 On a Mac with under 24 GB the app recommends it as the first model, and the catalog gives Wan models 320x512,
 33 frames, 20 steps as defaults there (model options `default_size`, `default_frames`, `default_steps`; a request
