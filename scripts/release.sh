@@ -76,18 +76,24 @@ LEN="$(printf '%s' "$SIG_ATTRS" | sed -n 's/.*length="\([0-9]*\)".*/\1/p')"
     || die "the signature does not verify"
 
 # Release notes inside the appcast, so Sparkle's update window shows them (a link would load the whole GitHub
-# page). From --notes: "- " lines become a list, other lines paragraphs. Without --notes: a link to the release.
+# page). From --notes: "- " lines become a list, other lines paragraphs; an indented line (or any line right after
+# another one, with no blank line between) continues the item or paragraph above. Without --notes: a link.
 NOTES_XML="      <sparkle:releaseNotesLink>https://github.com/$OWNER/$REPO/releases/tag/$TAG</sparkle:releaseNotesLink>"
 if [[ -n "$NOTES" ]]; then
     NOTES_HTML="$(python3 - "$NOTES" "$VERSION" <<'PY'
 import html, sys
 lines = [l.rstrip() for l in open(sys.argv[1], encoding="utf-8")]
-out, items = [f"<h2>Shuttrr {html.escape(sys.argv[2])}</h2>"], []
+out, items, para = [f"<h2>Shuttrr {html.escape(sys.argv[2])}</h2>"], [], []
+def flush_p():
+    if para: out.append(f"<p>{html.escape(' '.join(para))}</p>"); para.clear()
 def flush():
-    if items: out.append("<ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>"); items.clear()
+    flush_p()
+    if items: out.append("<ul>" + "".join(f"<li>{html.escape(i)}</li>" for i in items) + "</ul>"); items.clear()
 for l in lines:
-    if l.startswith(("- ", "* ")): items.append(html.escape(l[2:].strip()))
-    elif l.strip(): flush(); out.append(f"<p>{html.escape(l.strip())}</p>")
+    if l.startswith(("- ", "* ")): flush_p(); items.append(l[2:].strip())
+    elif not l.strip(): flush_p() if not items else flush()
+    elif items: items[-1] += " " + l.strip()
+    else: para.append(l.strip())
 flush()
 print("".join(out).replace("]]>", "]]&gt;"))
 PY
