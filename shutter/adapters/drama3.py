@@ -43,7 +43,7 @@ from shutter.adapters.base import Adapter, RunContext
 from shutter.core import modes as M
 from shutter.types import GB, Job, JobRequest, MemoryEstimate
 
-DEFAULT_SRC = "~/models/drama3-mem/code/src"
+DEFAULT_SRC = ""      # empty: the runtime vendored in shutter/families/drama3 (0.2.12)
 FRAME_RATE = 44100 / 2048
 #: env name -> (option, default); set before TensorFold is imported (it reads some at import time)
 LOWMEM_ENV = {"TF_D3_LOWMEM": ("lowmem", True), "TF_D3_DROP_LMHEAD": ("lowmem", True),
@@ -203,16 +203,20 @@ class Drama3Adapter(Adapter):
             return cached
         for k, v in self.env().items():
             os.environ[k] = v
-        src = str(self.source_dir)
-        if self.source_dir.is_dir() and src not in sys.path:
-            sys.path.insert(0, src)
-        names = {"generate": "tensorfold.families.drama3.generate", "prompt": "tensorfold.families.drama3.prompt",
-                 "sampling": "tensorfold.families.drama3.sampling", "codec": "tensorfold.families.drama3.codec"}
+        src = str(self.source_dir) if str(self._opt("tensorfold_src", DEFAULT_SRC)) else ""
+        if src:
+            # a TensorFold checkout given in the options (older setups); otherwise the vendored copy
+            if self.source_dir.is_dir() and src not in sys.path:
+                sys.path.insert(0, src)
+            pkg = "tensorfold.families.drama3"
+        else:
+            pkg = "shutter.families.drama3"
+        names = {k: f"{pkg}.{k}" for k in ("generate", "prompt", "sampling", "codec")}
         try:
             self._tf = {k: importlib.import_module(v) for k, v in names.items()}
         except ImportError as e:
-            raise RuntimeError(f"Fish Drama 3 needs the TensorFold package; looked in {src} "
-                               f"(option tensorfold_src): {e}") from e
+            where = f"looked in {src} (option tensorfold_src)" if src else "mlx-lm may be missing"
+            raise RuntimeError(f"Fish Drama 3 could not load its model code ({where}): {e}") from e
         return self._tf
 
     def load(self, build: Path) -> Any:

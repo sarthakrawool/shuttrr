@@ -288,5 +288,16 @@ def test_missing_tensorfold_is_a_clear_error(tmp_path):
     for m in [m for m in sys.modules if m == "tensorfold" or m.startswith("tensorfold.")]:
         del sys.modules[m]
     a = Drama3Adapter("fish-drama3", tmp_path, {"tensorfold_src": str(tmp_path / "nowhere")})
-    with pytest.raises(RuntimeError, match="TensorFold"):
+    with pytest.raises(RuntimeError, match="tensorfold_src"):
         a.tensorfold()
+
+
+def test_vendored_runtime_is_the_default(tmp_path, monkeypatch):
+    """No tensorfold_src: the adapter imports the vendored shutter.families.drama3 (needs mlx and tokenizers only)."""
+    pytest.importorskip("mlx.core")
+    pytest.importorskip("tokenizers")
+    for k in ("TF_D3_LOWMEM", "TF_D3_DROP_LMHEAD", "TF_D3_FREE_ENCODER", "TF_D3_CACHE_GB", "TF_D3_CODEC_WINDOW"):
+        monkeypatch.delenv(k, raising=False)
+    a = Drama3Adapter("fish-drama3", tmp_path, {})
+    tf = a.tensorfold()
+    assert tf["generate"].__name__ == "shutter.families.drama3.generate"
