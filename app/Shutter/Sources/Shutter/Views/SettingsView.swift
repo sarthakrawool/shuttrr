@@ -37,9 +37,9 @@ struct SettingsView: View {
 
                 section("Updates") {
                     KVGroup {
-                        KVRow(label: "Check for updates", first: true) {
+                        KVRow(label: "Check for updates automatically", first: true) {
                             HStack {
-                                Text("Once a day, ask GitHub for a newer Shuttrr. New versions download by themselves and install when you restart Shuttrr. Your models and settings stay.")
+                                Text("At launch and once a day, ask GitHub for a newer Shuttrr. When there is one, Shuttrr tells you and asks before downloading. Your models and settings stay.")
                                     .foregroundStyle(Theme.Palette.ink2)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Spacer(minLength: Theme.Space.s3)

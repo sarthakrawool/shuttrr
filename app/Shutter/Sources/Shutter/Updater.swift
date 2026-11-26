@@ -7,12 +7,17 @@ import SwiftUI
 //
 // The feed is appcast.xml on the latest GitHub release (SUFeedURL in Info.plist). Every update archive is signed
 // with Shuttrr's EdDSA key (scripts/release.sh, private key in the release Mac's Keychain); Sparkle refuses an
-// archive whose signature does not match SUPublicEDKey. Updates are downloaded in the background and installed when
-// Shuttrr quits, or straight away from the "Restart to Update" button. Quitting stops the engine first
-// (AppDelegate.applicationShouldTerminate), and after the new app starts, EngineUpgrader brings ~/.shutter/engine
-// up to the bundled version.
+// archive whose signature does not match SUPublicEDKey.
 //
-// The "Check for updates" switch in Settings turns all of this off: no checks, no downloads.
+// Ask first (since 0.2.2): Shuttrr checks at launch and once a day. When a newer version is on GitHub, Sparkle's
+// window says "Shuttrr 0.2.x is now available, you have 0.2.y", shows the release notes and offers Install Update /
+// Remind Me Later / Skip This Version. Nothing is downloaded until the person says yes; then Sparkle offers
+// "Install and Relaunch". Quitting stops the engine first (AppDelegate.applicationShouldTerminate), and after the
+// new app starts, EngineUpgrader brings ~/.shutter/engine up to the bundled version.
+//
+// 0.2.1 downloaded updates silently (Sparkle stored SUAutomaticallyUpdate = YES in the app's defaults). Every
+// launch now forces automatic downloads off, which also migrates those installs. The "Check for updates
+// automatically" switch in Settings only turns the launch/daily checks on or off; "Check for Updates…" always works.
 
 @MainActor
 final class UpdateChecker: NSObject, ObservableObject {
@@ -31,6 +36,12 @@ final class UpdateChecker: NSObject, ObservableObject {
     private override init() {
         super.init()
         UserDefaults.standard.register(defaults: [Self.enabledKey: true])
+        // 0.2.1 let Sparkle store "download updates by themselves" (SUAutomaticallyUpdate = YES). Ask first instead.
+        let d = UserDefaults.standard
+        if !d.bool(forKey: "updatesAskFirstMigrated") {
+            d.removeObject(forKey: "SUAutomaticallyUpdate")
+            d.set(true, forKey: "updatesAskFirstMigrated")
+        }
     }
 
     private var enabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
@@ -66,7 +77,7 @@ final class UpdateChecker: NSObject, ObservableObject {
     private func apply(_ on: Bool) {
         guard let u = controller?.updater else { return }
         u.automaticallyChecksForUpdates = on
-        u.automaticallyDownloadsUpdates = on
+        u.automaticallyDownloadsUpdates = false      // ask first; also undoes 0.2.1's stored YES
         u.updateCheckInterval = 24 * 3600
     }
 
@@ -79,7 +90,8 @@ final class UpdateChecker: NSObject, ObservableObject {
 
     var canCheckNow: Bool { controller?.updater.canCheckForUpdates ?? false }
 
-    /// "Check for Updates…": Sparkle's own window shows the result.
+    /// "Check for Updates…": Sparkle's own window shows the result ("You're up to date!" with the version, or the
+    /// update offer).
     func checkNow() {
         guard let c = controller else {
             NSWorkspace.shared.open(Releases.latestPage)
@@ -120,7 +132,8 @@ extension UpdateChecker: SPUUpdaterDelegate {
                 }
             }
         }
-        return true      // we show our own "Restart to Update" row instead of Sparkle's alert
+        // Only reached for silent downloads, which 0.2.2 no longer does (a 0.2.1 install updating itself does).
+        return true      // our own "Restart to Update" row instead of Sparkle's alert
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
@@ -131,6 +144,28 @@ extension UpdateChecker: SPUUpdaterDelegate {
             + ((ns.userInfo[NSUnderlyingErrorKey] as? NSError).map { ": \($0.localizedDescription)" } ?? "")
         UserDefaults.standard.set(text, forKey: "updateLastError")
         DispatchQueue.main.async { MainActor.assumeIsolated { UpdateChecker.shared.lastError = text } }
+    }
+}
+
+/// Sidebar footer: the version and a Check for Updates button.
+struct SidebarVersionFooter: View {
+    @ObservedObject var updates = UpdateChecker.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s2) {
+            Text("Shuttrr \(Releases.appVersion)")
+                .font(Theme.Fonts.meta)
+                .foregroundStyle(Theme.Palette.muted)
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+            Button("Check for Updates…") { updates.checkNow() }
+                .buttonStyle(.kit(.line, small: true))
+                .help("Ask GitHub for a newer Shuttrr. Nothing downloads unless you say yes.")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.Space.s2)
+        .padding(.top, Theme.Space.s2)
     }
 }
 

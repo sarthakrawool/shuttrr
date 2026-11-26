@@ -62,9 +62,10 @@ Python, Homebrew or Terminal needed.
 
 3. Shuttrr opens. You only do this once. The one-line installer above skips this step entirely.
 
-**Updates.** From 0.2.1 on, Shuttrr updates itself: new versions download in the background, signed and
-checked, and install when you restart Shuttrr. The engine in `~/.shutter` follows along; your models and
-settings stay. Turn it off in Settings.
+**Updates.** Shuttrr tells you when an update is ready and asks before downloading (from 0.2.2; Shuttrr >
+Check for Updates…, or the button in Settings and at the bottom of the sidebar). Updates are signed and
+checked. The engine in `~/.shutter` follows along; your models and settings stay. Turn the automatic check
+off in Settings.
 
 If you prefer, build it yourself from source below.
 

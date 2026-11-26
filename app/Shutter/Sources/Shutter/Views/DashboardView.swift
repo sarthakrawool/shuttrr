@@ -319,6 +319,7 @@ struct SidebarView: View {
             Spacer(minLength: 0)
             EngineUpgradeRow()
             UpdateAvailableRow()
+            SidebarVersionFooter()
         }
         .padding(.vertical, Theme.Space.s4)
         .padding(.horizontal, Theme.Space.s3)

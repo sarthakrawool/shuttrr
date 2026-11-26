@@ -21,7 +21,7 @@ PKG_DIR="$APP_ROOT/Shutter"
 REPO_ROOT="$(cd "$APP_ROOT/.." && pwd)"
 BUILD_DIR="$APP_ROOT/build"
 APP="$BUILD_DIR/Shuttrr.app"
-VERSION="${SHUTTER_VERSION:-0.2.1}"
+VERSION="${SHUTTER_VERSION:-0.2.2}"
 # The bundle id stays com.shutter.app for releases. Test builds may set another one so they keep their own settings
 # (and may then point Sparkle at a local feed, see Updater.swift).
 BUNDLE_ID="${SHUTTER_BUNDLE_ID:-com.shutter.app}"
@@ -93,9 +93,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUAutomaticallyUpdate</key>
-    <true/>
+    <false/>
     <key>SUAllowsAutomaticUpdates</key>
-    <true/>
+    <false/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
     <key>SUVerifyUpdateBeforeExtraction</key>
