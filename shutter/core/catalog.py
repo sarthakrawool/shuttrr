@@ -410,20 +410,13 @@ DRAMA3_LICENCE = {
 _DRAMA3_STUDIO = {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.3",
                   "size": "audio", "frames": 0}
 _DRAMA3_NEEDS = ["mlx>=0.31", "tokenizers>=0.20", "soundfile"]
-CATALOG["fish-drama3-5bit"] = {
-    "name": "Fish Audio Drama 3",
-    "summary": "Speech from text, in a voice you give it (a short clip of someone who agreed).",
-    "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
-    "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-5bit", "folder": "Fish-Audio-Drama-3-MLX-5bit",
-    "size_gb": 25.0, "min_memory_gb": 40, "min_total_gb": 48,
-    "unpublished": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
-    "check_files": ["config.json", "codec.safetensors", "tower.safetensors", "tokenizer.json"],
-    "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 35.3}, fps={"resident": 62.2},
-                        notes="calibrated 5-bit experts (GPTQ, group 64): WER 3.5% vs 3.6% for 8-bit")],
-}
+# The 5-bit build ships later: the current one was calibrated on private voice takes, and a public one is to be
+# recalibrated on public speech and measured first.
 CATALOG["fish-drama3-8bit"] = {
-    "name": "Fish Audio Drama 3 (8-bit)",
-    "summary": "The same voice model at 8 bits: the reference build, for Macs with 64 GB or more.",
+    "name": "Fish Audio Drama 3 (Beta)",
+    "summary": "Speech from text, in its own voice or one you give it (a short clip of someone who agreed). "
+               "Built with Fish Audio.",
+    "beta": True,
     "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
     "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-8bit", "folder": "Fish-Audio-Drama-3-MLX-8bit",
     "size_gb": 43.2, "min_memory_gb": 52, "min_total_gb": 64,
@@ -595,9 +588,9 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     # Wan: Recommended only from a measurement on a Mac this size or smaller, with the full speed peak at most half
     # of this Mac's memory (the rule the Wan builds were measured against). Every model: room for everyday apps.
     strict = e["adapter"] == "wan"
-    # Audio (Drama 3, measured on one big Mac): Recommended when the full speed peak is at most 60% of this Mac's
-    # memory, so a browser and the rest of the day still fit next to it; tighter Macs get "Fits but barely".
-    audio_ok = not audio or fast <= total_bytes * 0.6
+    # Audio (Drama 3, measured on one big Mac): Recommended only on a Mac the size it was measured on (or bigger) and
+    # when the full speed peak is at most 60% of its memory; other sizes say they are not tested yet.
+    audio_ok = not audio or (fast <= total_bytes * 0.6 and (not measured_gb or measured_gb <= mac_gb + 0.5))
     if (measured and fast and fast + EVERYDAY_APPS <= usable and audio_ok
             and (not strict or (fast <= total_bytes // 2 and (not measured_gb or measured_gb <= mac_gb + 0.5)))):
         return out("recommended", "Runs at full speed on this Mac." if fast == peaks.get("resident") else
@@ -609,6 +602,9 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
     if audio:
+        where = f" It used {fast / GB:.1f} GB on a {measured_gb:.0f} GB Mac Studio." if measured_gb else ""
+        if measured_gb and measured_gb > mac_gb + 0.5:
+            return out("barely", f"Not yet tested on this Mac size.{where}", fast or low)
         return out("barely", "Fits, but leaves little memory for other apps while it speaks. Close big apps first.",
                    fast or low)
     if roomy:
