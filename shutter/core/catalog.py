@@ -96,6 +96,28 @@ if WAN13_Q8_TE["files"]:
 # <models>/sources/<repo> and then runs the converter into <models>/<id>-shuttrr-8bit. Source sizes are approximate
 # (they include the umT5 text encoder and the VAE in their original precision). The built size and the smallest
 # Mac are worked out from the model's shape (shutter.families.wan.spec) and the family's memory check, not typed in.
+# Wan 2.2 TI2V 5B, the Shuttrr 8-bit build converted from the official repo. Peaks are each request's largest stage
+# (denoise or decode), prompt encoded once. Mac Studio runs used an MLX memory limit and 4 steps (the peak does not
+# depend on the step count); they say what a bigger Mac needs and are not used for a 16 GB Mac.
+_M5 = {"mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5"}
+WAN5B_CHECKED = [
+    {"date": "2026-11-26", **_M5, "size": "320x512", "frames": 25, "steps": 20, "identical": True,
+     "peaks_gb": {"staged": 6.34, "stream_wide": 4.34, "stream_tight": 4.34},
+     "seconds": {"staged": 72, "stream_wide": 75, "stream_tight": 74},
+     "note": "picture too soft at this size; resident keeps the DiT through the decode and swaps a 16 GB Mac"},
+    {"date": "2026-11-26", **_M5, "size": "480x832", "frames": 49, "steps": 30, "identical": True,
+     "peaks_gb": {"staged": 6.92, "stream_tight": 6.30}, "seconds": {"staged": 455, "stream_tight": 473}},
+    {"date": "2026-11-26", **_M5, "size": "832x480", "frames": 25, "steps": 30, "image": True,
+     "peaks_gb": {"stream_tight": 6.85}, "seconds": {"stream_tight": 259}},
+    {"date": "2026-11-26", **_M5, "size": "704x1280", "frames": 49, "steps": 20, "vae_tile": True,
+     "peaks_gb": {"stream_tight": 5.86}, "seconds": {"stream_tight": 987}},
+    {"date": "2026-11-26", "mac": "Mac Studio M5 Max (Mac17,14)", "memory_gb": 128, "mlx": "0.32.4",
+     "size": "704x1280", "frames": 121, "steps": 4, "identical": True, "memory_limit_gb": {"stream_tight": 16,
+                                                                                          "staged": 16, "resident": 32},
+     "peaks_gb": {"resident": 16.37, "staged": 11.74, "stream_tight": 11.34},
+     "seconds_per_step": {"resident": 27.6, "staged": 27.7, "stream_tight": 28.1}},
+]
+
 _WAN_SOURCES: dict[str, dict[str, Any]] = {
     # superseded by the published build above; kept so `shutter download wan2.1-t2v-1.3b` and builds already
     # made from the official repo keep working, but not listed (hidden) unless it is installed or downloading
@@ -110,6 +132,13 @@ _WAN_SOURCES: dict[str, dict[str, Any]] = {
         "summary": "Video from a text prompt, or from a photo and a prompt.",
         "source_repo": "Wan-AI/Wan2.2-TI2V-5B", "source_size_gb": 34,
         "shape": dict(dim=3072, in_dim=48, out_dim=48, ffn_dim=14336, num_layers=30),
+        "checked_on": WAN5B_CHECKED,
+        # 16 GB M5: 480x832 x 49 frames (2 s at 24 fps), 30 steps peaks at 6.9 GB and takes ~8 min. 320x512 is
+        # faster but this model's picture falls apart that small (it was trained at 704x1280).
+        "small_mac_defaults": (480, 832, 49, 30),
+        "small_mac_note": ("This Mac has under {gb} GB of memory, so Wan 2.2 5B makes {h}x{w} clips of {f} frames "
+                           "({steps} steps, about 8 minutes on a 16 GB M5) by default. 704x1280 works with the "
+                           "tiled decode (vae_tile) but takes about 16 minutes for 49 frames."),
     },
     "wan2.2-t2v-a14b": {
         "name": "Wan 2.2 Text to Video A14B",
@@ -170,6 +199,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "min_memory_gb": min_gb,
             "checked_on": list(src.get("checked_on", [])),   # Macs it was measured on; empty until it is
             **({"small_mac_defaults": tuple(src["small_mac_defaults"])} if src.get("small_mac_defaults") else {}),
+            **({"small_mac_note": src["small_mac_note"]} if src.get("small_mac_note") else {}),
             "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
@@ -413,6 +443,9 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
         return out("recommended", "Runs at full speed on this Mac." if fast == peaks.get("resident") else
                    "Runs well on this Mac in a lower memory step.", fast)
     roomy = low + EVERYDAY_APPS <= usable
+    if strict and measured and measured_gb > mac_gb + 0.5 and fast and fast + EVERYDAY_APPS <= usable:
+        return out("barely", f"Measured only on a {measured_gb:.0f} GB Mac; it should run here, but this size of "
+                   "Mac is not tested yet.", fast)
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
     if roomy:

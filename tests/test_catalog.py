@@ -247,7 +247,8 @@ def test_wan_rows(cfg, monkeypatch):
         e = cat.CATALOG[mid]
         assert r["kind"] == "video" and r["source"] == repo and e["source_repo"] == repo and e["adapter"] == "wan"
         assert r["needs_conversion"] and r["size_approximate"] and not r["installed"]
-        assert r["checked_on"] == []                          # only the 1.3B is measured so far
+        # measured: the 1.3B and the 5B; the A14B models not yet
+        assert bool(r["checked_on"]) == (mid == "wan2.2-ti2v-5b")
         assert r["built_size_bytes"] < r["size_bytes"]
         assert r["dir"].endswith(f"{mid}-shuttrr-8bit")
     # the smallest Mac comes from the family memory check: one GB less fails it
@@ -366,9 +367,9 @@ def test_fit_classifier_on_16_gb():
     assert lc["usable_bytes"] == 13 * GB
     # the user's example: a model that peaks at 12 GB on a 24 GB Mac is never "doesn't fit"
     assert cat.classify_fit(MID, 24 * GB)["level"] in ("barely", "recommended")
-    # estimates are never recommended; the 14B models do not fit
-    assert cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["level"] != "recommended"
-    assert "Not tested on a Mac this size yet" in cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["reason"]
+    # estimates are never recommended (the A14B models are only estimates); the 5B was measured on 16 GB
+    assert cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["level"] == "recommended"
+    assert cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["measured"]
     for big in ("wan2.2-t2v-a14b", "wan2.2-i2v-a14b"):
         assert cat.classify_fit(big, 16 * GB)["level"] == "no_fit"
     assert cat.classify_fit(STARTER, 8 * GB)["level"] == "no_fit"
@@ -436,3 +437,30 @@ def test_wan_starter_preset_and_sample(cfg, monkeypatch):
     rows = {r["id"]: r for r in cat.catalog_rows(cfg)}
     assert not rows[STARTER]["recommended"]                  # 480x832 x 81 is not measured yet
     assert rows[STARTER]["sample"] == sm and rows[STARTER]["fit"]["level"] == "barely"
+
+
+def test_wan22_5b_fit_and_small_mac_defaults():
+    m = "wan2.2-ti2v-5b"
+    fit = lambda g: cat.classify_fit(m, g * GB, baseline=3 * GB)
+    # 16 GB: measured on a 16 GB M5 at 480x832 x 49; resident does not fit there, so the quickest measured step
+    # (staged, 6.92 GB, at most half of 16 GB) is its full speed -> Recommended
+    f16 = fit(16)
+    assert f16["level"] == "recommended" and f16["measured"] and f16["at"] == "480x832, 49 frames"
+    assert abs(f16["peak_bytes"] / GB - 6.92) < 0.01
+    # 24-64 GB default to 704x1280 x 121, measured only on a 128 GB Mac Studio: never Recommended from that
+    for g in (24, 32, 64):
+        assert fit(g)["level"] == "barely" and "Measured only on a 128 GB Mac" in fit(g)["reason"]
+    assert fit(8)["level"] == "no_fit"
+    assert cat.default_request(m, 16 * GB) == (480, 832, 49)
+    p = cat.preset_for(m, 16 * GB)
+    assert p["options"] == {"default_size": [480, 832], "default_frames": 49, "default_steps": 30}
+    assert "Wan 2.2 5B" in p["notes"][0]
+    # the 1.3B keeps the family's small-Mac defaults
+    assert cat.preset_for(STARTER, 16 * GB)["options"]["default_size"] == [320, 512]
+
+
+def test_fast_peak_uses_quickest_measured_step_without_resident():
+    c = {"peaks_gb": {"staged": 7, "stream_tight": 6}, "seconds": {"staged": 400, "stream_tight": 500}}
+    peaks = {r: int(g * GB) for r, g in c["peaks_gb"].items()}
+    assert cat._fast_peak(c, peaks) == 7 * GB
+    assert cat._fast_peak(c, {**peaks, "resident": 9 * GB}) == 9 * GB
