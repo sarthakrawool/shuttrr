@@ -448,10 +448,10 @@ def test_wan22_5b_fit_and_small_mac_defaults():
     m = "wan2.2-ti2v-5b"
     fit = lambda g: cat.classify_fit(m, g * GB, baseline=3 * GB)
     # 16 GB: the model's own size with the tiled decode, measured on a 16 GB M5 at 704x1280 x 25 frames
-    # (stream_tight, 5.84 GB, at most half of 16 GB) -> Recommended
+    # (stream_tight, 5.44 GB, at most half of 16 GB) -> Recommended
     f16 = fit(16)
     assert f16["level"] == "recommended" and f16["measured"] and f16["at"] == "704x1280, 25 frames"
-    assert abs(f16["peak_bytes"] / GB - 5.84) < 0.01
+    assert abs(f16["peak_bytes"] / GB - 5.44) < 0.01
     # 24-64 GB default to 704x1280 x 121, measured only on a 128 GB Mac Studio: never Recommended from that
     for g in (24, 32, 64):
         assert fit(g)["level"] == "barely" and "Measured only on a 128 GB Mac" in fit(g)["reason"]
