@@ -394,6 +394,8 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         fit = cat.classify_fit(mid, total) if total else {"level": "unknown"}
         if fit["level"] == "no_fit" and request.query_params.get("force") not in ("1", "true"):
             return _err(409, f"{cat.CATALOG[mid]['name']} does not fit this Mac. {fit['reason']}")
+        if not await asyncio.to_thread(cat.remote_ready, mid):
+            return _err(409, f"{cat.CATALOG[mid]['name']} is not ready to download yet: its files are still uploading.")
         # a model under its own licence (Fish Audio Drama 3) downloads only after the person accepts it
         if cat.CATALOG[mid].get("licence") and not cat.licence_accepted(engine.config, mid):
             if request.query_params.get("accept_licence") not in ("1", "true"):

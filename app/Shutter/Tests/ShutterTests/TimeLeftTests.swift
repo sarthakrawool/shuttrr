@@ -54,5 +54,9 @@ final class VoiceModelTests: XCTestCase {
         XCTAssertEqual(m.licence?.points.count, 2)
         let w = try JSONDecoder().decode(CatalogModel.self, from: Data(#"{"id":"w","name":"Wan"}"#.utf8))
         XCTAssertFalse(w.needsLicence)
+        XCTAssertTrue(w.available)       // older engines send no "available": downloadable as before
+        let up = try JSONDecoder().decode(CatalogModel.self, from: Data(#"{"id":"f","available":false,"availability_note":"Coming soon","beta":true}"#.utf8))
+        XCTAssertFalse(up.available)
+        XCTAssertTrue(up.beta)
     }
 }

@@ -21,11 +21,8 @@ def test_audio_fit_uses_measured_peaks():
     assert cat.CATALOG["fish-drama3-8bit"]["beta"] and "Built with Fish Audio" in cat.CATALOG["fish-drama3-8bit"]["summary"]
 
 
-def test_unpublished_is_hidden_unless_asked(tmp_path, monkeypatch):
+def test_fish_is_listed_with_its_licence(tmp_path):
     cfg = Config(home=str(tmp_path))
-    monkeypatch.delenv("SHUTTER_SHOW_UNPUBLISHED", raising=False)
-    assert "fish-drama3-8bit" not in {r["id"] for r in cat.catalog_rows(cfg)}
-    monkeypatch.setenv("SHUTTER_SHOW_UNPUBLISHED", "1")
     rows = {r["id"]: r for r in cat.catalog_rows(cfg)}
     assert rows["fish-drama3-8bit"]["licence"]["name"].startswith("Fish Audio Community License")
     assert rows["fish-drama3-8bit"]["licence_accepted"] is False
@@ -46,3 +43,17 @@ def test_a14b_does_not_fit_under_64_gb_until_measured():
             f = cat.classify_fit(mid, g * GB, baseline=3 * GB)
             assert f["level"] == "no_fit" and "64 GB" in f["reason"], (mid, g, f)
         assert cat.classify_fit(mid, 64 * GB, baseline=3 * GB)["level"] == "barely"
+
+
+def test_fish_downloads_only_once_every_pinned_file_is_on_hugging_face(tmp_path):
+    files = cat.CATALOG["fish-drama3-8bit"]["files"]
+    assert len(files) == 22 and all(f["sha256"] for f in files if f["path"].endswith(".safetensors"))
+    assert not cat.remote_ready("fish-drama3-8bit", files_of=lambda r: files[:-1], now=0)        # half uploaded
+    assert not cat.remote_ready("fish-drama3-8bit", files_of=lambda r: files, now=60)           # cached for 3 h
+    assert cat.remote_ready("fish-drama3-8bit", files_of=lambda r: files, now=cat.REMOTE_CHECK_S + 1)
+    assert cat.remote_ready("fish-drama3-8bit", files_of=lambda r: [], now=10**9)               # ready stays ready
+    bad = [dict(f, sha256="0" * 64) if f["path"] == "tower.safetensors" else f for f in files]
+    cat._remote_cache.clear()
+    assert not cat.remote_ready("fish-drama3-8bit", files_of=lambda r: bad, now=0)
+    row = {r["id"]: r for r in cat.catalog_rows(Config(home=str(tmp_path)))}["fish-drama3-8bit"]
+    assert row["available"] is False and "still uploading" in row["availability_note"] and row["beta"]

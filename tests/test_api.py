@@ -294,5 +294,8 @@ def test_licensed_model_needs_acceptance_before_download(client, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda args, *a, **k: started.append(args) if "download" in args
                         else real(args, *a, **k))
     r = client.post("/v1/catalog/fish-drama3-8bit/download")
+    assert r.status_code == 409 and "still uploading" in r.json()["error"]          # files not all on HF yet
+    monkeypatch.setattr(cat, "remote_ready", lambda mid, **k: True)
+    r = client.post("/v1/catalog/fish-drama3-8bit/download")
     assert r.status_code == 409 and r.json()["code"] == "licence_required"
     assert r.json()["licence"]["name"].startswith("Fish Audio Community License") and not started

@@ -622,10 +622,15 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     /// A model under its own licence (Fish Audio Drama 3): the person accepts it before the download.
     var licence: CatalogLicence?
     var licenceAccepted = true
+    /// False while a published build's files are still uploading: the row says so and offers no Download.
+    var available = true
+    var availabilityNote = ""
+    var beta = false
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes, memory
-        case licence, licenceAccepted = "licence_accepted"
+        case licence, licenceAccepted = "licence_accepted", available, beta
+        case availabilityNote = "availability_note"
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
         case freeBytes = "free_bytes"
@@ -654,6 +659,9 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         memory = c.value(.memory, "")
         licence = c.optional(.licence)
         licenceAccepted = c.value(.licenceAccepted, true)
+        available = c.value(.available, true)
+        availabilityNote = c.value(.availabilityNote, "")
+        beta = c.value(.beta, false)
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }

@@ -103,3 +103,32 @@ WAN5B_Q8: dict[str, Any] = {"revision": '8ed5e8e3af147751a7f1951bd6831414ad994ae
     {'path': 'tokenizer/tokenizer_config.json', 'size': 61728, 'sha256': None},
     {'path': 'vae/model.safetensors', 'size': 2818778924, 'sha256': '20a7c9b2ee722156244b7459172a00b42cccba6327a2266e38474ca1e6a412dd'},
 ]}
+
+
+# Fish Audio Drama 3, 8-bit (2026-11-27, Shuttrr 0.2.13): plain MLX conversion of fishaudio/drama-3, 43.2 GB.
+# Pinned by file size and sha256 against the repo's main branch (no fixed revision: the upload was still running when
+# 0.2.13 shipped). Shuttrr lists it as ready only once Hugging Face shows every file with these sizes / checksums.
+DRAMA3_Q8: dict[str, Any] = {"revision": None, "files": [
+    {'path': 'LICENSE', 'size': 19685, 'sha256': None},
+    {'path': 'NOTICE', 'size': 852, 'sha256': None},
+    {'path': 'README.md', 'size': 2510, 'sha256': None},
+    {'path': 'backbone-00.safetensors', 'size': 3708811804, 'sha256': '7f90c4eab950ce2ba0ee62ede6737d359e236fcec9f10ad486d23eebbb92c8d0'},
+    {'path': 'backbone-04.safetensors', 'size': 3708811828, 'sha256': '85182af96f37c27e2af91946e2c8221be0701bc949afa2c2fb00ef41d08371cd'},
+    {'path': 'backbone-08.safetensors', 'size': 3708811859, 'sha256': 'dfa8f36e9a146960cc84344e8149a843df98bddaa35116c48bcd5e5c4531260f'},
+    {'path': 'backbone-12.safetensors', 'size': 3708811925, 'sha256': 'ddbb02c364608e70a7cbc6c7f930abbcae2b89530c40a353ff8dc8c51ee807b4'},
+    {'path': 'backbone-16.safetensors', 'size': 3708811901, 'sha256': '3b0e83d0d736bc6873f0d0ad675c1caeb729b2906a5e03d1c337280e72a36343'},
+    {'path': 'backbone-20.safetensors', 'size': 3708811919, 'sha256': '2001aa93640c4b5fec2d2c9b5bfa320c8f3adc5820e0cb1212a5fae2382038ad'},
+    {'path': 'backbone-24.safetensors', 'size': 3708811939, 'sha256': '748d2d3ec28c2a2c8d892fb28e7489e69841f834d836ef48ce2f3ae8b3588d70'},
+    {'path': 'backbone-28.safetensors', 'size': 3708811901, 'sha256': '89979b0e9786c599e74e0a572ea5b97277ab34257dfa6ca14690880b3c23825a'},
+    {'path': 'backbone-32.safetensors', 'size': 3708811875, 'sha256': '8ea259a72b0a1ea20b35cdccf9ce0685a9106e86a7eb0aef17b4df3bddc96de6'},
+    {'path': 'backbone-36.safetensors', 'size': 3708811929, 'sha256': 'bd504efef2c15b210e79b95055c2f6de4d50b1a51c18b0d82d99f600fae6e5b0'},
+    {'path': 'backbone-embed.safetensors', 'size': 2066747743, 'sha256': '8c7e9613ffb1cb87996ded07d696bc9e04033d29c8a6adee361f038b7bb976fe'},
+    {'path': 'chat_template.jinja', 'size': 7756, 'sha256': None},
+    {'path': 'codec.safetensors', 'size': 1565788570, 'sha256': '3e979b0db3ace20233aa869bf10fdd61ff4e0bc691a580780ae5839d463be11b'},
+    {'path': 'config.json', 'size': 5642, 'sha256': None},
+    {'path': 'model.safetensors.index.json', 'size': 94896, 'sha256': None},
+    {'path': 'special_tokens_map.json', 'size': 102779, 'sha256': None},
+    {'path': 'tokenizer.json', 'size': 20791070, 'sha256': '0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6'},
+    {'path': 'tokenizer_config.json', 'size': 103580, 'sha256': None},
+    {'path': 'tower.safetensors', 'size': 2445859253, 'sha256': '4904a6b385da75d62a1e3e881b1a87fe0ab52cd7c644b210b22759a556d409ef'},
+]}

@@ -135,7 +135,9 @@ struct ModelDownloadRow: View {
     }
 
     @ViewBuilder private var status: some View {
-        if model.installed && store.catalogRestartNeeded {
+        if !model.installed && !model.available && !model.availabilityNote.isEmpty {
+            line(model.availabilityNote)
+        } else if model.installed && store.catalogRestartNeeded {
             line("Downloaded. Restart the engine to use it.")
         } else if model.installed {
             line("Installed and ready.")
@@ -202,6 +204,11 @@ struct ModelDownloadRow: View {
             Button("Stop") { store.stopDownload(model.id) }
                 .buttonStyle(.kit(.line))
                 .disabled(pending)
+        } else if !model.available {
+            Text("Coming soon")
+                .font(Theme.Fonts.metaSemibold)
+                .foregroundStyle(Theme.Palette.muted)
+                .help(model.availabilityNote)
         } else if !noFit {
             Button(pending ? "Starting…" : (state.isEmpty || state == "done" ? "Download" : "Resume")) {
                 store.startDownload(model.id)

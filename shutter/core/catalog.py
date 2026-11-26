@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from shutter.core.config import Config
-from shutter.core.pinned_files import WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE
+from shutter.core.pinned_files import DRAMA3_Q8, WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE
 
 GB = 1024**3
 
@@ -421,8 +421,10 @@ CATALOG["fish-drama3-8bit"] = {
     "beta": True,
     "kind": "audio", "adapter": "fish-drama3", "family": "fish-drama3",
     "repo": "SarthakRawool/Fish-Audio-Drama-3-MLX-8bit", "folder": "Fish-Audio-Drama-3-MLX-8bit",
-    "size_gb": 43.2, "min_memory_gb": 52, "min_total_gb": 64,
-    "unpublished": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
+    "revision": DRAMA3_Q8["revision"], "files": DRAMA3_Q8["files"],
+    "size_gb": round(sum(f["size"] for f in DRAMA3_Q8["files"]) / GB, 1), "min_memory_gb": 52, "min_total_gb": 64,
+    # listed, but downloadable only once Hugging Face shows every pinned file (remote_ready)
+    "check_remote": True, "licence": DRAMA3_LICENCE, "needs": _DRAMA3_NEEDS,
     "check_files": ["config.json", "codec.safetensors", "tower.safetensors", "tokenizer.json"],
     "checked_on": [dict(_DRAMA3_STUDIO, peaks_gb={"resident": 47.5}, fps={"resident": 60.2})],
 }
@@ -453,6 +455,33 @@ def accept_licence(cfg: Config, model_id: str) -> None:
     fresh.accepted_licences = acc
     fresh.save()
     cfg.accepted_licences = acc
+
+
+REMOTE_CHECK_S = 3 * 3600      # re-check a repo that was not complete yet every 3 hours (and at engine start)
+_remote_cache: dict[str, tuple[float, bool]] = {}
+
+
+def remote_ready(model_id: str, files_of: Optional[Callable[[str], list[dict[str, Any]]]] = None,
+                 now: Optional[float] = None) -> bool:
+    """Whether the model's Hugging Face repo has every pinned file with the pinned size (and LFS sha256 where pinned).
+    For entries with `check_remote` (a build whose upload may still be running). Cached: a complete repo stays ready;
+    an incomplete one is asked again after REMOTE_CHECK_S. Offline: the last answer (False when there is none)."""
+    e = CATALOG[model_id]
+    if not e.get("check_remote"):
+        return True
+    now = time.time() if now is None else now
+    hit = _remote_cache.get(model_id)
+    if hit and (hit[1] or now - hit[0] < REMOTE_CHECK_S):
+        return hit[1]
+    try:
+        have = {f["path"]: f for f in (files_of or _hf_files)(e["repo"])}
+        ok = all(f["path"] in have and have[f["path"]].get("size") == f["size"]
+                 and (not f.get("sha256") or have[f["path"]].get("sha256") == f["sha256"])
+                 for f in e.get("files") or [])
+    except Exception:
+        ok = hit[1] if hit else False
+    _remote_cache[model_id] = (now, ok)
+    return ok
 
 
 def show_unpublished() -> bool:
@@ -928,6 +957,10 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "checked_on": checked,
             "licence": e.get("licence"),
             "licence_accepted": licence_accepted(cfg, mid),
+            "available": installed or remote_ready(mid),
+            "availability_note": "" if installed or remote_ready(mid) else
+                                 "Coming soon: the model files are still uploading. Check back later.",
+            "beta": bool(e.get("beta")),
         })
     # Recommended, then Fits but barely, then Doesn't fit (stable within each group)
     order = {"recommended": 0, "barely": 1, "unknown": 1, "no_fit": 2}
