@@ -90,8 +90,8 @@ as the first model: one click in the app, no conversion. The model list has thre
 with 4 GB to spare for your other apps), **Fits but barely** (its lowest memory step fits in this Mac's memory
 minus what macOS keeps, or it is not tested on a Mac this size yet) and **Doesn't fit** (no Download button). What
 macOS keeps is its wired memory, measured on your Mac (about 3 GB). Shuttrr
-never offers a model on the promise that a low-memory step will squeeze it in. Once a model is installed, **Try a Sample** on the Models page makes a short
-clip from a ready-made prompt (320×512, 17 frames, 12 steps: about a minute on a 16 GB M5) and opens it.
+never offers a model on the promise that a low-memory step will squeeze it in. Models download only when you pick one (**Download a
+Model** on the Models page); nothing is downloaded on its own.
 
 ### Requirements
 

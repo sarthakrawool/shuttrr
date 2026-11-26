@@ -7,6 +7,7 @@ struct ModelsView: View {
     @EnvironmentObject private var flow: OnboardingFlow
     @Environment(\.openWindow) private var openWindow
     let onNewJob: (String?) -> Void
+    @State private var showingDownloads = false
 
     init(onNewJob: @escaping (String?) -> Void) {
         self.onNewJob = onNewJob
@@ -19,16 +20,13 @@ struct ModelsView: View {
                 HStack(alignment: .center) {
                     PageTitle(title: "Models", subtitle: subtitle(entries))
                     Spacer()
-                    Button("Set-up…") {
-                        flow.reset()
-                        openWindow(id: OnboardingFlow.windowID)
-                        NSApp.activate(ignoringOtherApps: true)
-                    }
-                    .buttonStyle(.kit(.line))
-                    .help("Open the first-run window: install or repair the engine and choose a model")
                     Button("Reload") { store.reloadModels() }
                         .buttonStyle(.kit(.line))
                         .disabled(!store.connection.isConnected)
+                    Button("Download a Model") { showingDownloads = true }
+                        .buttonStyle(.kit(.ink))
+                        .disabled(store.catalog.isEmpty)
+                        .help("Choose a model to download. Nothing downloads unless you pick it.")
                 }
 
                 if store.needsFirstModel {
@@ -58,10 +56,6 @@ struct ModelsView: View {
                         .foregroundStyle(Theme.Palette.muted)
                 }
 
-                if store.sampleModel != nil {
-                    TrySampleCard()
-                }
-
                 VStack(alignment: .leading, spacing: Theme.Space.s3) {
                     SectionHeader(title: "Available", count: store.models.count)
                     if store.models.isEmpty {
@@ -77,23 +71,16 @@ struct ModelsView: View {
                     }
                 }
 
-                if !store.needsFirstModel && !moreToDownload.isEmpty {
-                    VStack(alignment: .leading, spacing: Theme.Space.s3) {
-                        SectionHeader(title: "Download a model")
-                        SectionedModelList(models: moreToDownload)
-                    }
-                }
             }
             .animation(Motion.smooth, value: store.needsFirstModel)
             .padding(.horizontal, Theme.Space.s6)
             .padding(.top, Theme.Space.s5)
             .padding(.bottom, Theme.Space.s6)
         }
-    }
-
-    /// Catalog models that are not installed yet, or that still wait for an engine restart.
-    private var moreToDownload: [CatalogModel] {
-        store.catalog.filter { !$0.installed || store.catalogRestartNeeded }
+        .sheet(isPresented: $showingDownloads) {
+            DownloadModelSheet { showingDownloads = false }
+                .environmentObject(store)
+        }
     }
 
     private func subtitle(_ entries: [PoolEntry]) -> String {
@@ -339,5 +326,42 @@ private struct AvailableRow: View {
         .fixedSize()
         .accessibilityLabel("More")
         .help("More")
+    }
+}
+
+/// "Download a Model": the catalog in its fit sections. Only the model the person presses Download on is fetched.
+struct DownloadModelSheet: View {
+    @EnvironmentObject private var store: EngineStore
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Theme.Space.s1) {
+                Text("Download a model")
+                    .font(Theme.Fonts.title)
+                    .foregroundStyle(Theme.Palette.ink)
+                Text("Models are saved on this Mac and nothing is uploaded. A download carries on if you close this.")
+                    .font(Theme.Fonts.row)
+                    .foregroundStyle(Theme.Palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Theme.Space.s5)
+            Hairline()
+            ScrollView {
+                SectionedModelList(models: store.catalog)
+                    .padding(Theme.Space.s5)
+            }
+            Hairline()
+            HStack {
+                Spacer()
+                Button("Done", action: onDone)
+                    .buttonStyle(.kit(.ink))
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(Theme.Space.s4)
+        }
+        .frame(width: 640, height: 600)
+        .background(Theme.Palette.content)
+        .preferredColorScheme(.light)
     }
 }

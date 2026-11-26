@@ -23,6 +23,32 @@ final class EngineStore: ObservableObject {
     private var lastClientsFetch = Date.distantPast
     @Published private(set) var history: [MemoryPoint] = []
     @Published var lastError: String?
+    /// When the Requests page was last opened (unix seconds). The red badge on the Requests row counts the failed
+    /// requests that finished after it; opening Requests clears the badge.
+    static let requestsSeenKey = "requestsSeenAt"
+    @Published private(set) var requestsSeenAt: Double = {
+        let d = UserDefaults.standard
+        if d.object(forKey: EngineStore.requestsSeenKey) == nil {
+            d.set(Date().timeIntervalSince1970, forKey: EngineStore.requestsSeenKey)   // older failures don't count
+        }
+        return d.double(forKey: EngineStore.requestsSeenKey)
+    }()
+
+    var unseenFailures: Int {
+        jobs.filter { $0.state == .failed && ($0.finishedAt ?? $0.createdAt) > requestsSeenAt }.count
+    }
+
+    /// True while the Requests page is on screen: failures that arrive then count as seen at once.
+    var requestsOpen = false {
+        didSet { if requestsOpen { markRequestsSeen() } }
+    }
+
+    func markRequestsSeen() {
+        let now = Date().timeIntervalSince1970
+        requestsSeenAt = now
+        UserDefaults.standard.set(now, forKey: Self.requestsSeenKey)
+    }
+
     /// Called after every successful /v1/system poll (AppDelegate checks the engine version against the app's).
     var onSystem: ((SystemInfo) -> Void)?
     /// Fast / Low memory (GET /v1/settings). Nil until the engine answers; an engine that
@@ -36,15 +62,6 @@ final class EngineStore: ObservableObject {
     @Published private(set) var catalogPending: Set<String> = []
     private var lastCatalogFetch = Date.distantPast
 
-    /// "Try a Sample": the job it sent, and what to show while it runs.
-    enum SampleState: Equatable {
-        case idle
-        case running(jobID: String, progress: Double)
-        case done(output: String)
-        case failed(String)
-    }
-    @Published private(set) var sample: SampleState = .idle
-    private var sampleTask: Task<Void, Never>?
 
     private var pollTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
@@ -89,12 +106,6 @@ final class EngineStore: ObservableObject {
     }
     var catalogDownloading: Bool { catalog.contains { $0.isDownloading } }
 
-    /// The installed model "Try a Sample" uses: the recommended starter first, then any installed model with a
-    /// sample request.
-    var sampleModel: CatalogModel? {
-        let ready = catalog.filter { $0.installed && $0.sample != nil && !catalogRestartNeeded }
-        return ready.first { $0.recommended } ?? ready.first
-    }
 
     /// SF Symbol for the menu bar: changes while a job runs or memory is refused.
     var menuBarSymbol: String {
@@ -145,6 +156,7 @@ final class EngineStore: ObservableObject {
             let list = try await api.jobs(limit: 50)
             system = sys
             jobs = list.filter { !$0.isModelOperation }
+            if requestsOpen && unseenFailures > 0 { markRequestsSeen() }
             onSystem?(sys)
             failures = 0
             if connection != .connected {
@@ -370,43 +382,6 @@ final class EngineStore: ObservableObject {
         }
     }
 
-    /// Send the starter model's sample request, follow the job, and open the video when it is done.
-    func trySample() {
-        guard let model = sampleModel, let sm = model.sample else { return }
-        if case .running = sample { return }
-        sampleTask?.cancel()
-        sample = .running(jobID: "", progress: 0)
-        sampleTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let req = NewJobRequest(model: model.id, prompt: sm.prompt, seed: sm.seed,
-                                    width: sm.width, height: sm.height, frames: sm.frames, steps: sm.steps)
-            do {
-                let job = try await APIClient.current().submit(req)
-                self.sample = .running(jobID: job.id, progress: 0)
-                self.refreshNow()
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    let j = try await APIClient.current().job(id: job.id)
-                    switch j.state {
-                    case .done:
-                        let out = j.outputPath ?? ""
-                        self.sample = .done(output: out)
-                        if !out.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: out)) }
-                        self.refreshNow()
-                        return
-                    case .failed, .cancelled:
-                        self.sample = .failed(j.message.isEmpty ? "The sample did not finish." : j.message)
-                        return
-                    default:
-                        self.sample = .running(jobID: job.id, progress: j.progress)
-                    }
-                }
-            } catch {
-                self.sample = .failed(error.localizedDescription)
-            }
-        }
-    }
-
     func cancel(_ job: Job) {
         Task {
             do {
@@ -454,7 +429,8 @@ final class EngineStore: ObservableObject {
     }
 
     private func setModels(_ list: [ModelInfo]) {
-        models = list
+        // The engine's built-in test model ("dummy") is never offered in the app: only models the person downloads.
+        models = list.filter { $0.family != "dummy" }
         noticeLoadFailures(list)
     }
 

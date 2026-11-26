@@ -66,10 +66,7 @@ struct DashboardView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(section: $section) {
-                section = .queue
-                filter = .failed
-            }
+            SidebarView(section: $section)
             .frame(width: Theme.Metric.sidebarWidth)
             .background(Theme.Palette.sidebarVeil)
 
@@ -137,6 +134,9 @@ struct DashboardView: View {
         .onChange(of: query) { _, newValue in
             if !newValue.isEmpty { section = .queue }
         }
+        // Opening Requests clears the red failed badge; failures that land while it is open count as seen too.
+        .onChange(of: section) { _, s in store.requestsOpen = s == .queue }
+        .onAppear { store.requestsOpen = section == .queue }
     }
 
     private func openNewJob(_ model: String?) {
@@ -272,12 +272,10 @@ struct DashboardView: View {
 struct SidebarView: View {
     @EnvironmentObject private var store: EngineStore
     @Binding var section: DashboardSection
-    let onFailed: () -> Void
     @Namespace private var selection
 
-    init(section: Binding<DashboardSection>, onFailed: @escaping () -> Void) {
+    init(section: Binding<DashboardSection>) {
         self._section = section
-        self.onFailed = onFailed
     }
 
     var body: some View {
@@ -296,26 +294,14 @@ struct SidebarView: View {
 
             ForEach(DashboardSection.allCases) { s in
                 SidebarRow(symbol: s.symbol, title: s.rawValue, isOn: section == s, namespace: selection) {
-                    if let t = countText(for: s) { t }
+                    if s == .queue && store.unseenFailures > 0 {
+                        FailedBadge(count: store.unseenFailures)
+                    } else if let t = countText(for: s) { t }
                 } action: {
                     section = s
                 }
             }
 
-            if let failed = store.system?.queue.failed, failed > 0 {
-                Hairline().padding(Theme.Space.s2)
-                SidebarRow(symbol: "bell", title: "Failed", isOn: false) {
-                    Text("\(failed)")
-                        .font(Theme.Fonts.metaSemibold)
-                        .monospacedDigit()
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, Theme.Space.s2)
-                        .frame(minWidth: Theme.Space.s5, minHeight: Theme.Metric.badgeHeight)
-                        .background(Capsule().fill(Theme.Palette.danger))
-                } action: {
-                    onFailed()
-                }
-            }
             Spacer(minLength: 0)
             EngineUpgradeRow()
             UpdateAvailableRow()
@@ -350,6 +336,23 @@ struct SidebarView: View {
         case .settings:
             return nil
         }
+    }
+}
+
+/// Red circle with the number of requests that failed since Requests was last opened.
+struct FailedBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .font(Theme.Fonts.metaSemibold)
+            .monospacedDigit()
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, count > 9 ? Theme.Space.s1 : 0)
+            .frame(minWidth: Theme.Metric.badgeHeight, minHeight: Theme.Metric.badgeHeight)
+            .background(Capsule().fill(Theme.Palette.danger))
+            .help("\(count) request\(count == 1 ? "" : "s") failed since you last opened Requests")
+            .accessibilityLabel("\(count) failed")
     }
 }
 

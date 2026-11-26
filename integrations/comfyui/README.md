@@ -73,7 +73,7 @@ task is cancelled.
 
 **Shuttrr Unload**: `POST /v1/pool/release`. **Shuttrr Memory**: `GET /v1/memory` as JSON text.
 
-Requests from this pack are tagged with the client name `comfyui-shutter/0.2.7`. That name appears in
+Requests from this pack are tagged with the client name `comfyui-shutter/0.2.8`. That name appears in
 `GET /v1/clients` and on each job.
 
 ## Layout

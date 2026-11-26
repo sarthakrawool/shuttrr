@@ -36,8 +36,8 @@ copy its 8-bit folder as it is.
 
 On a Mac with under 24 GB the app recommends it as the first model, and the catalog gives Wan models 320x512,
 33 frames, 20 steps as defaults there (model options `default_size`, `default_frames`, `default_steps`; a request
-that names its own size or length wins). "Try a Sample" sends 320x512, 17 frames, 12 steps (measured 54 s, 6.4 GB
-through the engine). The convert-it-yourself `wan2.1-t2v-1.3b` entry is still there for `shutter download`, but is
+that names its own size or length wins). The catalog's `sample` request (320x512, 17 frames, 12 steps, measured 54 s, 6.4 GB through the engine) is
+still in the API, but the app no longer offers "Try a Sample" (0.2.8). The convert-it-yourself `wan2.1-t2v-1.3b` entry is still there for `shutter download`, but is
 no longer listed.
 
 ## What runs
