@@ -61,17 +61,17 @@ extension Job {
         }
     }
 
-    /// "Needs 59.5 GB + 8.0 GB headroom · 14.7 GB available" from the guard's sentence.
+    /// "Needs 12.0 GB · 9.5 GB free right now" from the guard's sentence.
     static func memoryReason(_ message: String) -> String? {
-        let pattern = "needs ([0-9.]+ GB) plus ([0-9.]+ GB) headroom, but only ([0-9.]+ GB)"
+        let pattern = "needs ([0-9.]+ GB), but macOS can give only ([0-9.]+ GB)"
         guard let re = try? NSRegularExpression(pattern: pattern),
               let m = re.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
-              m.numberOfRanges == 4 else { return nil }
+              m.numberOfRanges == 3 else { return nil }
         func group(_ i: Int) -> String {
             guard let r = Range(m.range(at: i), in: message) else { return "" }
             return String(message[r])
         }
-        return "Needs \(group(1)) + \(group(2)) headroom · \(group(3)) available"
+        return "Needs \(group(1)) · \(group(2)) free right now"
     }
 
     /// Time column: run time once started, otherwise time spent waiting (shown muted).

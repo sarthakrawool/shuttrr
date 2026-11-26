@@ -37,12 +37,9 @@ def add_private_bin() -> None:
 
 
 def auto_headroom(total_bytes: int) -> int:
-    """Automatic headroom: an eighth of this Mac's memory, at least 2 GB and at most 8 GB
-    (16 GB Mac: 2 GB, 64 GB and up: 8 GB)."""
-    gb = 1024**3
-    if not total_bytes or total_bytes <= 0:
-        return 8 * gb  # unknown total: the old fixed default
-    return int(min(8 * gb, max(2 * gb, int(total_bytes) // 8)))
+    """Since 0.2.3 there is no automatic reserve: a request may use all the memory macOS can give it right now,
+    and the watchdog (core/memory.Watchdog) protects the Mac while it runs. Kept for callers of the old name."""
+    return 0
 
 
 def _machine_total() -> int:
@@ -53,6 +50,8 @@ def _machine_total() -> int:
     except Exception:
         return 0
 
+
+LEGACY_SWAP_GROWTH_MB = 256.0
 
 # Fields whose default is derived from `home` (stored as "" = derive).
 _DERIVED = {
@@ -80,9 +79,11 @@ class Config:
     gpu_lock_dirs: list[str] = field(default_factory=list)
     # A running process matching this means another render is in progress: jobs wait.
     busy_process_pattern: Optional[str] = "h3_generate.py|zig_fasth3|run_mps_avatar|sd-cli"
-    # None = automatic: clamp(total memory / 8, 2 GB, 8 GB). A number wins.
+    # None = no reserve (the default since 0.2.3). A number keeps that many GB free on top of every request.
     headroom_gb: Optional[float] = None
-    swap_growth_mb: float = 256.0
+    # The watchdog frees caches when swap grows by this much during a request, and stops the request if swap keeps
+    # growing (another 1 GB) or does not ease within 10 s.
+    swap_growth_mb: float = 1024.0
     max_fraction: Optional[float] = None
     memory_poll_s: float = 15.0
     idle_unload_s: float = 900.0
@@ -137,7 +138,10 @@ class Config:
 
     @property
     def swap_growth_bytes(self) -> int:
-        return int(self.swap_growth_mb * 1024**2)
+        mb = float(self.swap_growth_mb)
+        if mb == LEGACY_SWAP_GROWTH_MB:  # the old default, written into every config.json before 0.2.3
+            mb = 1024.0
+        return int(mb * 1024**2)
 
     @property
     def cache_max_bytes(self) -> int:

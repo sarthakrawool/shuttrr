@@ -35,7 +35,6 @@ from shutter.core import modes as M
 from shutter.core import parts as P
 from shutter.types import GB, Job, JobRequest, MemoryEstimate
 
-DEFAULT_HEADROOM = 4 * GB
 
 
 def _truthy(v) -> bool:
@@ -146,8 +145,38 @@ class WanAdapter(Adapter):
             if m and m.get("frames", s.frames) == s.frames and bool(m.get("vae_tile", False)) == bool(s.vae_tile):
                 peak = int(m["peak_bytes"]) + lora_bytes
                 note = f"wan {rid}: measured {m['peak_bytes'] / GB:.1f} GB at {size}"
+            else:
+                # the build's own check (shuttrr.json checked_on) at the same size and as many or more frames is an
+                # upper bound for this request: fewer frames never need more memory
+                b = self._checked_peak(size, s.frames, rid, s.vae_tile)
+                if b is not None and b[0] < peak:
+                    peak = b[0] + lora_bytes
+                    note = f"wan {rid}: measured {b[0] / GB:.1f} GB at {size} x {b[1]} frames (an upper bound)"
             out[rid] = MemoryEstimate(peak=int(peak), steady=int(e["steady"]), disk_scratch=int(1 * GB), note=note)
+        # a lower memory step never needs more than the step above it
+        prev = None
+        for rid in M.RUNG_IDS:
+            if prev is not None and out[rid].peak > out[prev].peak:
+                out[rid].peak = out[prev].peak
+                out[rid].note += f" (capped at {prev})"
+            prev = rid
         return out
+
+    def _checked_peak(self, size: str, frames: int, rid: str, vae_tile: bool) -> Optional[tuple[int, int]]:
+        """(peak bytes, frames) of the smallest measured run in the build's checked_on at this size with at least
+        `frames` frames, the same decode and this memory step; None when there is none."""
+        best = None
+        try:
+            for c in self.manifest.get("checked_on") or []:
+                f = int(c.get("frames", 0))
+                g = (c.get("peaks_gb") or {}).get(rid)
+                if c.get("size") != size or g is None or f < frames or bool(c.get("vae_tile", False)) != bool(vae_tile):
+                    continue
+                if best is None or f < best[1]:
+                    best = (int(float(g) * GB), f)
+        except Exception:
+            return None
+        return best
 
     def mode_defaults(self, ctx: Optional[RunContext] = None) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -214,7 +243,7 @@ class WanAdapter(Adapter):
         if not pick["fits"]:
             from shutter.types import MemoryRefused
             raise MemoryRefused(f"{rid} needs ~{pick['estimates'][rid].peak / GB:.1f} GB, budget "
-                                f"{pick['budget'] / GB:.1f} GB (available - headroom): waiting for memory")
+                                f"{pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
         if pick["stepped_down_from"]:
             s.notes.append(f"stepped down from {pick['stepped_down_from']} to {rid} to fit memory")
         meter = StageMeter(mx)

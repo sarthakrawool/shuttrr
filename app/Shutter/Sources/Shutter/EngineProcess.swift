@@ -143,7 +143,21 @@ final class EngineProcess: ObservableObject {
         let how = reason == .uncaughtSignal ? "signal \(status)" : "status \(status)"
         lastExit = "Engine exited (\(how))"
         append("[\(lastExit ?? "")]\n")
+        // 75: the engine's memory watchdog stopped a request that was stuck in one long GPU call by exiting, so
+        // macOS freed the memory at once. Start it again; the request is already marked as stopped.
+        if reason == .exit && status == Self.protectExitCode {
+            append("[Restarting the engine after it stopped a request to protect your Mac]\n")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let owner = self, !owner.isRunning else { return }
+                    owner.start()
+                }
+            }
+        }
     }
+
+    /// Exit code of an engine that stopped itself to protect the Mac (shutter/core/engine.py EMERGENCY_EXIT_CODE).
+    static let protectExitCode: Int32 = 75
 
     // MARK: Log tail
 

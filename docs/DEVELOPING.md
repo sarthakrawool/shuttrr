@@ -29,7 +29,7 @@ them to `models` in `~/.shutter/config.json`:
    convention), and gives both back afterwards, also on failure or cancel. It never removes
    a lock it did not create, even a stale one: it reports the holder instead.
 2. **Never into swap.** A job starts only when its adapter's memory estimate plus
-   `headroom_gb` fits in available memory, pressure is normal, no protected service (oMLX on
+   `headroom_gb` (0 unless set) fits in available memory, pressure is not critical, no protected service (oMLX on
    port 8000, big `omlx|splash|strata` processes) holds a model, and no other render
    (`busy_process_pattern`) runs. Otherwise the job waits in `waiting_memory` with the
    reason. During a run, swap growth over `swap_growth_mb` or critical pressure stops the job
@@ -60,3 +60,13 @@ shutter/cli.py     the `shutter` command
 app/Shutter/       SwiftUI menu bar app (talks to the same HTTP API)
 docs/              ARCHITECTURE.md, API.md, WORKER_PROTOCOL.md, MODES.md, INTEGRATIONS.md
 ```
+
+## Testing the memory watchdog on a real Mac
+
+`SHUTTER_TEST_ADMIT_ANY=1` (environment, test only) makes the guard admit any request whatever its estimate, so an
+oversized request (for example Wan 2.1 1.3B at 480x832, 81 frames, `params.rung = "resident"` and a large
+`params.budget_bytes`) really runs and the watchdog has to stop it. Measured on a 16 GB M5 MacBook Pro (0.2.3): it
+freed caches when swap grew 1.1 GB during the denoise, the decode then pushed swap past +2 GB, the job was stopped,
+and because the decode is one long GPU call the engine recorded the job as stopped and exited with code 75 (the app
+restarts it). Swap went back down at once and the Mac stayed usable. Results: `shutter-ref/bench/v0.2.3/`.
+

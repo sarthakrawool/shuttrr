@@ -34,7 +34,7 @@ one kind of content lives in optional add-ons that adapters read from `params`.
 1. One heavy job at a time. One GPU worker thread; an external file lock (`GpuLock`)
    shared with other tools on the machine.
 2. Never push the Mac into swap. Before every load and every job the MemoryGuard checks
-   (a) the adapter's estimate fits in available memory minus headroom, (b) swap is not
+   (a) the adapter's estimate fits in available memory (free + reclaimable, no reserve), (b) swap is not
    growing, (c) memory pressure is normal, (d) no protected process (the user's chat model
    on oMLX, port 8000) has a model loaded. If any fails the job waits (`waiting_memory`);
    it is never started "hoping it fits". Shuttrr never unloads or changes anything in

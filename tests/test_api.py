@@ -37,7 +37,7 @@ def test_system_shape(client):
     s = client.get("/v1/system").json()
     assert set(s) >= {"version", "memory", "guard", "pool", "queue", "gpu_lock"}
     assert set(s["memory"]) >= {"total", "available", "swap_used", "pressure"}
-    assert s["guard"]["headroom_bytes"] == 8 * GB and s["guard"]["protected"] == []
+    assert s["guard"]["headroom_bytes"] == 0 and s["guard"]["protected"] == []
     assert set(s["pool"]) >= {"total_bytes", "entries"}
     assert set(s["queue"]) >= {"queued", "running", "waiting_memory", "done", "failed", "cancelled", "paused"}
     assert s["queue"]["paused"] is False
@@ -151,19 +151,19 @@ def test_bind_rules():
     check_bind("0.0.0.0", "key")
 
 
-def test_headroom_is_automatic_from_total_memory(tmp_path):
+def test_no_reserve_by_default(tmp_path):
     from shutter.core.config import auto_headroom
-    assert auto_headroom(16 * GB) == 2 * GB
-    assert auto_headroom(32 * GB) == 4 * GB
-    assert auto_headroom(64 * GB) == 8 * GB and auto_headroom(512 * GB) == 8 * GB
-    # 16 GB Mac with 4 GB free: the automatic 2 GB headroom lets a 1 GB job start
+    assert auto_headroom(16 * GB) == 0 and auto_headroom(64 * GB) == 0
+    # 16 GB Mac with 4 GB free: a 4 GB job starts, nothing is held back
     cfg = Config(home=str(tmp_path / "home"), memory_poll_s=0.01, busy_process_pattern=None)
     assert cfg.headroom_gb is None and cfg.headroom_auto
     eng = Engine(cfg, probe=FakeProbe(total=16 * GB, available=4 * GB), protected=[],
                  watch_interval_s=0, sample_interval_s=0.01)
     s = TestClient(create_app(eng)).get("/v1/system").json()
-    assert s["guard"]["headroom_bytes"] == 2 * GB and s["guard"]["headroom_auto"] is True
-    assert eng.guard.check(1 * GB, "a 1 GB job").ok
+    assert s["guard"]["headroom_bytes"] == 0 and s["guard"]["headroom_auto"] is True
+    assert s["guard"]["swap_growth_bytes"] == 1 * GB
+    assert eng.guard.check(4 * GB, "a 4 GB job").ok
+    assert not eng.guard.check(int(4.1 * GB), "a 4.1 GB job").ok
     # an explicit number still wins
     cfg2 = Config(home=str(tmp_path / "home2"), headroom_gb=3, busy_process_pattern=None)
     eng2 = Engine(cfg2, probe=FakeProbe(total=16 * GB, available=4 * GB), protected=[])

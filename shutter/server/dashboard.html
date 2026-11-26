@@ -247,8 +247,9 @@
     var p = memParts(s), pct = function (v) { return (100 * v / p.total).toFixed(2) + "%"; };
     return '<div class="sh-membar" role="img" aria-label="' + esc("Used " + gb(p.used) + ", headroom " + gb(p.head) + ", free for models " + gb(p.free)) + '">' +
       '<i class="u" style="width:' + pct(p.used) + '"></i><i class="h" style="width:' + pct(p.head) + '"></i></div>' +
-      '<div class="sh-legend"><span><i class="sh-key u"></i>Used <b>' + gb(p.used) + '</b></span><span><i class="sh-key h"></i>Reserve <b>' + gb(p.head) +
-      '</b></span><span><i class="sh-key f"></i>Free for models <b>' + gb(p.free) + '</b></span><span>Swap <b>' + gb(p.swap) + '</b></span></div>';
+      '<div class="sh-legend"><span><i class="sh-key u"></i>Used <b>' + gb(p.used) + '</b></span>' +
+      (p.headCfg ? '<span><i class="sh-key h"></i>Headroom you set <b>' + gb(p.head) + '</b></span>' : '') +
+      '<span><i class="sh-key f"></i>Free for models <b>' + gb(p.free) + '</b></span><span>Swap <b>' + gb(p.swap) + '</b></span></div>';
   }
   function banner() {
     if (offline) return bannerHtml("refresh", "Cannot reach the engine", offline + ". Start it with “shutter serve”; this window reconnects by itself.", "");
@@ -309,8 +310,8 @@
     if (j.state === "running") return (j.stage || "Starting") + (j.eta_s ? " · " + dur(j.eta_s) + " left" : "");
     if (j.state === "queued") return j.request.priority ? "Priority " + j.request.priority : "Waiting for its turn";
     if (j.state === "done") return (j.result && j.result.output) ? base(j.result.output) : "Finished";
-    var m = /needs ([\d.]+ GB) plus ([\d.]+ GB) headroom, but only ([\d.]+ GB)/.exec(j.message || "");
-    if (m) return "Needs " + m[1] + " + " + m[2] + " headroom · " + m[3] + " available";
+    var m = /needs ([\d.]+ GB), but macOS can give only ([\d.]+ GB)/.exec(j.message || "");
+    if (m) return "Needs " + m[1] + " · " + m[2] + " free right now";
     return j.message || "";
   }
   function jobTime(j) {
@@ -556,7 +557,7 @@
     } else {
       sp.textContent = "No measurement for this setting yet · " + gb(total) + " in this Mac";
     }
-    $("strip-head").innerHTML = "Reserve <b>" + gb(head) + "</b>" + (sys.guard.headroom_auto ? " (automatic)" : "");
+    $("strip-head").innerHTML = head ? "Headroom you set <b>" + gb(head) + "</b>" : "No reserve: starts when it fits";
     $("strip").setAttribute("aria-label", pk ? "Peak " + gb(pk.v) + " of " + gb(total) + ", headroom " + gb(head) : "Peak not measured, headroom " + gb(head));
   }
   function applySettings(s, animate) {
@@ -683,8 +684,8 @@
     var name = (r && r.model_name) || m.name || mid, title, body, help, btns;
     if (r && r.kind === "memory") {
       title = "Not enough memory to load " + name;
-      body = "It needs " + f(r.peak_gb) + " at its peak, plus " + f(r.headroom_gb) + " kept free for macOS. This Mac has " +
-        f(r.available_gb) + " available right now, so it is " + f(r.short_by_gb) + " short.";
+      body = "It needs " + f(r.peak_gb) + " at its peak" + (r.headroom_gb ? ", plus the " + f(r.headroom_gb) + " headroom you set" : "") +
+        ". macOS can give " + f(r.available_gb) + " right now, so it is " + f(r.short_by_gb) + " short.";
       help = r.lowest ? "Quit other apps to free memory." : "Quit other apps to free memory, or choose a lower memory setting.";
       btns = '<button class="mac-btn mac-btn--line mac-btn--sm" data-mwait="' + esc(mid) + '">Load when memory frees up</button>';
     } else {
@@ -772,8 +773,9 @@
       return '<div class="mac-stat mac-stat--plain"><span class="mac-stat__label">' + label + '</span><span class="' + (big ? "mac-stat__big" : "sh-stat__val") + '">' + val +
         '</span><span class="mac-stat__meta">' + meta + "</span></div>";
     }
-    $("mem-stats").innerHTML = stat("Free for models", gb(p.free), "Available minus headroom", true) +
-      stat("Used", gb(p.used), "of " + gb(p.total)) + stat("Reserve", gb(p.headCfg), "Kept for your other apps") + stat("Swap", gb(p.swap), "In use now");
+    $("mem-stats").innerHTML = stat("Free for models", gb(p.free), "Free + memory macOS can reclaim", true) +
+      stat("Used", gb(p.used), "of " + gb(p.total)) + stat("Swap", gb(p.swap), "In use now") +
+      stat("Watchdog", "On", "Frees caches, then stops a request before the Mac runs out");
     $("mem-bar").innerHTML = memBar(sys);
     var pr = sys.guard.protected;
     $("mem-protected").innerHTML = pr.length ? pr.map(function (x) {
@@ -789,7 +791,8 @@
     $("s-engine").innerHTML = kv("Version", esc(sys.version)) + kv("Address", '<span class="sh-mono">' + esc(location.origin) + "</span>") +
       kv("Updates", conn === "live" ? "Live (server-sent events)" : conn === "polling" ? "Polling every 3 s" : esc(conn)) +
       kv("API key", key ? "Sent with every request" : "Not needed on this Mac");
-    $("s-guard").innerHTML = kv("Headroom", gb(sys.guard.headroom_bytes) + " kept free") + kv("Swap growth limit", gb(sys.guard.swap_growth_bytes)) +
+    $("s-guard").innerHTML = kv("Admission", sys.guard.headroom_bytes ? "Fits in free memory minus the " + gb(sys.guard.headroom_bytes) + " headroom you set" : "Starts when the request fits in free memory (no reserve)") +
+      kv("Watchdog", "Frees caches when swap grows " + gb(sys.guard.swap_growth_bytes) + " or pressure is critical; stops the request if that does not help") +
       kv("Protected services", sys.guard.protected.length ? esc(sys.guard.protected.map(function (x) { return x.name; }).join(", ")) : "None");
     $("s-gpu").innerHTML = kv("State", g.held ? "Held by " + (g.ours ? "Shuttrr" : esc((g.holder && g.holder.label) || "another tool")) : "Free") +
       kv("Lock file", '<span class="sh-mono">' + esc(g.path || "–") + "</span>") +

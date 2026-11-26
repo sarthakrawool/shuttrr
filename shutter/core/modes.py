@@ -3,7 +3,7 @@
 A job runs in one of two modes:
 
 * ``fast``: lossless speed-ups, weights resident and warm. Before a job the planner takes
-  ``budget = available - headroom`` and, if the fast plan's estimated peak does not fit, steps
+  ``budget = available`` (what macOS can give now; no reserve since 0.2.3) and, if the fast plan's estimated peak does not fit, steps
   down the ladder below just far enough to fit (``fit_to_budget``). It never starts a job whose
   estimate exceeds the budget: when even the last rung does not fit, the job waits.
 * ``low_memory`` with an efficiency slider 0..1: the slider picks the highest rung whose ``at``

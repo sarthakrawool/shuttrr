@@ -427,6 +427,7 @@ class Worker:
             self._cancel.set()
         self._running_id = jid
         acquired: list[str] = []
+        prev_limit = None
         prog = {"last_sent": -1e9, "pending": None, "value": 0.0, "stage": ""}
 
         def flush_progress(force: bool = False) -> None:
@@ -514,6 +515,15 @@ class Worker:
                     getattr(mx, "reset_peak_memory", lambda: None)()
                 except Exception:
                     pass
+                # Hard cap: MLX may not grow past what macOS could give when the daemon admitted this job (plus
+                # what this worker already holds). The daemon's watchdog stops the worker if the Mac gets short.
+                try:
+                    from shutter.core.memory import admission_budget
+                    active = int(getattr(mx, "get_active_memory", lambda: 0)())
+                    cap = active + admission_budget(self.probe.sample(), self.guard.headroom_bytes)
+                    prev_limit = mx.set_memory_limit(int(cap))
+                except Exception:
+                    prev_limit = None
 
             job.request = _prepared(adapter, request)
             ctx = RunContext(
@@ -549,6 +559,11 @@ class Worker:
             self.send({"ev": "failed", "id": jid, "error": _error_text(e), "cancelled": False})
         finally:
             self._running_id = None
+            if prev_limit is not None:
+                try:
+                    _mlx().set_memory_limit(int(prev_limit))
+                except Exception:
+                    pass
             self._pool_quiet += 1
             try:
                 for k in acquired:

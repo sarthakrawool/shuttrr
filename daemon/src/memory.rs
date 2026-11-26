@@ -43,7 +43,7 @@ pub trait Probe: Send + Sync {
 
 /// Parse `vm_stat` output into bytes. Keys: free, active, inactive, speculative,
 /// throttled, wired, purgeable, compressed, ..., `page_size` and `available`
-/// (= free + inactive + purgeable + speculative). The page size in vm_stat's header wins.
+/// (= free + inactive + purgeable + speculative + active file-backed pages). The page size in vm_stat's header wins.
 pub fn parse_vm_stat(text: &str, page_size: Option<u64>) -> HashMap<String, u64> {
     let mut ps = page_size.unwrap_or(0);
     if let Some(i) = text.find("page size of ") {
@@ -80,7 +80,11 @@ pub fn parse_vm_stat(text: &str, page_size: Option<u64>) -> HashMap<String, u64>
             out.insert(key.to_string(), n.saturating_mul(ps));
         }
     }
-    let avail = ["free", "inactive", "purgeable", "speculative"]
+    // Active file-backed pages are clean copies of files that macOS drops without swapping. vm_stat does not split
+    // the inactive list, so file_backed - inactive (never below 0) is a lower bound: nothing is counted twice.
+    let file = out.get("file_backed").copied().unwrap_or(0).saturating_sub(out.get("inactive").copied().unwrap_or(0));
+    out.insert("reclaimable_file".into(), file);
+    let avail = ["free", "inactive", "purgeable", "speculative", "reclaimable_file"]
         .iter()
         .map(|k| out.get(*k).copied().unwrap_or(0))
         .sum();
@@ -608,11 +612,126 @@ pub struct Decision {
     pub sample: Option<MemorySample>,
 }
 
-/// Automatic headroom: an eighth of this Mac's memory, at least 2 GB and at most 8 GB
-/// (16 GB Mac: 2 GB, 64 GB and up: 8 GB).
-pub fn auto_headroom(total: u64) -> u64 {
-    let gb = 1u64 << 30;
-    (total / 8).clamp(2 * gb, 8 * gb)
+/// Since 0.2.3 there is no automatic reserve: a job may use all the memory macOS can give it
+/// right now, and the `Watchdog` protects the Mac while it runs. Kept for callers of the old name.
+pub fn auto_headroom(_total: u64) -> u64 {
+    0
+}
+
+/// What the user reads when the watchdog stops a job: PROTECT_PREFIX (engine.rs) + STOP_BODY + (detail).
+pub const STOP_BODY: &str = "it was running out of memory. Close other apps or pick a smaller size.";
+
+/// What the watchdog wants done after a sample.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatchAction {
+    /// Nothing to do.
+    Calm,
+    /// First sign of trouble: free caches and idle models (a step down).
+    Relieve(String),
+    /// Trouble did not ease (or swap jumped past the hard limit): stop the job.
+    Stop(String),
+}
+
+/// Live protection while a job runs (port of `shutter/core/memory.py` Watchdog). Trouble =
+/// critical memory pressure, or swap grew by more than `swap_soft` ("warn" pressure never acts).
+/// First trouble: Relieve. `grace_s` later: Stop only if pressure is still critical or swap grew by
+/// another `swap_soft / 2` since the relief (swap that grew once and holds steady is fine).
+/// Swap grown past `swap_hard` since the start: Stop at once.
+#[derive(Debug, Clone)]
+pub struct Watchdog {
+    pub swap_soft: u64,
+    pub swap_hard: u64,
+    pub grace_s: f64,
+    pub swap_baseline: u64,
+    pub relieved_at: Option<f64>,
+    pub relieved_swap: u64,
+    pub calm_swap: Option<u64>,
+    pub stopped: Option<String>,
+    pub max_pressure: String,
+    pub max_swap_growth: u64,
+}
+
+impl Watchdog {
+    pub fn new(swap_soft: u64, grace_s: f64, start: &MemorySample) -> Watchdog {
+        Watchdog {
+            swap_soft,
+            swap_hard: swap_soft.saturating_add(1 << 30),
+            grace_s,
+            swap_baseline: start.swap_used,
+            relieved_at: None,
+            relieved_swap: 0,
+            calm_swap: None,
+            stopped: None,
+            max_pressure: start.pressure.clone(),
+            max_swap_growth: 0,
+        }
+    }
+
+    pub fn trouble(&self, s: &MemorySample) -> Option<String> {
+        let base = self.calm_swap.map_or(self.swap_baseline, |c| c.max(self.swap_baseline));
+        let grown = s.swap_used.saturating_sub(base);
+        if s.pressure == PRESSURE_CRITICAL {
+            return Some("macOS reports critical memory pressure".into());
+        }
+        if grown > self.swap_soft {
+            return Some(format!("swap grew by {}", fmt_gb(grown as f64)));
+        }
+        None
+    }
+
+    pub fn step(&mut self, s: &MemorySample, now_s: f64) -> WatchAction {
+        let grown = s.swap_used.saturating_sub(self.swap_baseline);
+        self.max_swap_growth = self.max_swap_growth.max(grown);
+        let rank = |p: &str| match p {
+            PRESSURE_CRITICAL => 2,
+            PRESSURE_WARN => 1,
+            _ => 0,
+        };
+        if rank(&s.pressure) > rank(&self.max_pressure) {
+            self.max_pressure = s.pressure.clone();
+        }
+        if let Some(r) = &self.stopped {
+            return WatchAction::Stop(r.clone());
+        }
+        if grown > self.swap_hard {
+            let r = format!(
+                "swap grew by {} since the request started (limit {})",
+                fmt_gb(grown as f64),
+                fmt_gb(self.swap_hard as f64)
+            );
+            self.stopped = Some(r.clone());
+            return WatchAction::Stop(r);
+        }
+        if let Some(t) = self.relieved_at {
+            if now_s - t < self.grace_s {
+                return WatchAction::Calm;
+            }
+            let mut worse = Vec::new();
+            if s.pressure == PRESSURE_CRITICAL {
+                worse.push("memory pressure is still critical".to_string());
+            }
+            let more = s.swap_used.saturating_sub(self.relieved_swap);
+            if more > self.swap_soft / 2 {
+                worse.push(format!("swap kept growing (another {})", fmt_gb(more as f64)));
+            }
+            if !worse.is_empty() {
+                let r = format!("{} {:.0} s after freeing caches", worse.join(" and "), self.grace_s);
+                self.stopped = Some(r.clone());
+                return WatchAction::Stop(r);
+            }
+            self.relieved_at = None;
+            self.calm_swap = Some(s.swap_used);
+            return WatchAction::Calm;
+        }
+        match self.trouble(s) {
+            None => WatchAction::Calm,
+            Some(why) => {
+                self.relieved_at = Some(now_s);
+                self.relieved_swap = s.swap_used;
+                WatchAction::Relieve(format!("{why}; freeing caches"))
+            }
+        }
+    }
 }
 
 pub struct MemoryGuard {
@@ -653,7 +772,8 @@ impl MemoryGuard {
     }
 
     /// Admission. Refuses when (in this order): a protected service is busy; pressure is
-    /// not normal; `max_fraction` is exceeded; need + headroom > available.
+    /// critical ("warn" is fine); `max_fraction` is exceeded; need > available - headroom, where
+    /// available = free + inactive + purgeable + speculative + active file cache, and headroom is 0 unless set.
     pub fn check(&self, need: u64, what: &str) -> Decision {
         let label = if what.is_empty() { "this job" } else { what };
         let s = match self.probe.sample() {
@@ -670,13 +790,10 @@ impl MemoryGuard {
         if let Some(r) = self.protected_reason() {
             return done(false, r);
         }
-        if s.pressure != PRESSURE_NORMAL {
+        if s.pressure == PRESSURE_CRITICAL {
             return done(
                 false,
-                format!(
-                    "macOS reports {} memory pressure; waiting until it is back to normal before starting {label}.",
-                    s.pressure
-                ),
+                format!("macOS reports critical memory pressure; waiting until it eases before starting {label}."),
             );
         }
         let need_f = need as f64;
@@ -697,44 +814,19 @@ impl MemoryGuard {
                 );
             }
         }
-        if need.saturating_add(head) > s.available {
+        let budget = s.available.saturating_sub(head);
+        let extra = if head > 0 { format!(" (after the {} headroom you set)", fmt_gb(head as f64)) } else { String::new() };
+        if need > budget {
             return done(
                 false,
                 format!(
-                    "Not enough free memory for {label}: it needs {} plus {} headroom, but only {} is available.",
+                    "Not enough free memory for {label}: it needs {}, but macOS can give only {} right now{extra}.",
                     fmt_gb(need_f),
-                    fmt_gb(head as f64),
-                    fmt_gb(s.available as f64)
+                    fmt_gb(budget as f64)
                 ),
             );
         }
-        done(
-            true,
-            format!(
-                "{} available covers {} plus {} headroom for {label}.",
-                fmt_gb(s.available as f64),
-                fmt_gb(need_f),
-                fmt_gb(head as f64)
-            ),
-        )
-    }
-
-    /// Watchdog decision for a running job, from a fresh sample and the swap baseline.
-    pub fn watch_decision(&self, s: &MemorySample, swap_baseline: u64) -> Option<String> {
-        if s.pressure == PRESSURE_CRITICAL {
-            return Some(
-                "macOS reports critical memory pressure; stopping the run to keep the Mac responsive.".into(),
-            );
-        }
-        let grown = s.swap_used as i128 - swap_baseline as i128;
-        if grown > self.swap_growth_bytes as i128 {
-            return Some(format!(
-                "Swap grew by {} since the run started (limit {}); stopping to keep the Mac out of swap.",
-                fmt_gb(grown as f64),
-                fmt_gb(self.swap_growth_bytes as f64)
-            ));
-        }
-        None
+        done(true, format!("{} free right now{extra} covers {} for {label}.", fmt_gb(budget as f64), fmt_gb(need_f)))
     }
 
     /// Protected services with their current status (for /v1/system).
@@ -788,6 +880,9 @@ Swapouts:                                     0.
         assert_eq!(v["wired"], 150000 * 16384);
         assert_eq!(v["available"], (12345 + 300000 + 2000 + 5000) * 16384);
         // header missing: the given page size is used
+        let v = parse_vm_stat("Pages inactive: 3.\nFile-backed pages: 5.\n", Some(16384));
+        assert_eq!(v["reclaimable_file"], 2 * 16384);
+        assert_eq!(v["available"], 5 * 16384, "inactive + active file pages, counted once");
         let v = parse_vm_stat("Pages free: 10.\n", Some(16384));
         assert_eq!(v["available"], 10 * 16384);
         let v = parse_vm_stat("garbage", None);
@@ -823,19 +918,56 @@ Swapouts:                                     0.
     }
 
     #[test]
-    fn automatic_headroom() {
-        assert_eq!(auto_headroom(16 * GB), 2 * GB);
-        assert_eq!(auto_headroom(8 * GB), 2 * GB);
-        assert_eq!(auto_headroom(32 * GB), 4 * GB);
-        assert_eq!(auto_headroom(64 * GB), 8 * GB);
-        assert_eq!(auto_headroom(512 * GB), 8 * GB);
-        let mut g = guard(FakeProbe::new(16.0, 4.0), vec![]);
+    fn no_reserve_by_default() {
+        assert_eq!(auto_headroom(16 * GB), 0);
+        assert_eq!(auto_headroom(512 * GB), 0);
+        // the user's example: 24 GB Mac, 17 GB reclaimable, a model that peaks at 12 GB starts
+        let mut g = guard(FakeProbe::new(24.0, 17.0), vec![]);
         g.headroom_auto = true;
-        let d = g.check(GB, "a 1 GB job");
-        assert!(d.ok, "a 1 GB job fits on a 16 GB Mac with 4 GB free: {}", d.reason);
-        assert!(d.reason.contains("plus 2.0 GB headroom"), "{}", d.reason);
+        let d = g.check(12 * GB, "a 12 GB model");
+        assert!(d.ok, "{}", d.reason);
+        assert_eq!(d.reason, "17.0 GB free right now covers 12.0 GB for a 12 GB model.");
+        assert!(!g.check(18 * GB, "x").ok);
+        // 16 GB Mac with 6.5 GB free: a 6.4 GB peak starts
+        let mut g = guard(FakeProbe::new(16.0, 6.5), vec![]);
+        g.headroom_auto = true;
+        assert!(g.check((6.4 * GB as f64) as u64, "Wan 1.3B").ok);
+        // a headroom the user set still counts
         g.headroom_auto = false;
-        assert!(!g.check(GB, "a 1 GB job").ok, "a fixed 8 GB headroom refuses it");
+        assert!(!g.check(GB, "a 1 GB job").ok, "the 8 GB headroom set in the test guard refuses it");
+    }
+
+    #[test]
+    fn watchdog_relieves_then_stops() {
+        let start = FakeProbe::new(16.0, 6.0).sample().unwrap();
+        let mut w = Watchdog::new(GB, 10.0, &start);
+        let mut s = start.clone();
+        s.pressure = "warn".into();
+        assert_eq!(w.step(&s, 0.0), WatchAction::Calm, "warn never acts");
+        s.swap_used = start.swap_used + GB + GB / 5;
+        assert!(matches!(w.step(&s, 1.0), WatchAction::Relieve(r) if r.contains("swap grew by 1.2 GB")));
+        assert_eq!(w.step(&s, 5.0), WatchAction::Calm, "inside the grace window");
+        let held = s.clone();
+        s.swap_used += GB * 6 / 10;
+        assert!(matches!(w.step(&s, 11.5), WatchAction::Stop(r) if r.contains("swap kept growing")));
+        // swap that grew once and then holds steady does not stop the job
+        let mut w = Watchdog::new(GB, 10.0, &start);
+        assert!(matches!(w.step(&held, 1.0), WatchAction::Relieve(_)));
+        assert_eq!(w.step(&held, 12.0), WatchAction::Calm);
+        assert_eq!(w.step(&held, 60.0), WatchAction::Calm);
+        // a relief that works resets
+        let mut w = Watchdog::new(GB, 10.0, &start);
+        let mut s = start.clone();
+        s.pressure = "critical".into();
+        assert!(matches!(w.step(&s, 0.0), WatchAction::Relieve(_)));
+        s.pressure = "normal".into();
+        assert_eq!(w.step(&s, 20.0), WatchAction::Calm);
+        assert_eq!(w.max_pressure, "critical");
+        // a jump past the hard limit stops at once
+        let mut w = Watchdog::new(GB, 10.0, &start);
+        let mut s = start.clone();
+        s.swap_used = start.swap_used + 3 * GB;
+        assert!(matches!(w.step(&s, 0.0), WatchAction::Stop(r) if r.contains("limit 2.0 GB")));
     }
 
     #[test]
@@ -843,19 +975,22 @@ Swapouts:                                     0.
         let g = guard(FakeProbe::new(64.0, 48.0), vec![]);
         let d = g.check(10 * GB, "job a (dummy)");
         assert!(d.ok, "{}", d.reason);
-        assert_eq!(d.reason, "48.0 GB available covers 10.0 GB plus 8.0 GB headroom for job a (dummy).");
+        assert_eq!(d.reason, "40.0 GB free right now (after the 8.0 GB headroom you set) covers 10.0 GB for job a (dummy).");
         let d = g.check(41 * GB, "");
         assert!(!d.ok);
         assert_eq!(
             d.reason,
-            "Not enough free memory for this job: it needs 41.0 GB plus 8.0 GB headroom, but only 48.0 GB is available."
+            "Not enough free memory for this job: it needs 41.0 GB, but macOS can give only 40.0 GB right now (after the 8.0 GB headroom you set)."
         );
         let p = FakeProbe::new(64.0, 48.0);
         p.set(|s| s.pressure = "warn".into());
+        assert!(guard(p, vec![]).check(1, "job x").ok, "warn pressure admits");
+        let p = FakeProbe::new(64.0, 48.0);
+        p.set(|s| s.pressure = "critical".into());
         let g = guard(p, vec![]);
         assert_eq!(
             g.check(1, "job x").reason,
-            "macOS reports warn memory pressure; waiting until it is back to normal before starting job x."
+            "macOS reports critical memory pressure; waiting until it eases before starting job x."
         );
         let mut g = guard(FakeProbe::new(64.0, 48.0), vec![]);
         g.max_fraction = Some(0.5);
@@ -879,21 +1014,6 @@ Swapouts:                                     0.
         let g = guard(p, vec![]);
         let d = g.check(1, "");
         assert!(!d.ok && d.reason.contains("vm_stat failed"));
-    }
-
-    #[test]
-    fn watch() {
-        let g = guard(FakeProbe::new(64.0, 48.0), vec![]);
-        let mut s = g.sample().unwrap();
-        assert!(g.watch_decision(&s, 0).is_none());
-        s.swap_used = GB;
-        assert_eq!(
-            g.watch_decision(&s, 0).unwrap(),
-            "Swap grew by 1.0 GB since the run started (limit 0.2 GB); stopping to keep the Mac out of swap."
-        );
-        assert!(g.watch_decision(&s, GB).is_none());
-        s.pressure = "critical".into();
-        assert!(g.watch_decision(&s, GB).unwrap().contains("critical memory pressure"));
     }
 
     fn fetcher(map: Vec<(&'static str, u16, &'static str)>) -> Fetcher {

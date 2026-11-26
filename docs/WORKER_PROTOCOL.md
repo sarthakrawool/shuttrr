@@ -22,7 +22,7 @@ watchdog can stop a job the instant swap starts to grow.
 - Exactly one worker process at a time, started lazily on the first job, command from
   config (`worker_cmd`, default `["python3", "-m", "shutter.worker"]`).
 - Admission before `run`: busy-render process check, memory guard on the worker's
-  estimate (protected services, pressure, need + headroom <= available), flock GPU lock,
+  estimate (protected services, critical pressure, need <= available; no reserve unless `headroom_gb` is set), flock GPU lock,
   mkdir dir locks. Otherwise the job is `waiting_memory` with a plain-language reason.
 - Watchdog while a job runs (every 2 s): if swap grew more than `swap_growth_mb` since
   the job started, or pressure is critical: SIGKILL the worker's process group, fail the

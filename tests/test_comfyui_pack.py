@@ -165,7 +165,7 @@ def test_client_basics(live):
         c.submit({"model": "nope"})
     assert e.value.status == 404 or e.value.status == 400
     assert c.cancel("doesnotexist") is None
-    assert {r["client"] for r in eng.clients.list()["clients"]} >= {"comfyui-shutter/0.2.2"}
+    assert {r["client"] for r in eng.clients.list()["clients"]} >= {"comfyui-shutter/0.2.3"}
     with pytest.raises(ShutterError) as e:
         ShutterClient("http://127.0.0.1:1", timeout=1).models()
     assert e.value.status == 0 and "cannot reach" in str(e.value)
@@ -187,7 +187,7 @@ def test_generate_image(live, tmp_path):
     ps = [p for p, _, _ in seen]
     assert ps == sorted(ps) and ps[-1] == 1.0 and len(ps) >= 2
     assert any(n == 4 for _, _, n in seen)        # step counters parsed from "denoise k/4"
-    assert eng.get(res.job["id"]).client == "comfyui-shutter/0.2.2"
+    assert eng.get(res.job["id"]).client == "comfyui-shutter/0.2.3"
 
 
 def test_image_input_goes_through_files(live, tmp_path):
@@ -259,7 +259,7 @@ def test_task_cancellation_cancels_the_job(live, tmp_path):
 def test_short_memory_frees_host_models_and_release(live, tmp_path):
     c, eng = live
     freed = []
-    eng.probe.set(available=8 * GB + GB // 4)      # reserve is 8 GB: a quarter GB left, dummy needs ~1 GB
+    eng.probe.set(available=GB // 4)               # a quarter GB free, dummy needs ~1 GB
     try:
         assert c.memory("dummy-image")["model"]["fits"] is False
         res = run(runner.generate(c, {"model": "dummy-image", "prompt": "x", "params": FAST},
@@ -271,7 +271,7 @@ def test_short_memory_frees_host_models_and_release(live, tmp_path):
     assert freed == [1] and res.freed_host_models is True and res.memory["fits"] is False
     assert c.memory()["components"] == []        # keep_loaded=False released the pool
     # free_host_models=False never calls the hook
-    eng.probe.set(available=8 * GB + GB // 4)
+    eng.probe.set(available=GB // 4)
     try:
         freed.clear()
         with pytest.raises(Exception):
@@ -439,7 +439,7 @@ def test_nodes_with_stub_comfy_api(live, stub_nodes, monkeypatch):
     assert np.asarray(img).shape == (1, 32, 32, 3) and video is None and audio is None
     assert calls["bar"] == (nodes.PROGRESS_TOTAL, "7") and calls["progress"][-1] == nodes.PROGRESS_TOTAL
     # short memory: the node unloads ComfyUI's models in process
-    eng.probe.set(available=8 * GB + GB // 4)
+    eng.probe.set(available=GB // 4)
     try:
         monkeypatch.setattr(sys.modules["comfy.model_management"], "soft_empty_cache",
                             lambda: (calls.__setitem__("empty", calls["empty"] + 1),

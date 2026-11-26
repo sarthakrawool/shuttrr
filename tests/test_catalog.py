@@ -129,6 +129,30 @@ def test_download_verifies_checksums(cfg, tmp_path):
     assert done["verified"] == "sha256"
 
 
+def test_download_of_a_model_already_there_fetches_nothing(cfg, tmp_path):
+    ref = tmp_path / "ref"
+    fake_fetch(None, ref)
+    files = _listing(ref)
+    first = cat.download(MID, cfg, fetch=fake_fetch, files_of=lambda r: files, poll_s=0.01)
+    assert not first.get("already")
+    calls = []
+
+    def must_not_fetch(repo, dest):
+        calls.append(repo)
+        raise AssertionError("fetched a model that is already downloaded")
+    again = cat.download(MID, cfg, fetch=must_not_fetch, files_of=lambda r: files, poll_s=0.01)
+    assert again["state"] == "done" and again["already"] and calls == []
+    assert "Already downloaded" in again["verified_detail"]
+    assert MID in Config.load(cfg.path).models
+    # a file cut short (a stopped download) is fetched again, only through the resume path
+    dest = cat.models_home(cfg) / cat.CATALOG[MID]["folder"]
+    big = max(files, key=lambda f: f["size"] or 0)
+    (dest / big["path"]).write_bytes((dest / big["path"]).read_bytes()[:-1])
+    assert not cat.already_downloaded(dest, cat.CATALOG[MID], files)
+    resumed = cat.download(MID, cfg, fetch=fake_fetch, files_of=lambda r: files, poll_s=0.01)
+    assert not resumed.get("already") and resumed["verified"] == "sha256"
+
+
 def test_download_with_a_bad_file_fails_and_removes_it(cfg, tmp_path):
     ref = tmp_path / "ref"
     fake_fetch(None, ref)
@@ -325,15 +349,22 @@ def test_doctor_skips_wan_until_installed(cfg):
     assert f"shutter download {STARTER}" in wan[0]["detail"]
 
 
+@pytest.fixture(autouse=True)
+def _fixed_macos_baseline(monkeypatch):
+    monkeypatch.setattr(cat, "macos_baseline", lambda total: cat.MACOS_BASELINE)
+
+
 def test_fit_classifier_on_16_gb():
     # Wan 1.3B: measured 6.2 GB at 320x512 x 33 on a 16 GB M5 -> recommended
     f = cat.classify_fit(STARTER, 16 * GB)
     assert f["level"] == "recommended" and f["label"] == "Recommended" and f["measured"]
     assert f["at"] == "320x512, 33 frames" and f["reason"] == "Runs at full speed on this Mac."
-    # LongCat: lowest measured step is 12.3 GB, over 70% of 16 GB -> no fit, never "fits in Low memory"
+    # LongCat: lowest measured step is 12.3 GB, inside 16 GB - 3 GB for macOS -> fits, but barely (tight)
     lc = cat.classify_fit(MID, 16 * GB)
-    assert lc["level"] == "no_fit" and lc["label"] == "Doesn't fit"
-    assert lc["reason"] == "Needs about 24 GB. This Mac has 16 GB."
+    assert lc["level"] == "barely" and lc["label"] == "Fits but barely" and lc["reason"] == cat.TIGHT
+    assert lc["usable_bytes"] == 13 * GB
+    # the user's example: a model that peaks at 12 GB on a 24 GB Mac is never "doesn't fit"
+    assert cat.classify_fit(MID, 24 * GB)["level"] in ("barely", "recommended")
     # estimates are never recommended; the 14B models do not fit
     assert cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["level"] != "recommended"
     assert "Not tested on a Mac this size yet" in cat.classify_fit("wan2.2-ti2v-5b", 16 * GB)["reason"]
@@ -349,21 +380,24 @@ def test_fit_classifier_on_16_gb():
 
 def test_fit_classifier_table_by_mac_size():
     level = lambda m, g: cat.classify_fit(m, g * GB)["level"]
-    # LongCat: full speed (31.5 / 34.5 GB) is under half only on the big Macs; 24-64 GB only in a lower step
-    assert [level(MID, g) for g in (16, 24, 32, 64, 128)] == ["no_fit", "barely", "barely", "barely", "recommended"]
-    assert cat.classify_fit(MID, 24 * GB)["reason"].startswith("Tight on this Mac.")
-    assert "lower memory step" in cat.classify_fit(MID, 64 * GB)["reason"]
+    # LongCat: full speed (31.5 / 34.5 GB) plus 4 GB for apps fits from 64 GB; below only in a lower step
+    assert [level(MID, g) for g in (16, 24, 32, 64, 128)] == ["barely", "barely", "barely", "recommended", "recommended"]
+    assert cat.classify_fit(MID, 16 * GB)["reason"].startswith("Tight on this Mac.")
+    assert "lower memory step" in cat.classify_fit(MID, 24 * GB)["reason"]
     # Wan 1.3B is only measured at the small-Mac size: bigger Macs default to 480x832 x 81, an estimate
     assert [level(STARTER, g) for g in (16, 24, 32, 64, 128)] == ["recommended"] + ["barely"] * 4
     for m in cat.CATALOG:
         for g in (16, 24, 32, 64, 128):
             f = cat.classify_fit(m, g * GB)
+            usable = g * GB - cat.MACOS_BASELINE
             if f["level"] == "recommended":
-                assert f["measured"] and f["peak_bytes"] <= cat.RECOMMENDED_SHARE * g * GB
+                assert f["measured"] and f["peak_bytes"] + cat.EVERYDAY_APPS <= usable
             if f["level"] == "barely":
-                assert f["peak_bytes"] <= cat.BARELY_SHARE * g * GB
+                assert f["peak_bytes"] <= usable
+            if f["level"] == "no_fit":
+                assert f["peak_bytes"] > usable or g * GB < cat.CATALOG[m]["min_memory_gb"] * GB
             assert "low memory" not in f["reason"].lower().replace("lower memory", "")
-    assert level("wan2.2-t2v-a14b", 32) == "no_fit" and level("wan2.2-t2v-a14b", 64) == "barely"
+    assert level("wan2.2-t2v-a14b", 24) == "no_fit" and level("wan2.2-t2v-a14b", 64) == "barely"
 
 
 def test_catalog_rows_are_grouped_by_fit(cfg, monkeypatch):
@@ -373,7 +407,8 @@ def test_catalog_rows_are_grouped_by_fit(cfg, monkeypatch):
     levels = [order[r["fit"]["level"]] for r in rows]
     assert levels == sorted(levels) and rows[0]["id"] == STARTER and rows[0]["recommended"]
     by = {r["id"]: r for r in rows}
-    assert by[MID]["fit"]["level"] == "no_fit" and not by[MID]["fits_this_mac"]
+    assert by[MID]["fit"]["level"] == "barely" and by[MID]["fits_this_mac"]
+    assert by["wan2.2-t2v-a14b"]["fit"]["level"] == "no_fit" and not by["wan2.2-t2v-a14b"]["fits_this_mac"]
     assert by[STARTER]["makes"] == "Makes 320x512 clips on this Mac"
 
 

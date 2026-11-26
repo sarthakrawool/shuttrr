@@ -31,7 +31,7 @@ stops an engine it did not start.
 | `EngineProcess.swift` | Starts/stops the daemon as a child `Process` via a login shell; output goes to `~/Library/Logs/Shutter/engine.log`, and the last 200 lines are kept. |
 | `Formatting.swift` | Bytes as GB (one decimal), durations, percentages. |
 | `Views/MenuPanelView.swift` | The menu bar panel: memory gauge, protected-service line, current job, queue counts, buttons. |
-| `Views/MemoryGaugeView.swift` | Used vs total memory bar with the headroom line. |
+| `Views/MemoryGaugeView.swift` | Used vs total memory bar (a headroom line only when the user set one). |
 | `Views/CurrentJobView.swift` | Running job: progress, stage, ETA; or why it waits for memory. |
 | `Views/StateStyle.swift` | State colours/symbols (accent = running, orange = waiting for memory, red = failed). |
 | `Views/DashboardView.swift` | Main window with sidebar: Queue, Models, Memory, Settings. |

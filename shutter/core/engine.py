@@ -6,9 +6,13 @@ running, and it holds both the flock `GpuLock` and the shared `mkdir` lock dirs.
 the job waits in `waiting_memory` with a human reason and is re-checked every
 `memory_poll_s`; a newer higher-priority job may overtake it.
 
-While a job runs, `ctx.check_cancelled()` also polls `guard.watch()`; when swap grows or
-pressure turns critical the job is stopped "to protect the Mac" and every model is
-released. Exceptions never kill the worker.
+While a job runs, MLX is capped at what was free when the job was admitted, and a watchdog
+thread reads memory every second: at the first sign of trouble (critical pressure, or swap
+growing by 1 GB) it frees caches and idle models; if that does not help it stops the job
+"to protect the Mac" at the next step and releases every model. If the job does not reach a
+step within `EMERGENCY_S` (10 s) while the Mac is still in trouble, the engine records the job as
+stopped and exits with code 75 (the app restarts it): the OS frees the memory at once.
+Exceptions never kill the worker.
 """
 
 from __future__ import annotations
@@ -27,7 +31,8 @@ from shutter.core.cache import ContentCache
 from shutter.core.config import Config
 from shutter.core.dirlock import DirLocks
 from shutter.core.memory import (
-    GpuLock, MemoryGuard, OmlxService, ProcessRssService, default_probe, parse_ps,
+    ACTION_RELIEVE, ACTION_STOP, PROTECT_PREFIX, STOP_BODY, STOP_MESSAGE, GpuLock, MemoryGuard, OmlxService, ProcessRssService,
+    admission_budget, default_probe, parse_ps,
 )
 from shutter.core import memory as _memory
 from shutter.core.pool import ModelPool
@@ -41,7 +46,31 @@ from shutter.types import (
 
 __all__ = ["Engine", "SubmitError", "UnloadRefused", "LoadRefused", "version", "is_load", "model_name"]
 
-PROTECT_PREFIX = "stopped to protect the Mac: "
+EMERGENCY_S = 10.0          # stop asked, no step boundary reached, Mac still in trouble: exit the engine
+EMERGENCY_EXIT_CODE = 75    # the app restarts an engine that exits with this code
+
+
+def _mlx() -> Any:
+    try:
+        import mlx.core as mx  # noqa: PLC0415
+        return mx
+    except Exception:
+        return None
+
+
+def _mlx_active() -> int:
+    mx = _mlx()
+    if mx is None:
+        return 0
+    for fn in ("get_active_memory", "metal.get_active_memory"):
+        try:
+            obj = mx
+            for part in fn.split("."):
+                obj = getattr(obj, part)
+            return int(obj())
+        except Exception:
+            continue
+    return 0
 RENDER_BUSY_MESSAGE = "another render is running"
 MAX_MIDRUN_REFUSALS = 3
 
@@ -113,6 +142,13 @@ def _rung_of(adapter: Any, request: JobRequest) -> Optional[str]:
 
 class _Shutdown(Cancelled):
     pass
+
+
+def _is_oom(e: BaseException) -> bool:
+    """An allocation failure from MLX/Metal (it raises when the memory limit is hit and nothing can be freed)."""
+    t = f"{type(e).__name__}: {e}".lower()
+    return isinstance(e, MemoryError) or any(k in t for k in (
+        "out of memory", "insufficient memory", "memory limit", "failed to allocate", "kiogpucommandbuffercallbackerroroutofmemory"))
 
 
 def _prepare(adapter: Any, request: JobRequest) -> JobRequest:
@@ -248,6 +284,8 @@ class Engine:
         ps: Optional[Callable[[], str]] = None,
         sample_interval_s: float = 5.0,
         watch_interval_s: float = 3.0,
+        watchdog_interval_s: float = 1.0,
+        emergency_s: float = EMERGENCY_S,
         idle_check_s: float = 30.0,
         progress_persist_s: float = 1.0,
     ):
@@ -266,6 +304,8 @@ class Engine:
         self._ps = ps or _memory._ps
         self.sample_interval_s = sample_interval_s
         self.watch_interval_s = watch_interval_s
+        self.watchdog_interval_s = watchdog_interval_s
+        self.emergency_s = emergency_s
         self.idle_check_s = idle_check_s
         self.progress_persist_s = progress_persist_s
 
@@ -517,6 +557,7 @@ class Engine:
         info = {"kind": "memory" if memory else "busy", "model": req.model, "model_name": name,
                 "peak_gb": round(int(est.peak) / GB, 1), "need_gb": round(need / GB, 1),
                 "headroom_gb": round(head / GB, 1), "available_gb": round(avail / GB, 1),
+                "free_gb": round(admission_budget(d.sample, head) / GB, 1),
                 "short_by_gb": round(max(0, need + head - avail) / GB, 1),
                 "rung": rung, "lowest": rung == "stream_tight", "reason": d.reason}
         raise LoadRefused(d.reason, info)
@@ -1020,7 +1061,42 @@ class Engine:
                 self._publish("job.progress", job, progress=p, stage=job.stage,
                               eta_s=round(eta, 1) if eta is not None else None)
 
+        wd = {"relieve": False, "stop_at": None, "lock": threading.Lock(), "events": []}
+
+        def relieve_now() -> None:
+            """Step down without stopping: free MLX's cache and every idle model this job does not use."""
+            mx = _mlx()
+            try:
+                if mx is not None:
+                    mx.clear_cache()
+            except Exception:
+                pass
+            try:  # only models this job does not use: dropping its own would make it load them again
+                keys, prefix = self._needed_keys(adapter, req)
+                self._free_unneeded(keys, prefix)
+            except Exception:
+                pass
+
+        def watch_once() -> None:
+            with wd["lock"]:
+                action, why = self.guard.watch_step()
+            if action == ACTION_RELIEVE and not wd["relieve"]:
+                wd["relieve"] = True
+                wd["events"].append({"t": round(self.clock() - t_start, 1), "action": "relieve", "why": why})
+                self._publish("job.memory", job, action="relieve", reason=why)
+            elif action == ACTION_STOP and not self._abort_reason:
+                self._abort_reason = f"{STOP_BODY} ({why})"
+                wd["stop_at"] = self.clock()
+                wd["events"].append({"t": round(self.clock() - t_start, 1), "action": "stop", "why": why})
+                self._publish("job.memory", job, action="stop", reason=why)
+                self._cancel.set()
+
         def check_cancelled() -> None:
+            if wd["relieve"]:
+                wd["relieve"] = False
+                relieve_now()
+            if self._abort_reason:
+                raise Cancelled(self._abort_reason)
             if self._cancel.is_set():
                 if self._stopping.is_set():
                     raise _Shutdown("engine is shutting down")
@@ -1028,10 +1104,55 @@ class Engine:
             now = self.clock()
             if now - state["watch"] >= self.watch_interval_s:
                 state["watch"] = now
-                r = self.guard.watch()
-                if r:
-                    self._abort_reason = r
-                    raise Cancelled(r)
+                watch_once()
+                if self._abort_reason:
+                    raise Cancelled(self._abort_reason)
+
+        def emergency_exit() -> None:  # pragma: no cover - ends the process
+            msg = PROTECT_PREFIX + (self._abort_reason or STOP_BODY) + " The engine restarted to free the memory."
+            try:
+                with self._lock:
+                    job.state = JobState.FAILED
+                    job.message = msg
+                    job.finished_at = time.time()
+                    job.result = {"watchdog": wd["events"]}
+                    self.store.update(job)
+            except Exception:
+                pass
+            try:
+                self.dir_locks.release()
+            except Exception:
+                pass
+            import sys as _sys
+            print(f"shutter: {msg}", file=_sys.stderr, flush=True)
+            os._exit(EMERGENCY_EXIT_CODE)
+
+        stop_watch = threading.Event()
+
+        def watchdog_thread() -> None:
+            while not stop_watch.wait(self.watchdog_interval_s):
+                try:
+                    watch_once()
+                    if wd["stop_at"] is not None and self.clock() - wd["stop_at"] >= self.emergency_s:
+                        trouble = self.guard.watchdog.trouble(self.probe.sample())
+                        if trouble and not stop_watch.is_set():
+                            emergency_exit()
+                except Exception:
+                    pass
+
+        watch_t = threading.Thread(target=watchdog_thread, name="shutter-watchdog", daemon=True)
+        watch_t.start()
+
+        # Hard cap: MLX may not grow past what was free when this job was admitted (plus what it already holds).
+        mx = _mlx() if not getattr(adapter, "family", "") == "dummy" else None
+        prev_limit = None
+        cap_bytes = None
+        if mx is not None and hasattr(mx, "set_memory_limit"):
+            try:
+                cap_bytes = _mlx_active() + admission_budget(base, self.guard.headroom_bytes)
+                prev_limit = mx.set_memory_limit(int(max(cap_bytes, int(est.peak))))
+            except Exception:
+                prev_limit = None
 
         ctx = RunContext(
             models=self.pool, cache=self.cache, work_dir=work_dir, report=report,
@@ -1063,7 +1184,15 @@ class Engine:
                 raise Cancelled(self._abort_reason)
             if self._cancel.is_set() and not self._stopping.is_set():
                 raise Cancelled("cancelled")
-            outcome = (JobState.DONE, "", dict(result))
+            note = ""
+            if result.get("stepped_down_from") and result.get("rung"):
+                try:
+                    from shutter.core.modes import rung as _rung
+                    note = (f"Ran in {_rung(str(result['rung']))['label']} (instead of "
+                            f"{_rung(str(result['stepped_down_from']))['label']}) to fit the memory free right now.")
+                except Exception:
+                    note = f"Ran in a lower memory step ({result['rung']}) to fit the memory free right now."
+            outcome = (JobState.DONE, note, dict(result))
         except _Shutdown:
             outcome = (JobState.QUEUED, "interrupted by shutdown; it will run again", {})
         except Cancelled:
@@ -1079,10 +1208,21 @@ class Engine:
             else:
                 outcome = (JobState.WAITING_MEMORY, e.reason, {})
         except Exception as e:
-            outcome = (JobState.FAILED, f"{type(e).__name__}: {e}",
-                       {"traceback": traceback.format_exc()[-4000:]})
+            if self._abort_reason:  # e.g. an MLX allocation failed while the watchdog was stopping the job
+                outcome = (JobState.FAILED, PROTECT_PREFIX + self._abort_reason, {})
+            elif _is_oom(e):
+                outcome = (JobState.FAILED, (STOP_MESSAGE + f" ({type(e).__name__}: {e})")[:400], {})
+            else:
+                outcome = (JobState.FAILED, f"{type(e).__name__}: {e}",
+                           {"traceback": traceback.format_exc()[-4000:]})
         finally:
             stop_sampler.set()
+            stop_watch.set()
+            if mx is not None and prev_limit is not None:
+                try:
+                    mx.set_memory_limit(int(prev_limit))
+                except Exception:
+                    pass
             try:
                 take_sample(False)
             except Exception:
@@ -1103,6 +1243,9 @@ class Engine:
                                  "swap_used_max": int(peak["swap"]),
                                  "swap_used_start": int(base.swap_used)}
         result["estimate_peak_bytes"] = int(est.peak)
+        result["watchdog"] = {"events": wd["events"], "max_pressure": self.guard.watchdog.max_pressure,
+                              "swap_growth_max_bytes": int(self.guard.watchdog.max_swap_growth),
+                              "mlx_cap_bytes": int(cap_bytes) if cap_bytes else None}
         if state_ == JobState.DONE and not loading:
             result.setdefault("output", req.output)
         # Give the GPU back (and, after a protect-abort, every model) before the job's

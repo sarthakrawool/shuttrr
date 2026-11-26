@@ -301,7 +301,7 @@ private struct GlassEndpointRow: View {
 
 // MARK: - Modules
 
-/// The one big number (free for models), the used / reserve bar and its legend.
+/// The one big number (free for models), the used bar and its legend.
 private struct GlassMemory: View {
     let system: SystemInfo
 
@@ -347,12 +347,16 @@ private struct GlassMemory: View {
             .frame(height: 8)
             .padding(.top, Theme.Space.s0)
             .accessibilityElement()
-            .accessibilityLabel("Memory: used \(Fmt.gb(parts.used)), reserve \(Fmt.gb(parts.headroom)), free for models \(Fmt.gb(parts.free))")
+            .accessibilityLabel("Memory: used \(Fmt.gb(parts.used)), free for models \(Fmt.gb(parts.free))")
             // The legend never decides the panel's width: it drops an item rather than overflow.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.Space.s3) {
                     GlassLegend(color: .accentColor, label: "Used", value: Fmt.gb(parts.used))
-                    GlassLegend(color: Color.accentColor.opacity(0.35), label: "Reserve", value: Fmt.gb(parts.headroom))
+                    if parts.headroomSetting > 0 {
+                        GlassLegend(color: Color.accentColor.opacity(0.35), label: "Headroom", value: Fmt.gb(parts.headroom))
+                    } else {
+                        GlassLegend(color: Glass.track, label: "Free", value: Fmt.gb(parts.free))
+                    }
                 }
                 GlassLegend(color: .accentColor, label: "Used", value: Fmt.gb(parts.used))
             }

@@ -9,7 +9,7 @@ from shutter.adapters.dummy import DummyAdapter
 from shutter.core.config import Config
 from shutter.core.dirlock import DirLocks
 from shutter.core.engine import PROTECT_PREFIX, Engine, SubmitError
-from shutter.core.memory import GB, FakeProbe, GpuLock
+from shutter.core.memory import GB, STOP_MESSAGE, FakeProbe, GpuLock
 from shutter.core.queue import JobStore
 from shutter.core.registry import Registry
 from shutter.types import Job, JobRequest, JobState
@@ -158,7 +158,7 @@ def test_cancel_queued_and_running(tmp_path, engines, gated):
 
 
 def test_memory_refusal_waits_then_runs(tmp_path, engines):
-    probe = FakeProbe(available=5 * GB)
+    probe = FakeProbe(available=3 * GB)
     eng = make_engine(tmp_path, probe=probe)
     engines.append(eng)
     sub = eng.bus.subscribe()
@@ -187,7 +187,7 @@ def test_higher_priority_overtakes_waiting_job(tmp_path, engines):
 
 
 def test_refusal_frees_unneeded_pool_entries(tmp_path, engines):
-    probe = FakeProbe(available=12 * GB)
+    probe = FakeProbe(available=9 * GB)
     eng = make_engine(tmp_path, probe=probe)
     engines.append(eng)
     eng.pool.get("other-model/dit", lambda: object(), 1 * GB)
@@ -227,14 +227,69 @@ def test_swap_growth_aborts_and_releases_pool(tmp_path, engines, gated):
     eng.pool.get("other/x", lambda: object(), GB)
 
     def hook(job, step, ctx):
-        probe.set(swap_used=2 * GB)
+        probe.set(swap_used=3 * GB)   # past the hard limit (1 GB + 1 GB): stop at once
     gated.step_hook = hook
     job = eng.submit(req("gated"))
     wait_until(lambda: eng.get(job.id).state == JobState.FAILED)
     j = eng.get(job.id)
-    assert j.message.startswith(PROTECT_PREFIX) and "Swap grew" in j.message
+    assert j.message.startswith(STOP_MESSAGE) and "swap grew by 3.0 GB" in j.message
     assert eng.pool.keys() == []
     assert not eng.gpu_lock.held
+    assert j.result["watchdog"]["events"][-1]["action"] == "stop"
+
+
+def test_pressure_spike_relieves_and_the_job_finishes(tmp_path, engines, gated):
+    probe = FakeProbe()
+    eng = make_engine(tmp_path, probe=probe)
+    engines.append(eng)
+    eng.pool.get("other/x", lambda: object(), GB)   # an idle model the relief may drop
+    sub = eng.bus.subscribe()
+    job = eng.submit(req("gated"))
+    assert gated.entered.wait(5)
+    probe.set(pressure="critical")
+    wait_until(lambda: "other/x" not in eng.pool.keys())   # relief ran at the next step check
+    probe.set(pressure="warn")                     # freeing caches helped; warn never stops anything
+    time.sleep(0.05)
+    gated.gate.set()
+    wait_until(lambda: eng.get(job.id).state == JobState.DONE)
+    j = eng.get(job.id)
+    assert [e["action"] for e in j.result["watchdog"]["events"]] == ["relieve"]
+    assert j.result["watchdog"]["max_pressure"] == "critical"
+    kinds = []
+    while (ev := sub.get(timeout=0.05)) is not None:
+        kinds.append((ev.kind, (ev.data or {}).get("action")))
+    assert ("job.memory", "relieve") in kinds
+
+
+def test_watchdog_thread_exits_engine_when_a_step_never_ends(tmp_path, engines, gated, monkeypatch):
+    """The run is stuck inside one long GPU call (never reaches check_cancelled) while swap keeps climbing:
+    the watchdog thread records the job as stopped and exits the engine (code 75) so macOS frees the memory."""
+    import shutter.core.engine as E
+    exits, seen = [], []
+
+    def fake_exit(code):
+        if not exits:
+            seen.append(JobStore(cfg.db_path).get(job.id))
+        exits.append(code)
+        gated.gate.set()
+    monkeypatch.setattr(E.os, "_exit", fake_exit)
+    probe = FakeProbe()
+    cfg = make_config(tmp_path)
+    reg = Registry(cfg, families={"gated": GatedAdapter})
+    eng = Engine(cfg, probe=probe, protected=[], registry=reg, watch_interval_s=1e9, sample_interval_s=0.01,
+                 watchdog_interval_s=0.01, emergency_s=0.05)
+    eng.start()
+    engines.append(eng)
+
+    def stuck(job, step, ctx):
+        probe.set(swap_used=3 * GB)
+        while not gated.gate.wait(0.005):
+            pass                                    # never calls check_cancelled
+    gated.step_hook = stuck
+    job = eng.submit(req("gated"))
+    wait_until(lambda: exits[:1] == [E.EMERGENCY_EXIT_CODE] and seen)
+    j = seen[0]
+    assert j.state == JobState.FAILED and j.message.startswith(STOP_MESSAGE)
 
 
 def test_gpu_lock_held_by_other_process_waits(tmp_path, engines):

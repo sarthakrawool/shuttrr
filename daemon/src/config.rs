@@ -88,7 +88,7 @@ impl Config {
             gpu_lock_dirs: Vec::new(),
             busy_process_pattern: default_busy_pattern(),
             headroom_gb: None,
-            swap_growth_mb: 256.0,
+            swap_growth_mb: 1024.0,
             max_fraction: None,
             memory_poll_s: 15.0,
             idle_unload_s: 900.0,
@@ -328,7 +328,9 @@ impl Config {
     }
 
     pub fn swap_growth_bytes(&self) -> u64 {
-        (self.swap_growth_mb.max(0.0) * crate::util::MIB) as u64
+        // 256 MB was the default written into every config.json before 0.2.3: read it as the new 1 GB
+        let mb = if self.swap_growth_mb == 256.0 { 1024.0 } else { self.swap_growth_mb };
+        (mb.max(0.0) * crate::util::MIB) as u64
     }
 
     pub fn protected_process_min_bytes(&self) -> u64 {
@@ -397,7 +399,7 @@ mod tests {
         assert_eq!(c.idle_unload_s, 900.0);
         assert_eq!(c.warnings.len(), 1);
         assert_eq!(c.model_dir("m"), PathBuf::from("/h/models/m"));
-        assert_eq!(c.swap_growth_bytes(), 256 * 1024 * 1024);
+        assert_eq!(c.swap_growth_bytes(), 1024 * 1024 * 1024);
         let auto = Config::from_map(json!({"headroom_gb": null}).as_object().unwrap(), PathBuf::from("/h"));
         assert_eq!(auto.headroom_bytes(), None);
         assert!(auto.warnings.is_empty());

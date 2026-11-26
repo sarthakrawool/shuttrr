@@ -6,7 +6,7 @@ Two modes, chosen per job (`params.mode`, `params.efficiency`) with engine-wide 
 ## Fast
 Optimise for time. Use every lossless speed-up, keep weights resident and warm between
 jobs. Memory stays healthy by construction: before a job the planner takes
-`budget = available - headroom` and, if the fast plan's estimated peak does not fit, steps
+`budget = available` (free + reclaimable memory; no reserve since 0.2.3, `headroom_gb` only if the user sets one) and, if the fast plan's estimated peak does not fit, steps
 down the low-memory ladder just far enough to fit (and says so in the job's `stage`/notes).
 It never starts a job whose estimate exceeds the budget.
 

@@ -16,9 +16,9 @@ struct MemoryView: View {
                 if let sys = store.system {
                     let parts = MemoryParts(sys)
                     HStack(alignment: .top, spacing: Theme.Space.s4) {
-                        StatCard(label: "Free for models", value: Fmt.gb(parts.free), note: "Available minus the reserve", big: true)
+                        StatCard(label: "Free for models", value: Fmt.gb(parts.free), note: "Free + memory macOS can reclaim", big: true)
                         StatCard(label: "Used", value: Fmt.gb(parts.used), note: "of \(Fmt.gb(parts.total))")
-                        StatCard(label: "Reserve", value: Fmt.gb(parts.headroomSetting), note: "Kept for your other apps")
+                        StatCard(label: "Watchdog", value: "On", note: "Stops a request before the Mac runs out")
                         StatCard(label: "Swap", value: Fmt.gb(parts.swap), note: "In use now")
                     }
                     .fixedSize(horizontal: false, vertical: true)

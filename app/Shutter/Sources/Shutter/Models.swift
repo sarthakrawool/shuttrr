@@ -446,8 +446,9 @@ struct LoadFailure: Identifiable, Equatable {
             return LoadFailure(modelID: r.model, title: "\(name) cannot load right now", body: r.reason,
                                help: "Try again in a moment.", isMemory: true)
         }
-        let body = "It needs \(g(r.peakGB)) at its peak, plus \(g(r.headroomGB)) kept free for macOS. This Mac has "
-            + "\(g(r.availableGB)) available right now, so it is \(g(r.shortByGB)) short."
+        let extra = r.headroomGB > 0 ? ", plus the \(g(r.headroomGB)) headroom you set" : ""
+        let body = "It needs \(g(r.peakGB)) at its peak\(extra). macOS can give "
+            + "\(g(r.availableGB)) right now, so it is \(g(r.shortByGB)) short."
         let help = r.lowest ? "Quit other apps to free memory." : "Quit other apps to free memory, or choose a lower memory setting."
         return LoadFailure(modelID: r.model, title: "Not enough memory to load \(name)", body: body, help: help,
                            isMemory: true)

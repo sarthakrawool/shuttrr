@@ -36,7 +36,9 @@ struct MemoryGaugeView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.Space.s3) {
                     LegendItem(color: Theme.Palette.violet, label: "Used", value: Fmt.gb(parts.used))
-                    LegendItem(color: Theme.Palette.amberSoft, label: "Reserve", value: Fmt.gb(parts.headroom))
+                    if parts.headroomSetting > 0 {
+                        LegendItem(color: Theme.Palette.amberSoft, label: "Headroom", value: Fmt.gb(parts.headroom))
+                    }
                 }
                 LegendItem(color: Theme.Palette.violet, label: "Used", value: Fmt.gb(parts.used))
             }

@@ -136,21 +136,21 @@ fn slow_cancel_within_grace_is_cooperative() {
 #[test]
 fn memory_refusal_waits_then_runs_when_memory_frees() {
     let d = Daemon::start(json!({}));
-    d.set_probe(json!({"total": 64 * GB, "available": 4 * GB, "swap_used": 0}));
+    d.set_probe(json!({"total": 64 * GB, "available": GB, "swap_used": 0}));
     let j = d.submit(json!({"model": "dummy", "params": {"steps": 1, "step_s": 0, "peak_gb": 2}}));
     let id = j["id"].as_str().unwrap();
     let w = d.wait_state(id, &["waiting_memory"], 10.0);
     let id12 = &id;
     assert_eq!(
         w["message"],
-        format!("Not enough free memory for job {id12} (dummy): it needs 2.0 GB plus 8.0 GB headroom, but only 4.0 GB is available.")
+        format!("Not enough free memory for job {id12} (dummy): it needs 2.0 GB, but macOS can give only 1.0 GB right now.")
     );
     let s = d.get("/v1/system");
     assert_eq!(s["queue"]["waiting_memory"], 1);
-    assert_eq!(s["memory"]["available"], 4 * GB);
-    // pressure refusal has its own reason
-    d.set_probe(json!({"total": 64 * GB, "available": 48 * GB, "swap_used": 0, "pressure": "warn"}));
-    d.wait_for("pressure reason", 10.0, |d| d.job(id)["message"].as_str().unwrap().contains("warn memory pressure"));
+    assert_eq!(s["memory"]["available"], GB);
+    // critical pressure has its own reason ("warn" would admit)
+    d.set_probe(json!({"total": 64 * GB, "available": 48 * GB, "swap_used": 0, "pressure": "critical"}));
+    d.wait_for("pressure reason", 10.0, |d| d.job(id)["message"].as_str().unwrap().contains("critical memory pressure"));
     d.set_probe(json!({"total": 64 * GB, "available": 48 * GB, "swap_used": 0}));
     d.wait_state(id, &["done"], 10.0);
     let (evs, _) = d.sse("?recent=100", 1000, 0.5);
@@ -215,12 +215,14 @@ fn swap_growth_mid_run_kills_worker_and_releases_locks() {
     assert_eq!(s["gpu_lock"]["dirs"][0]["ours"], true);
     assert!(lockdir.join("owner").is_file());
     let pid = s["worker"]["pid"].as_i64().unwrap() as i32;
-    d.set_probe(json!({"total": 64 * GB, "available": 40 * GB, "swap_used": GB}));
+    d.set_probe(json!({"total": 64 * GB, "available": 40 * GB, "swap_used": 3 * GB}));
     let j = d.wait_state(id, &["failed"], 10.0);
     assert_eq!(
         j["message"],
-        "stopped to protect the Mac: Swap grew by 1.0 GB since the run started (limit 0.2 GB); stopping to keep the Mac out of swap."
+        "Stopped to protect your Mac: it was running out of memory. Close other apps or pick a smaller size. \
+         (swap grew by 3.0 GB since the request started (limit 2.0 GB))"
     );
+    assert_eq!(j["result"]["watchdog"]["events"][0]["action"], "stop");
     assert!(j["result"]["log_tail"].is_string());
     assert!(!lockdir.exists(), "our dir lock is released");
     let s = d.get("/v1/system");
@@ -229,13 +231,16 @@ fn swap_growth_mid_run_kills_worker_and_releases_locks() {
     assert_eq!(s["worker"]["running"], false);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(shutterd::util::pid_alive(pid), Some(false));
-    // critical pressure also stops a run (swap stays at the new baseline)
+    // critical pressure first frees caches; if it stays critical past the 10 s grace the run stops
+    d.set_probe(json!({"total": 64 * GB, "available": 40 * GB, "swap_used": 3 * GB}));
     let j = d.submit(json!({"model": "dummy", "params": {"steps": 400, "step_s": 0.05}}));
     let id = j["id"].as_str().unwrap();
     d.wait_state(id, &["running"], 10.0);
-    d.set_probe(json!({"total": 64 * GB, "available": 40 * GB, "swap_used": GB, "pressure": "critical"}));
-    let j = d.wait_state(id, &["failed"], 10.0);
-    assert!(j["message"].as_str().unwrap().starts_with("stopped to protect the Mac: macOS reports critical"));
+    d.set_probe(json!({"total": 64 * GB, "available": 40 * GB, "swap_used": 3 * GB, "pressure": "critical"}));
+    let j = d.wait_state(id, &["failed"], 20.0);
+    let m = j["message"].as_str().unwrap();
+    assert!(m.starts_with("Stopped to protect your Mac:") && m.contains("memory pressure is still critical"), "{m}");
+    assert_eq!(j["result"]["watchdog"]["events"][0]["action"], "relieve");
 }
 
 #[test]
@@ -320,14 +325,14 @@ fn worker_failing_at_import_says_so_plainly() {
 }
 
 #[test]
-fn headroom_is_automatic_unless_set() {
-    // 16 GB Mac, 4 GB free: the automatic 2 GB headroom lets a 1 GB job run.
+fn no_reserve_unless_set() {
+    // 16 GB Mac, 4 GB free: no reserve, so a job that peaks at 4 GB runs.
     let d = Daemon::start(json!({"headroom_gb": null}));
     d.set_probe(json!({"total": 16 * GB, "available": 4 * GB, "swap_used": 0, "pressure": "normal"}));
     let s = d.get("/v1/system");
-    assert_eq!(s["guard"]["headroom_bytes"], 2 * GB);
+    assert_eq!(s["guard"]["headroom_bytes"], 0);
     assert_eq!(s["guard"]["headroom_auto"], true);
-    let j = d.submit(json!({"model": "dummy", "params": {"steps": 1, "step_s": 0, "peak_gb": 1}}));
+    let j = d.submit(json!({"model": "dummy", "params": {"steps": 1, "step_s": 0, "peak_gb": 4}}));
     d.wait_state(j["id"].as_str().unwrap(), &["done"], 15.0);
     drop(d);
     let d = Daemon::start(json!({"headroom_gb": 3}));
@@ -511,7 +516,8 @@ fn api_system_models_submit_list_pool() {
     for k in ["total", "available", "swap_used", "pressure"] {
         assert!(s["memory"].get(k).is_some(), "{k}");
     }
-    assert_eq!(s["guard"]["headroom_bytes"], 8 * GB);
+    assert_eq!(s["guard"]["headroom_bytes"], 0);
+    assert_eq!(s["guard"]["swap_growth_bytes"], GB);
     assert_eq!(s["guard"]["protected"], json!([]));
     assert!(s["pool"].get("total_bytes").is_some() && s["pool"]["entries"].is_array());
     for k in ["queued", "running", "waiting_memory", "done", "failed", "cancelled", "paused"] {

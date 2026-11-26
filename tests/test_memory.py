@@ -235,25 +235,62 @@ def test_guard_ok():
 
 
 def test_guard_refuses_not_enough_memory():
-    g = MemoryGuard(FakeProbe(available=30.25 * GB), headroom_bytes=8 * GB)
+    g = MemoryGuard(FakeProbe(available=20.25 * GB))
     d = g.check(25 * GB, "the LongCat DiT")
     assert not d.ok
     assert d.reason == (
-        "Not enough free memory for the LongCat DiT: it needs 25.0 GB plus 8.0 GB "
-        f"headroom, but only {m.fmt_gb(30.25 * GB)} is available."
+        "Not enough free memory for the LongCat DiT: it needs 25.0 GB, but macOS can give "
+        f"only {m.fmt_gb(20.25 * GB)} right now."
     )
     with pytest.raises(MemoryRefused) as ei:
         g.admit(25 * GB, "the LongCat DiT")
     assert ei.value.reason == d.reason
-    # exactly fits
+    # exactly fits: no reserve on top
+    assert g.check(int(20.25 * GB)).ok
+
+
+def test_guard_user_headroom_still_works():
+    g = MemoryGuard(FakeProbe(available=30.25 * GB), headroom_bytes=8 * GB)
+    d = g.check(25 * GB, "x")
+    assert not d.ok and "after the 8.0 GB headroom you set" in d.reason
     assert g.check(int(22.25 * GB)).ok
 
 
-def test_guard_refuses_pressure():
+def test_admission_24gb_mac_with_17gb_free_starts_a_12gb_model():
+    """The user's example: 24 GB Mac, ~17 GB reclaimable, a model that peaks at 12 GB must start."""
+    g = MemoryGuard(FakeProbe(total=24 * GB, available=17 * GB))
+    assert g.check(12 * GB, "a 12 GB model").ok
+    assert g.budget() == 17 * GB
+    assert not g.check(int(17.5 * GB)).ok
+
+
+def test_admission_16gb_mac_with_6_5gb_free():
+    g = MemoryGuard(FakeProbe(total=16 * GB, available=int(6.5 * GB)))
+    assert g.check(int(6.4 * GB), "Wan 2.1 1.3B").ok     # was held at "needs 8.4 GB" with the 2 GB reserve
+    assert not g.check(int(6.6 * GB)).ok
+
+
+def test_admission_budget_counts_reclaimable_pages():
+    vm = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 100.\nPages inactive: 300.\n" \
+         "Pages purgeable: 50.\nPages speculative: 10.\nPages active: 999.\nPages wired down: 999.\n"
+    v = m.parse_vm_stat(vm)
+    assert v["available"] == (100 + 300 + 50 + 10) * 16384
+    s = m.MemorySample(total=16 * GB, available=v["available"], swap_used=0)
+    assert m.admission_budget(s) == v["available"]
+    assert m.admission_budget(s, 10 * GB) == 0
+    # active file-backed pages (file-backed minus inactive) are dropped by macOS without swapping
+    v = m.parse_vm_stat(vm + "File-backed pages: 500.\n")
+    assert v["reclaimable_file"] == 200 * 16384
+    assert v["available"] == (100 + 300 + 50 + 10 + 200) * 16384
+
+
+def test_guard_warn_pressure_admits_critical_waits():
     g = MemoryGuard(FakeProbe(available=100 * GB, pressure="warn"))
+    assert g.check(1 * GB, "the VAE").ok
+    g = MemoryGuard(FakeProbe(available=100 * GB, pressure="critical"))
     d = g.check(1 * GB, "the VAE")
     assert not d.ok
-    assert "warn memory pressure" in d.reason and "the VAE" in d.reason
+    assert "critical memory pressure" in d.reason and "the VAE" in d.reason
 
 
 def test_guard_refuses_protected_service_first():
@@ -284,19 +321,66 @@ def test_guard_default_what():
     assert "this job" in d.reason
 
 
-def test_watch_swap_growth():
+def test_watch_swap_growth_relieves_then_stops():
     p = FakeProbe(swap_used=1 * GB)
-    g = MemoryGuard(p, swap_growth_bytes=256 * MiB)
+    g = MemoryGuard(p, swap_growth_bytes=1 * GB, grace_s=10)
     assert g.watch() is None  # no run yet
     g.begin_run()
     assert g.swap_baseline == 1 * GB
-    p.set(swap_used=1 * GB + 200 * MiB)
-    assert g.watch() is None
-    p.set(swap_used=1 * GB + 600 * MiB)
+    p.set(swap_used=1 * GB + 900 * MiB)
+    assert g.watch_step(now=100.0) == (None, "")
+    p.set(swap_used=2 * GB + 200 * MiB)                     # grew 1.2 GB: first free caches
+    a, why = g.watch_step(now=101.0)
+    assert a == m.ACTION_RELIEVE and "swap grew by 1.2 GB" in why
+    assert g.watch_step(now=105.0)[0] is None                # still in the grace window
+    p.set(swap_used=2 * GB + 800 * MiB)                     # still swapping 10 s later: stop
+    a, why = g.watch_step(now=111.5)
+    assert a == m.ACTION_STOP and "swap kept growing" in why and "after freeing caches" in why
     r = g.watch()
-    assert r and "Swap grew by 0.6 GB" in r and f"limit {m.fmt_gb(256 * MiB)}" in r
+    assert r.startswith(m.STOP_BODY)
     g.end_run()
     assert g.watch() is None
+
+
+def test_watch_swap_that_grew_once_and_holds_does_not_stop():
+    """Seen on the 16 GB MacBook: the decode pushed swap up 1.1 GB and pressure to critical for a moment, then it
+    held. That must not stop the request (macOS keeps swap; it does not shrink back)."""
+    p = FakeProbe(swap_used=2 * GB)
+    g = MemoryGuard(p, swap_growth_bytes=1 * GB, grace_s=10)
+    g.begin_run()
+    p.set(swap_used=int(3.1 * GB), pressure="critical")
+    assert g.watch_step(now=0.0)[0] == m.ACTION_RELIEVE
+    p.set(pressure="warn")
+    for t in (5.0, 10.5, 20.0, 60.0):
+        assert g.watch_step(now=t)[0] is None
+    p.set(swap_used=int(3.4 * GB))                          # a little more later: under the next 1 GB, fine
+    assert g.watch_step(now=70.0)[0] is None
+    p.set(swap_used=int(4.2 * GB))                          # 2.2 GB over the start: past the hard limit, stop
+    a, why = g.watch_step(now=80.0)
+    assert a == m.ACTION_STOP and "limit 2.0 GB" in why
+
+
+def test_watch_swap_jump_past_hard_limit_stops_at_once():
+    p = FakeProbe(swap_used=0)
+    g = MemoryGuard(p, swap_growth_bytes=1 * GB)
+    g.begin_run()
+    p.set(swap_used=int(2.5 * GB))
+    a, why = g.watch_step(now=1.0)
+    assert a == m.ACTION_STOP and "limit 2.0 GB" in why
+
+
+def test_watch_relief_that_works_does_not_stop():
+    p = FakeProbe(swap_used=0)
+    g = MemoryGuard(p, swap_growth_bytes=1 * GB, grace_s=10)
+    g.begin_run()
+    p.set(pressure="critical")
+    assert g.watch_step(now=0.0)[0] == m.ACTION_RELIEVE
+    p.set(pressure="warn")                                  # freeing caches helped
+    assert g.watch_step(now=5.0)[0] is None
+    assert g.watch_step(now=30.0)[0] is None
+    p.set(pressure="critical")                              # a later spike relieves again first
+    assert g.watch_step(now=31.0)[0] == m.ACTION_RELIEVE
+    assert g.watchdog.max_pressure == "critical"
 
 
 def test_watch_swap_shrinking_is_fine():
@@ -309,11 +393,13 @@ def test_watch_swap_shrinking_is_fine():
 
 def test_watch_critical_pressure():
     p = FakeProbe()
-    g = MemoryGuard(p)
+    g = MemoryGuard(p, grace_s=0)
     g.begin_run()
     p.set(pressure="warn")
-    assert g.watch() is None
+    for _ in range(5):
+        assert g.watch() is None                            # warn never acts
     p.set(pressure="critical")
+    assert g.watch_step()[0] == m.ACTION_RELIEVE
     assert "critical" in g.watch()
 
 

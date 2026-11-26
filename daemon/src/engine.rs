@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Notify};
 
-pub const PROTECT_PREFIX: &str = "stopped to protect the Mac: ";
+pub const PROTECT_PREFIX: &str = "Stopped to protect your Mac: ";
 pub const RENDER_BUSY_MESSAGE: &str = "another render is running";
 pub const MAX_MIDRUN_REFUSALS: u32 = 3;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -660,7 +660,7 @@ impl Engine {
         let s = self.sample().await;
         let headroom = match &s {
             Ok(s) => self.guard.headroom_for(s.total),
-            Err(_) if self.guard.headroom_auto => 8 << 30, // unknown total: the old default
+            Err(_) if self.guard.headroom_auto => 0,
             Err(_) => self.guard.headroom_bytes,
         };
         let memory = match &s {
@@ -792,7 +792,7 @@ impl Engine {
         };
         let reserve = match &s {
             Ok(s) => self.guard.headroom_for(s.total),
-            Err(_) if self.guard.headroom_auto => 8 << 30,
+            Err(_) if self.guard.headroom_auto => 0,
             Err(_) => self.guard.headroom_bytes,
         };
         let mut free = available.saturating_sub(reserve);
@@ -1318,6 +1318,8 @@ impl Engine {
             w.kill();
             outcome = Some(Outcome::Crashed(e));
         }
+        let mut wd = base.as_ref().map(|b| memory::Watchdog::new(self.guard.swap_growth_bytes, 10.0, b));
+        let mut wd_events: Vec<Value> = Vec::new();
         let mut watch_tick = tokio::time::interval(secs(self.cfg.watch_interval_s.max(0.01)));
         watch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_sample_pub = Instant::now();
@@ -1382,9 +1384,26 @@ impl Engine {
                             last_sample_pub = Instant::now();
                             self.bus.publish("memory.sample", Some(&id), s.to_json());
                         }
-                        if let Some(reason) = self.guard.watch_decision(&s, swap_base.unwrap_or(s.swap_used)) {
-                            w.kill();
-                            outcome = Some(Outcome::Protect(reason));
+                        if wd.is_none() {
+                            wd = Some(memory::Watchdog::new(self.guard.swap_growth_bytes, 10.0, &s));
+                        }
+                        let el = round_to(t0.elapsed().as_secs_f64(), 1);
+                        match wd.as_mut().map(|x| x.step(&s, t0.elapsed().as_secs_f64())) {
+                            Some(memory::WatchAction::Relieve(why)) => {
+                                // step down first: the worker frees MLX's cache and every idle component
+                                let _ = w.send(&protocol::op_release(None)).await;
+                                wd_events.push(json!({"t": el, "action": "relieve", "why": why}));
+                                let mut d = Map::new();
+                                d.insert("action".into(), json!("relieve"));
+                                d.insert("reason".into(), json!(why));
+                                self.bus.publish("job.memory", Some(&id), Value::Object(d));
+                            }
+                            Some(memory::WatchAction::Stop(why)) => {
+                                wd_events.push(json!({"t": el, "action": "stop", "why": why}));
+                                w.kill();
+                                outcome = Some(Outcome::Protect(format!("{} ({why})", memory::STOP_BODY)));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1479,6 +1498,12 @@ impl Engine {
                    "swap_used_start": swap_base.unwrap_or(0)}),
         );
         result.insert("estimate_peak_bytes".into(), json!(need));
+        result.insert(
+            "watchdog".into(),
+            json!({"events": wd_events,
+                   "max_pressure": wd.as_ref().map(|x| x.max_pressure.clone()),
+                   "swap_growth_max_bytes": wd.as_ref().map(|x| x.max_swap_growth).unwrap_or(0)}),
+        );
         if state == "done" {
             result.entry("output").or_insert(json!(output.to_string_lossy()));
         }

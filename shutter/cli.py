@@ -288,8 +288,9 @@ def cmd_system(args: argparse.Namespace) -> int:
         f"Shuttrr {s['version']}",
         f"memory   {_gb(m['total'] - m['available'])} used of {_gb(m['total'])}, "
         f"{_gb(m['available'])} available, swap {_gb(m['swap_used'])}, pressure {m['pressure']}",
-        f"headroom {_gb(s['guard']['headroom_bytes'])}"
-        + (" (automatic: an eighth of memory, 2 to 8 GB)" if s["guard"].get("headroom_auto") else ""),
+        (f"headroom {_gb(s['guard']['headroom_bytes'])} (set by you)" if s['guard']['headroom_bytes']
+         else "guard    no reserve: a request starts when it fits in what macOS can give; the watchdog stops it "
+              "before the Mac runs out"),
     ]
     for p in s["guard"]["protected"]:
         lines.append(f"protect  {p['name']}: {p['busy'] or 'idle'}")

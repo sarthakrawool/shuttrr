@@ -131,7 +131,9 @@ struct ServerView: View {
                     section("Running engine") {
                         KVGroup {
                             KVRow("Version", sys.version.isEmpty ? "–" : sys.version, first: true)
-                            KVRow("Memory reserve", "\(Fmt.gb(sys.guardInfo.headroomBytes)) kept free" + (sys.guardInfo.headroomAuto ? " (automatic)" : ""))
+                            KVRow("Memory guard", sys.guardInfo.headroomBytes > 0
+                                  ? "Starts when it fits, keeps \(Fmt.gb(sys.guardInfo.headroomBytes)) free (your setting)"
+                                  : "Starts when it fits; stops a request before the Mac runs out")
                             KVRow("Protected services", sys.guardInfo.protected.isEmpty ? "None" : sys.guardInfo.protected.map(\.name).joined(separator: ", "))
                             KVRow("GPU lock", gpuText(sys.gpuLock))
                         }

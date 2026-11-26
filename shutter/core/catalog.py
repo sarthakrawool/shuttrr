@@ -252,11 +252,13 @@ def default_request(model_id: str, total_bytes: int) -> tuple[int, int, int]:
     return 480, 832, 81
 
 
-# One fit classifier for the app, the dashboard and the CLI (docs/API.md, "fit"). It never promises that a model fits
-# because a low-memory step squeezes it in: a model that needs more than ~70% of this Mac's memory even at its lowest
-# step is "no_fit", whatever the estimates say about streaming.
-RECOMMENDED_SHARE = 0.50   # full speed peak at or under half of total memory, and measured at this size
-BARELY_SHARE = 0.70        # the lowest step's peak at or under 70% of total memory
+# One fit classifier for the app, the dashboard and the CLI (docs/API.md, "fit"). No percentage reserve: a model fits
+# when its lowest step's peak fits in this Mac's memory minus what macOS itself keeps (its wired memory, measured on
+# this Mac). It never promises a fit because an untested SSD-streaming estimate squeezes it in.
+MACOS_BASELINE = 3 * GB          # what macOS keeps for itself when it cannot be measured (wired memory)
+MACOS_BASELINE_MIN = int(2.5 * GB)
+MACOS_BASELINE_MAX = 6 * GB
+EVERYDAY_APPS = 4 * GB           # "Recommended" also leaves this much for a browser and a chat app
 MAC_SIZES_GB = (8, 16, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
 FIT_LABELS = {"recommended": "Recommended", "barely": "Fits but barely", "no_fit": "Doesn't fit", "unknown": ""}
 TIGHT = "Tight on this Mac. Close other apps first."
@@ -289,24 +291,40 @@ def _measured_peaks(e: dict[str, Any], h: int, w: int, f: int) -> dict[str, int]
     return {}
 
 
+def macos_baseline(total_bytes: int) -> int:
+    """What macOS itself keeps on this Mac: its wired memory now (clamped to 2.5..6 GB), or 3 GB when the Mac being
+    asked about is not this one (or the number cannot be read)."""
+    try:
+        from shutter.core.memory import default_probe
+        s = default_probe().sample()
+        if int(s.total) == int(total_bytes) and s.wired:
+            return int(min(MACOS_BASELINE_MAX, max(MACOS_BASELINE_MIN, int(s.wired))))
+    except Exception:
+        pass
+    return MACOS_BASELINE
+
+
 def _mac_size_for(peak: int, floor_gb: int) -> int:
-    need = peak / BARELY_SHARE / GB
+    need = (peak + MACOS_BASELINE) / GB
     return next((g for g in MAC_SIZES_GB if g >= need and g >= floor_gb), max(floor_gb, int(-(-need // 1))))
 
 
-def classify_fit(model_id: str, total_bytes: int) -> dict[str, Any]:
+def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None) -> dict[str, Any]:
     """How a catalog model fits a Mac with `total_bytes` of memory (its total, not what is free right now), at the
-    size it would make by default there:
-      recommended  measured at this size, and its full speed peak is at most 50% of total memory
-      barely       its lowest step's peak is at most 70% of total memory (or it is only an estimate)
-      no_fit       anything above, or under the model's smallest Mac
+    size it would make by default there. usable = total - what macOS keeps (`macos_baseline`, its wired memory):
+      recommended  measured at this size, and its full speed peak fits in usable with 4 GB to spare for everyday apps
+      barely       its lowest step's peak fits in usable (or it is only an estimate)
+      no_fit       its lowest step's peak is more than usable, or the Mac is under the model's smallest Mac
     Uses the measured peaks when there are any for this size (and only those), otherwise the engine's estimates.
-    Returns {"level", "label", "reason", "detail", "peak_bytes", "measured", "at"}; `reason` is one plain line."""
+    Returns {"level", "label", "reason", "detail", "peak_bytes", "measured", "at", "usable_bytes"}."""
     e = CATALOG[model_id]
     if not total_bytes:
         return {"level": "unknown", "label": "", "reason": "This Mac's memory could not be read.",
-                "detail": "This Mac's memory could not be read.", "peak_bytes": 0, "measured": False, "at": ""}
+                "detail": "This Mac's memory could not be read.", "peak_bytes": 0, "measured": False, "at": "",
+                "usable_bytes": 0}
     mac_gb = total_bytes / GB
+    base = macos_baseline(total_bytes) if baseline is None else int(baseline)
+    usable = max(0, int(total_bytes) - base)
     try:
         h, w, f = default_request_any(model_id, total_bytes)
         at = f"{h}x{w}, {f} frames"
@@ -333,16 +351,16 @@ def classify_fit(model_id: str, total_bytes: int) -> dict[str, Any]:
 
     def out(level: str, reason: str, peak: int) -> dict[str, Any]:
         return {"level": level, "label": FIT_LABELS[level], "reason": reason, "detail": reason,
-                "peak_bytes": int(peak), "measured": measured, "at": at}
+                "peak_bytes": int(peak), "measured": measured, "at": at, "usable_bytes": usable}
 
-    if total_bytes < floor_gb * GB or not peaks or low > BARELY_SHARE * total_bytes:
+    if total_bytes < floor_gb * GB or not peaks or low > usable:
         need = _mac_size_for(low, floor_gb)
         if need <= mac_gb:
             need = next((g for g in MAC_SIZES_GB if g > mac_gb), int(mac_gb) * 2)
         return out("no_fit", f"Needs about {need} GB. This Mac has {mac_gb:.0f} GB.", low)
-    if measured and fast and fast <= RECOMMENDED_SHARE * total_bytes:
+    if measured and fast and fast + EVERYDAY_APPS <= usable:
         return out("recommended", "Runs at full speed on this Mac.", fast)
-    roomy = low <= RECOMMENDED_SHARE * total_bytes
+    roomy = low + EVERYDAY_APPS <= usable
     if not measured:
         return out("barely", UNTESTED if roomy else f"{UNTESTED} {TIGHT}", low)
     if roomy:
@@ -406,6 +424,22 @@ def _write_state(cfg: Config, model_id: str, **fields: Any) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(fields))
     os.replace(tmp, p)
+
+
+def already_downloaded(folder: Path, entry: dict[str, Any], files: Optional[list[dict[str, Any]]]) -> bool:
+    """True when the model's main files are there and every file in Hugging Face's list has its exact size (no
+    partial file left from a stopped download). Without a file list (offline) this is never True: a download then
+    goes through Hugging Face's own resume, which skips finished files."""
+    if not files or not is_complete(folder, entry):
+        return False
+    if any(folder.glob(".cache/huggingface/download/**/*.incomplete")):
+        return False
+    for f in files:
+        p = folder / str(f.get("path") or f.get("rfilename") or "")
+        size = f.get("size")
+        if not p.is_file() or (size is not None and p.stat().st_size != int(size)):
+            return False
+    return True
 
 
 def is_complete(folder: Path, entry: dict[str, Any]) -> bool:
@@ -608,9 +642,19 @@ def download(model_id: str, cfg: Optional[Config] = None, *, folder: Optional[st
     except Exception:
         total = int(e["size_gb"] * GB)
     have = folder_bytes(dest)
+    base = dict(pid=os.getpid(), dir=str(dest), total_bytes=total, started=time.time())
+    if already_downloaded(dest, e, files):
+        # Every file is there with Hugging Face's size: nothing to fetch. Register it (if it was not) and stop.
+        preset = register(cfg, model_id, dest)
+        done = dict(state="done", done_bytes=total, notes=preset["notes"], verified="sizes", already=True,
+                    verified_detail="Already downloaded: every file is there with the size Hugging Face lists",
+                    **base)
+        _write_state(cfg, model_id, **done)
+        if on_progress:
+            on_progress(done)
+        return done
     free = shutil.disk_usage(dest).free
     need = max(0, total - have) + DISK_HEADROOM
-    base = dict(pid=os.getpid(), dir=str(dest), total_bytes=total, started=time.time())
     if free < need:
         msg = (f"not enough free disk space: {e['name']} needs {need / GB:.0f} GB free "
                f"(what is left to download plus {DISK_HEADROOM // GB} GB to spare), "

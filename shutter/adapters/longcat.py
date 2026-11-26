@@ -1138,7 +1138,7 @@ class LongCatAvatarAdapter(Adapter):
         return int(sample["available"]) - int(headroom or 0)
 
     def budget_for(self, request: JobRequest, ctx: Optional[RunContext] = None) -> Optional[int]:
-        """budget = available - headroom: `params.budget_bytes` (the daemon may pass it), else the run context's
+        """budget = what macOS can give now (available, no reserve): `params.budget_bytes` (the daemon may pass it), else the run context's
         memory sample and headroom, else (estimate time) this machine's probe and the configured headroom."""
         p = request.params or {}
         if p.get("budget_bytes") is not None:
@@ -1200,7 +1200,7 @@ class LongCatAvatarAdapter(Adapter):
 
     def estimate(self, request: JobRequest) -> MemoryEstimate:
         """The estimate of the rung this job will run at: fast mode starts at `resident` and steps down the
-        ladder only as far as needed to fit `budget = available - headroom`; low_memory starts at the slider's
+        ladder only as far as needed to fit `budget = what macOS can give now (available, no reserve)`; low_memory starts at the slider's
         rung. When nothing fits, the lowest rung's estimate is returned and the guard makes the job wait."""
         request = load_plan_request(request)
         plan = self.resolve(request)
@@ -1234,7 +1234,7 @@ class LongCatAvatarAdapter(Adapter):
             from shutter.types import MemoryRefused
 
             raise MemoryRefused(f"{rung_id} needs ~{pick['estimates'][rung_id].steady / GB:.1f} GB to stay loaded, "
-                                f"budget {pick['budget'] / GB:.1f} GB (available - headroom): waiting for memory")
+                                f"budget {pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
         stream = self.stream_cfg(rung_id)
         env = self.env_for(plan, None, rung_id)
         ctx.check_cancelled()
@@ -1423,14 +1423,14 @@ class LongCatAvatarAdapter(Adapter):
                 if len(shots) > 1:
                     plan.notes.append("room lock applies to the first segment only (the tree anchors num_cond == 1)")
 
-        # ---- mode / rung (docs/MODES.md): budget = available - headroom, step down only as far as needed
+        # ---- mode / rung (docs/MODES.md): budget = what macOS can give now (available, no reserve), step down only as far as needed
         pick = self.choose_rung(req, ctx, plan, len(shots))
         rung_id = pick["rung"]
         if not pick["fits"]:
             from shutter.types import MemoryRefused
 
             raise MemoryRefused(f"{rung_id} needs ~{pick['estimates'][rung_id].peak / GB:.1f} GB, budget "
-                                f"{pick['budget'] / GB:.1f} GB (available - headroom): waiting for memory")
+                                f"{pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
         if pick["stepped_down_from"]:
             plan.notes.append(f"fast mode stepped down from {pick['stepped_down_from']} to {rung_id} to fit "
                               f"{pick['budget'] / GB:.1f} GB")

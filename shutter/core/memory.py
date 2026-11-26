@@ -1,9 +1,11 @@
 """Memory safety for Shutter: probes, protected services, the guard and the GPU lock.
 
 Rule 2 of the architecture: never push the Mac into swap. Before every load and every
-job the `MemoryGuard` checks available memory, memory pressure and the protected
-services (the user's chat model on oMLX, Splash, Strata). During a run, `watch()` reports
-when swap starts growing so the job can be aborted before the machine thrashes.
+job the `MemoryGuard` checks that the job's peak fits in what macOS can give right now
+(free + reclaimable memory, no fixed reserve), memory pressure and the protected services
+(the user's chat model on oMLX, Splash, Strata). During a run the `Watchdog` frees caches
+at the first sign of trouble (critical pressure or swap growth) and stops the run if it
+does not ease, before the machine thrashes.
 
 Everything here is stdlib only and imports on Linux so it can be tested in CI. The macOS
 parsers are pure functions fed with captured command output.
@@ -52,7 +54,7 @@ def fmt_gb(n: Union[int, float]) -> str:
 class MemorySample:
     """One reading of system memory, in bytes.
 
-    `available` = free + inactive + purgeable + speculative (macOS), or MemAvailable on
+    `available` = free + inactive + purgeable + speculative + active file cache (macOS), or MemAvailable on
     Linux. The raw fields are None when the platform does not report them.
     """
 
@@ -117,7 +119,8 @@ def parse_vm_stat(text: str, page_size: Optional[int] = None) -> dict[str, int]:
 
     Returns a dict with keys such as free, active, inactive, speculative, wired,
     purgeable, compressed (pages occupied by the compressor), plus `page_size` and
-    `available` (= free + inactive + purgeable + speculative). The page size printed in
+    `available` (= free + inactive + purgeable + speculative + active file-backed pages, which macOS can drop
+    without swapping; see below). The page size printed in
     vm_stat's own header wins over `page_size`, because the counts are in that unit.
     """
     m = _VM_PAGE_SIZE_RE.search(text)
@@ -134,7 +137,12 @@ def parse_vm_stat(text: str, page_size: Optional[int] = None) -> dict[str, int]:
         key = _VM_FIELDS.get(label)
         if key:
             out[key] = value * page_size
-    out["available"] = sum(out.get(k, 0) for k in ("free", "inactive", "purgeable", "speculative"))
+    # Active file-backed pages are clean copies of files: macOS drops them without swapping. vm_stat does not
+    # split the inactive list into file and anonymous pages, so `file_backed - inactive` (never below 0) is a lower
+    # bound of the active file pages: nothing is counted twice.
+    out["reclaimable_file"] = max(0, out.get("file_backed", 0) - out.get("inactive", 0))
+    out["available"] = sum(out.get(k, 0) for k in ("free", "inactive", "purgeable", "speculative",
+                                                     "reclaimable_file"))
     return out
 
 
@@ -573,31 +581,136 @@ class Decision:
         return {"ok": self.ok, "reason": self.reason, "sample": self.sample.to_dict()}
 
 
+ACTION_RELIEVE = "relieve"
+ACTION_STOP = "stop"
+
+PROTECT_PREFIX = "Stopped to protect your Mac: "
+STOP_BODY = "it was running out of memory. Close other apps or pick a smaller size."
+STOP_MESSAGE = PROTECT_PREFIX + STOP_BODY
+
+
+class Watchdog:
+    """Live protection while a request runs (pure logic, fed with samples; tested with FakeProbe).
+
+    Trouble = macOS reports *critical* memory pressure, or swap grew by more than `swap_soft_bytes` since the
+    run started. "warn" pressure is normal on a busy Mac and never acts.
+
+    * First sign of trouble: ACTION_RELIEVE (the engine frees caches and idle models: a step down).
+    * `grace_s` later it stops the request only if the Mac is still getting worse: pressure is still critical, or
+      swap grew by another `swap_soft_bytes / 2` since the relief. Swap that grew once and then holds steady is
+      not a reason (macOS does not give swap back quickly).
+    * Swap grown past `swap_hard_bytes` since the start: ACTION_STOP at once.
+    * Calm again (no critical pressure, swap no longer growing): back to normal; a later spike relieves first.
+    """
+
+    def __init__(self, swap_soft_bytes: int = 1 * GiB, swap_hard_bytes: Optional[int] = None,
+                 grace_s: float = 10.0):
+        self.swap_soft_bytes = int(swap_soft_bytes)
+        self.swap_hard_bytes = int(swap_hard_bytes if swap_hard_bytes is not None
+                                   else self.swap_soft_bytes + 1 * GiB)
+        self.grace_s = float(grace_s)
+        self.swap_baseline: Optional[int] = None
+        self.relieved_at: Optional[float] = None
+        self.relieved_swap = 0
+        self.calm_swap: Optional[int] = None   # swap level that counts as "not growing" after a relief
+        self.stopped: Optional[str] = None
+        self.max_pressure = PRESSURE_NORMAL
+        self.max_swap_growth = 0
+
+    def start(self, sample: MemorySample) -> None:
+        self.swap_baseline = int(sample.swap_used)
+        self.relieved_at = None
+        self.calm_swap = None
+        self.stopped = None
+        self.max_pressure = sample.pressure
+        self.max_swap_growth = 0
+
+    def trouble(self, s: MemorySample) -> Optional[str]:
+        base = self.swap_baseline if self.swap_baseline is not None else s.swap_used
+        if self.calm_swap is not None:
+            base = max(base, self.calm_swap)   # growth already handled by a relief does not count again
+        grown = s.swap_used - base
+        if s.pressure == PRESSURE_CRITICAL:
+            return "macOS reports critical memory pressure"
+        if grown > self.swap_soft_bytes:
+            return f"swap grew by {fmt_gb(grown)}"
+        return None
+
+    def step(self, s: MemorySample, now: Optional[float] = None) -> tuple[Optional[str], str]:
+        """(None | ACTION_RELIEVE | ACTION_STOP, reason)."""
+        now = time.time() if now is None else now
+        if self.swap_baseline is None:
+            self.start(s)
+        grown = s.swap_used - int(self.swap_baseline or 0)
+        self.max_swap_growth = max(self.max_swap_growth, grown)
+        order = {PRESSURE_NORMAL: 0, PRESSURE_WARN: 1, PRESSURE_CRITICAL: 2}
+        if order.get(s.pressure, 0) > order.get(self.max_pressure, 0):
+            self.max_pressure = s.pressure
+        if self.stopped:
+            return ACTION_STOP, self.stopped
+        if grown > self.swap_hard_bytes:
+            self.stopped = f"swap grew by {fmt_gb(grown)} since the request started (limit {fmt_gb(self.swap_hard_bytes)})"
+            return ACTION_STOP, self.stopped
+        if self.relieved_at is not None:
+            if now - self.relieved_at < self.grace_s:
+                return None, "freeing caches"
+            worse = []
+            if s.pressure == PRESSURE_CRITICAL:
+                worse.append("memory pressure is still critical")
+            more = s.swap_used - self.relieved_swap
+            if more > self.swap_soft_bytes // 2:
+                worse.append(f"swap kept growing (another {fmt_gb(more)})")
+            if worse:
+                self.stopped = " and ".join(worse) + f" {self.grace_s:.0f} s after freeing caches"
+                return ACTION_STOP, self.stopped
+            # it eased: calm again, and the swap level now is the new floor
+            self.relieved_at = None
+            self.calm_swap = int(s.swap_used)
+            return None, ""
+        why = self.trouble(s)
+        if why is None:
+            return None, ""
+        self.relieved_at = now
+        self.relieved_swap = int(s.swap_used)
+        return ACTION_RELIEVE, f"{why}; freeing caches"
+
+
+def admission_budget(sample: MemorySample, headroom_bytes: int = 0) -> int:
+    """What a request may use right now: the memory macOS can hand over without swapping (free + inactive +
+    purgeable + speculative, see parse_vm_stat), minus an optional user-set headroom (0 by default)."""
+    return max(0, int(sample.available) - max(0, int(headroom_bytes or 0)))
+
+
 class MemoryGuard:
     """Admission control. check() refuses when (in this order):
 
     1. a protected service is busy;
-    2. memory pressure is not "normal";
+    2. macOS reports *critical* memory pressure ("warn" is fine: a busy Mac sits there often);
     3. `max_fraction` is set and need > max_fraction * total;
-    4. need + headroom > available.
+    4. need > available (what macOS can give now: free + reclaimable). There is no fixed reserve:
+       `headroom_bytes` is 0 unless the user sets `headroom_gb` themselves.
 
-    watch() is polled during a run and returns a reason to abort when swap grew by more
-    than `swap_growth_bytes` since begin_run(), or pressure is critical.
+    While a request runs, a `Watchdog` (watch_step) decides when to free caches and when to stop.
     """
 
     def __init__(
         self,
         probe: SystemProbe,
         protected: Iterable[ProtectedService] = (),
-        headroom_bytes: int = 8 * GiB,
-        swap_growth_bytes: int = 256 * MiB,
+        headroom_bytes: int = 0,
+        swap_growth_bytes: int = 1 * GiB,
         max_fraction: Optional[float] = None,
+        grace_s: float = 10.0,
     ):
         self.probe = probe
         self.protected = list(protected)
         self.headroom_bytes = int(headroom_bytes)
         self.swap_growth_bytes = int(swap_growth_bytes)
         self.max_fraction = max_fraction
+        self.grace_s = float(grace_s)
+        # Test hook only (proves the watchdog on a real Mac): admit any request whatever its estimate.
+        self.admit_any = os.environ.get("SHUTTER_TEST_ADMIT_ANY") == "1"
+        self.watchdog = Watchdog(self.swap_growth_bytes, grace_s=self.grace_s)
         self.swap_baseline: Optional[int] = None
         self.run_started_at: Optional[float] = None
         self.last_sample: Optional[MemorySample] = None
@@ -619,6 +732,9 @@ class MemoryGuard:
                 return reason
         return None
 
+    def budget(self, sample: Optional[MemorySample] = None) -> int:
+        return admission_budget(sample or self._sample(), self.headroom_bytes)
+
     def check(self, need_bytes: int, what: str = "") -> Decision:
         label = what or "this job"
         s = self._sample()
@@ -631,11 +747,10 @@ class MemoryGuard:
         reason = self._protected_reason()
         if reason:
             return done(False, reason)
-        if s.pressure != PRESSURE_NORMAL:
+        if s.pressure == PRESSURE_CRITICAL:
             return done(
                 False,
-                f"macOS reports {s.pressure} memory pressure; waiting until it is back to "
-                f"normal before starting {label}.",
+                f"macOS reports critical memory pressure; waiting until it eases before starting {label}.",
             )
         if self.max_fraction is not None and need_bytes > self.max_fraction * s.total:
             cap = self.max_fraction * s.total
@@ -645,17 +760,19 @@ class MemoryGuard:
                 f"{self.max_fraction:.0%} limit of this Mac's {fmt_gb(s.total)} "
                 f"({fmt_gb(cap)}).",
             )
-        if need_bytes + self.headroom_bytes > s.available:
+        budget = admission_budget(s, self.headroom_bytes)
+        extra = f" (after the {fmt_gb(self.headroom_bytes)} headroom you set)" if self.headroom_bytes else ""
+        if need_bytes > budget and not self.admit_any:
+            n, b = fmt_gb(need_bytes), fmt_gb(budget)
+            if n == b:
+                n, b = f"{need_bytes / GB:.2f} GB", f"{budget / GB:.2f} GB"
             return done(
                 False,
-                f"Not enough free memory for {label}: it needs {fmt_gb(need_bytes)} plus "
-                f"{fmt_gb(self.headroom_bytes)} headroom, but only {fmt_gb(s.available)} "
-                f"is available.",
+                f"Not enough free memory for {label}: it needs {n}, but macOS can give only {b} right now{extra}.",
             )
         return done(
             True,
-            f"{fmt_gb(s.available)} available covers {fmt_gb(need_bytes)} plus "
-            f"{fmt_gb(self.headroom_bytes)} headroom for {label}.",
+            f"{fmt_gb(budget)} free right now{extra} covers {fmt_gb(need_bytes)} for {label}.",
         )
 
     def admit(self, need_bytes: int, what: str = "") -> Decision:
@@ -668,23 +785,28 @@ class MemoryGuard:
         s = self._sample()
         self.swap_baseline = s.swap_used
         self.run_started_at = time.time()
+        self.watchdog = Watchdog(self.swap_growth_bytes, grace_s=self.grace_s)
+        self.watchdog.start(s)
         return s
 
     def end_run(self) -> None:
         self.swap_baseline = None
         self.run_started_at = None
 
-    def watch(self) -> Optional[str]:
+    def watch_step(self, now: Optional[float] = None) -> tuple[Optional[str], str]:
+        """One watchdog reading: (None | "relieve" | "stop", reason)."""
         s = self._sample()
-        if s.pressure == PRESSURE_CRITICAL:
-            return "macOS reports critical memory pressure; stopping the run to keep the Mac responsive."
-        if self.swap_baseline is not None:
-            grown = s.swap_used - self.swap_baseline
-            if grown > self.swap_growth_bytes:
-                return (
-                    f"Swap grew by {fmt_gb(grown)} since the run started (limit "
-                    f"{fmt_gb(self.swap_growth_bytes)}); stopping to keep the Mac out of swap."
-                )
+        if self.swap_baseline is None:  # not inside begin_run/end_run: judge pressure only
+            if s.pressure == PRESSURE_CRITICAL:
+                return ACTION_STOP, "macOS reports critical memory pressure"
+            return None, ""
+        return self.watchdog.step(s, now)
+
+    def watch(self) -> Optional[str]:
+        """The stop reason (as a plain sentence) when the watchdog says stop, else None."""
+        action, why = self.watch_step()
+        if action == ACTION_STOP:
+            return f"{STOP_BODY} ({why})"
         return None
 
     def snapshot(self) -> dict[str, Any]:
@@ -855,5 +977,7 @@ __all__ = [
     "MemorySample", "SystemProbe", "MacProbe", "LinuxProbe", "FakeProbe", "default_probe",
     "parse_vm_stat", "parse_swapusage", "parse_pressure_level", "parse_meminfo", "parse_ps",
     "ProtectedService", "OmlxService", "ProcessRssService",
-    "Decision", "MemoryGuard", "GpuLock", "fmt_gb",
+    "Decision", "MemoryGuard", "Watchdog", "admission_budget", "ACTION_RELIEVE", "ACTION_STOP", "STOP_MESSAGE", "STOP_BODY",
+    "PROTECT_PREFIX",
+    "GpuLock", "fmt_gb",
 ]

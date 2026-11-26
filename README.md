@@ -30,8 +30,12 @@ and the video that comes out is **identical, bit for bit**. It costs about 5% mo
 
 - **Same output, less memory.** Every low-memory step that is on by default is checked to give the exact
   same frames as the full-memory run.
-- **Never into swap.** A request starts only when it fits in free memory with room to spare. If the Mac
-  starts swapping during a run, Shuttrr stops the request and frees the memory.
+- **Never into swap, no wasted reserve.** A request starts when its peak fits in the memory macOS can give it
+  right now (free plus memory it can reclaim, nothing held back). If it does not fit at the size you asked for,
+  Fast mode picks a lower memory step that does fit and says so. While it runs, MLX is capped at what was free,
+  and a watchdog checks memory every second: at the first sign of trouble (critical memory pressure, or swap
+  growing by 1 GB) it frees caches; if that does not help, it stops the request, frees the memory and tells you:
+  "Stopped to protect your Mac: it was running out of memory. Close other apps or pick a smaller size."
 - **One app, no Terminal.** Download the app, open it, pick a model. It installs its own engine and
   downloads the weights for you.
 - **Plays well with others.** A local HTTP API, an OpenAI-compatible images endpoint and a ComfyUI node pack.
@@ -62,7 +66,7 @@ Python, Homebrew or Terminal needed.
 
 3. Shuttrr opens. You only do this once. The one-line installer above skips this step entirely.
 
-**Updates.** Shuttrr tells you when an update is ready and asks before downloading (from 0.2.2; Shuttrr >
+**Updates.** Shuttrr tells you when an update is ready and asks before downloading (from 0.2.3; Shuttrr >
 Check for Updates…, or the button in Settings and at the bottom of the sidebar). Updates are signed and
 checked. The engine in `~/.shutter` follows along; your models and settings stay. Turn the automatic check
 off in Settings.
@@ -82,8 +86,10 @@ shutter download longcat-avatar-1.6-8bit   # talking video, 37.5 GB from Hugging
 **Starter model.** On a Mac with under 24 GB of memory the app recommends
 [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem)
 as the first model: one click in the app, no conversion. The model list has three sections for this Mac:
-**Recommended** (measured here, full speed in at most half the memory), **Fits but barely** (up to 70% of the
-memory, a lower memory step, or not tested on a Mac this size yet) and **Doesn't fit** (no Download button). Shuttrr
+**Recommended** (measured here, and its full speed peak fits in this Mac's memory minus what macOS itself keeps,
+with 4 GB to spare for your other apps), **Fits but barely** (its lowest memory step fits in this Mac's memory
+minus what macOS keeps, or it is not tested on a Mac this size yet) and **Doesn't fit** (no Download button). What
+macOS keeps is its wired memory, measured on your Mac (about 3 GB). Shuttrr
 never offers a model on the promise that a low-memory step will squeeze it in. Once a model is installed, **Try a Sample** on the Models page makes a short
 clip from a ready-made prompt (320×512, 17 frames, 12 steps: about a minute on a 16 GB M5) and opens it.
 

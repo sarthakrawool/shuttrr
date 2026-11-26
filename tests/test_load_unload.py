@@ -64,14 +64,14 @@ def test_held_entry_can_still_be_evicted_for_another_model(tmp_path):
 
 
 def test_load_waits_for_memory_with_the_guard_sentence(tmp_path):
-    probe = FakeProbe(total=64 * GB, available=1 * GB)
+    probe = FakeProbe(total=64 * GB, available=GB // 2)
     eng = make_engine(tmp_path, probe=probe)
     try:
         job = eng.load_model("dummy", wait=True)
         wait_until(lambda: eng.get(job.id).state == JobState.WAITING_MEMORY)
         r = row(eng)
         assert r["state"] == "waiting_for_memory"
-        assert "Not enough free memory" in r["waiting"] and "headroom" in r["waiting"]
+        assert "Not enough free memory" in r["waiting"] and "macOS can give" in r["waiting"]
         # unload cancels the waiting load
         eng.unload_model("dummy")
         assert eng.get(job.id).state == JobState.CANCELLED
@@ -123,16 +123,16 @@ def test_http_routes(tmp_path, gated):  # noqa: F811
 
 
 def test_load_fails_fast_with_structured_numbers_when_memory_is_short(tmp_path):
-    probe = FakeProbe(total=64 * GB, available=int(1.5 * GB))
+    probe = FakeProbe(total=64 * GB, available=GB // 2)
     eng = make_engine(tmp_path, probe=probe)
     try:
         with pytest.raises(LoadRefused) as ei:
             eng.load_model("dummy")
         info = ei.value.info
         assert info["kind"] == "memory" and info["model_name"] == "Test model"
-        assert info["peak_gb"] == pytest.approx(1.0) and info["headroom_gb"] == pytest.approx(8.0)
-        assert info["available_gb"] == pytest.approx(1.5)
-        assert info["short_by_gb"] == pytest.approx(1.0 + 8.0 - 1.5)
+        assert info["peak_gb"] == pytest.approx(1.0) and info["headroom_gb"] == 0
+        assert info["available_gb"] == pytest.approx(0.5) and info["free_gb"] == pytest.approx(0.5)
+        assert info["short_by_gb"] == pytest.approx(0.5)
         assert info["lowest"] is False
         assert row(eng)["state"] == "not_loaded"           # nothing queued
         assert not eng.list()

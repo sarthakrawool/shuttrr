@@ -300,12 +300,14 @@ struct MemoryBar: View {
             }
             .frame(height: Theme.Metric.memoryBarHeight)
             .accessibilityElement()
-            .accessibilityLabel("Memory: used \(Fmt.gb(parts.used)), reserve \(Fmt.gb(parts.headroom)), free for models \(Fmt.gb(parts.free))")
+            .accessibilityLabel("Memory: used \(Fmt.gb(parts.used)), free for models \(Fmt.gb(parts.free))")
 
             if showLegend {
                 HStack(spacing: Theme.Space.s5) {
                     LegendItem(color: Theme.Palette.violet, label: "Used", value: Fmt.gb(parts.used))
-                    LegendItem(color: Theme.Palette.amberSoft, label: "Reserve", value: Fmt.gb(parts.headroom))
+                    if parts.headroomSetting > 0 {
+                        LegendItem(color: Theme.Palette.amberSoft, label: "Headroom", value: Fmt.gb(parts.headroom))
+                    }
                     LegendItem(color: Theme.Palette.fill, label: "Free for models", value: Fmt.gb(parts.free), outlined: true)
                     LegendItem(color: nil, label: "Swap", value: Fmt.gb(parts.swap))
                     Spacer(minLength: 0)

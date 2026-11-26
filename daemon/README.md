@@ -62,8 +62,8 @@ relative paths are resolved against the home directory.
 
 Keys shared with the Python reference (same defaults): `home`, `host` (127.0.0.1), `port`
 (8484), `db_path`, `cache_dir`, `work_dir`, `output_dir`, `keep_work_dirs`,
-`gpu_lock_path`, `gpu_lock_dirs`, `busy_process_pattern`, `headroom_gb` (null: automatic,
-an eighth of total memory clamped to 2..8 GB; a number always wins), `default_mode`
+`gpu_lock_path`, `gpu_lock_dirs`, `busy_process_pattern`, `headroom_gb` (null: no reserve, the
+default since 0.2.3; a number keeps that many GB free on top of every job), `default_mode`
 (`fast`), `default_efficiency` (0.5),
 `swap_growth_mb` (256), `max_fraction`, `memory_poll_s` (15), `idle_unload_s` (900),
 `omlx_url`, `omlx_api_key`, `protected_process_pattern`, `protected_process_min_gb` (20),

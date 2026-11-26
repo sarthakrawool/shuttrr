@@ -148,7 +148,7 @@ def test_pool_residency():
 def test_memory_shape_components_and_fit(client, engine):
     m = client.get("/v1/memory").json()
     assert m["total"] == 64 * GB and m["available"] == 48 * GB
-    assert m["reserve"] == 8 * GB and m["free_for_models"] == 40 * GB
+    assert m["reserve"] == 0 and m["free_for_models"] == 48 * GB
     assert m["swap"] == 0 and m["pressure"] == "normal" and m["components"] == [] and "model" not in m
     for k in ("held", "resident_bytes", "streamed_bytes", "protected", "reserve_auto", "max_job_bytes"):
         assert k in m
@@ -163,7 +163,7 @@ def test_memory_shape_components_and_fit(client, engine):
     m = client.get("/v1/memory?model=dummy&steps=3").json()["model"]
     assert m["need_bytes"] == GB and m["warm_bytes"] == 2 * GB and m["fits"] is True and m["short_by_bytes"] == 0
     client.post("/v1/pool/release", json={"key": None})
-    engine.probe.set(available=8 * GB + GB // 2)
+    engine.probe.set(available=GB // 2)
     m = client.get("/v1/memory?model=dummy").json()
     assert m["free_for_models"] == GB // 2
     assert m["model"]["fits"] is False and m["model"]["short_by_bytes"] == GB // 2

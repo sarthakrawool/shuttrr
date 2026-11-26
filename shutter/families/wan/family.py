@@ -23,7 +23,8 @@ class WanFamily(Family):
     def recognise(self, path: Path) -> Optional[Checkpoint]:
         return detect.recognise(path)
 
-    def check_memory(self, ckpt: Checkpoint, total_bytes: int, headroom: int = 4 * GB) -> list[str]:
+    def check_memory(self, ckpt: Checkpoint, total_bytes: int, headroom: int = 3 * GB) -> list[str]:
+        """`headroom` = what macOS itself keeps (its wired memory, ~3 GB), not a safety reserve."""
         if not ckpt.config or not total_bytes:
             return []
         h, w, f = MIN_SIZE
