@@ -711,12 +711,22 @@
     } else {
       if (st === "failed") body = '<div class="sh-get__note sh-neg">' + esc(d.error || "The download failed.") + "</div>";
       else if (st === "stopped" || st === "cancelled") body = '<div class="sh-get__note">Stopped at ' + gb(d.done_bytes || 0) + ". It carries on from there.</div>";
-      if (!r.fits_this_mac) body += '<div class="sh-get__note sh-neg">This model needs a Mac with at least ' + gb(r.min_memory_bytes) + " of memory.</div>";
-      else if (r.free_bytes < r.size_bytes - (d.done_bytes || 0)) body += '<div class="sh-get__note sh-neg">Not enough free disk space for this download.</div>';
-      btn = '<button class="mac-btn mac-btn--ink" data-get="' + esc(r.id) + '"' + (r.fits_this_mac ? "" : " disabled") + ">" + (st && st !== "done" ? "Resume download" : "Download") + "</button>";
+      var fit = r.fit || {}, disk = r.disk || {};
+      var diskShort = disk.label ? !disk.ok : r.free_bytes < r.size_bytes - (d.done_bytes || 0);
+      var tooBig = !r.fits_this_mac || fit.level === "needs";
+      if (tooBig) body += '<div class="sh-get__note sh-neg">' + esc(fit.detail || ("This model needs a Mac with at least " + gb(r.min_memory_bytes) + " of memory.")) + "</div>";
+      else {
+        if (fit.detail) body += '<div class="sh-get__note">' + esc(fit.detail) + "</div>";
+        if (diskShort) body += '<div class="sh-get__note sh-neg">' + esc(disk.label || "Not enough free disk space for this download.") + "</div>";
+      }
+      btn = '<button class="mac-btn mac-btn--ink" data-get="' + esc(r.id) + '"' + (tooBig || diskShort ? " disabled" : "") + ">" + (st && st !== "done" ? "Resume download" : "Download") + "</button>";
     }
     var notes = (r.notes || []).map(function (n) { return '<div class="sh-get__note">' + esc(n) + "</div>"; }).join("");
-    return '<div class="sh-get"><div class="sh-get__main"><div class="sh-get__name">' + esc(r.name) + '</div><div class="sh-get__sub">' + esc(r.summary) +
+    var f = r.fit || {}, badges = "";
+    if (r.recommended && !r.installed) badges += ' <span class="mac-badge sh-badge">Recommended</span>';
+    if (f.label) badges += ' <span class="mac-badge ' + (f.level === "fits" ? "mac-badge--keep" : f.level === "needs" ? "mac-badge--trash" : "sh-badge sh-badge--wait") +
+      '" title="' + esc(f.detail || "") + '">' + esc(f.label) + "</span>";
+    return '<div class="sh-get"><div class="sh-get__main"><div class="sh-get__name">' + esc(r.name) + badges + '</div><div class="sh-get__sub">' + esc(r.summary) +
       '</div><div class="sh-get__meta">' + meta.join(" · ") + "</div>" + body + notes + '</div><div class="sh-get__act">' + btn + "</div></div>";
   }
   function renderCatalog() {

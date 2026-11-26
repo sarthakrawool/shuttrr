@@ -21,7 +21,7 @@ PKG_DIR="$APP_ROOT/Shutter"
 REPO_ROOT="$(cd "$APP_ROOT/.." && pwd)"
 BUILD_DIR="$APP_ROOT/build"
 APP="$BUILD_DIR/Shuttrr.app"
-VERSION="${SHUTTER_VERSION:-0.1.0}"
+VERSION="${SHUTTER_VERSION:-0.2.0}"
 
 echo "==> swift build -c release"
 cd "$PKG_DIR"

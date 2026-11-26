@@ -37,14 +37,27 @@ struct ModelDownloadRow: View {
     private var pending: Bool { store.catalogPending.contains(model.id) }
     private var state: String { model.download?.state ?? "" }
     private var remaining: Int { max(0, model.sizeBytes - (model.download?.doneBytes ?? 0)) }
-    private var diskShort: Bool { !model.installed && !model.isDownloading && model.freeBytes > 0 && model.freeBytes < remaining }
+    private var diskShort: Bool {
+        guard !model.installed && !model.isDownloading else { return false }
+        if !model.disk.label.isEmpty { return !model.disk.ok }
+        return model.freeBytes > 0 && model.freeBytes < remaining
+    }
+    private var tooBig: Bool { !model.fitsThisMac || model.fit.level == "needs" }
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.s5) {
             VStack(alignment: .leading, spacing: Theme.Space.s2) {
-                Text(model.name)
-                    .font(Theme.Fonts.rowMedium)
-                    .foregroundStyle(Theme.Palette.ink)
+                HStack(spacing: Theme.Space.s2) {
+                    Text(model.name)
+                        .font(Theme.Fonts.rowMedium)
+                        .foregroundStyle(Theme.Palette.ink)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    if model.recommended && !model.installed {
+                        KitBadge(text: "Recommended", kind: .quiet)
+                    }
+                    FitBadge(fit: model.fit)
+                }
                 Text(model.summary)
                     .font(Theme.Fonts.row)
                     .foregroundStyle(Theme.Palette.ink2)
@@ -82,10 +95,16 @@ struct ModelDownloadRow: View {
             } else if state == "stopped" || state == "cancelled" {
                 line("Stopped at \(Fmt.gb(model.download?.doneBytes ?? 0)). It carries on from there.")
             }
-            if !model.fitsThisMac {
-                line("This model needs a Mac with at least \(Fmt.gb(model.minMemoryBytes)) of memory.", danger: true)
-            } else if diskShort {
-                line("Not enough free disk space for this download.", danger: true)
+            if tooBig {
+                line(model.fit.detail.isEmpty
+                     ? "This model needs a Mac with at least \(Fmt.gb(model.minMemoryBytes)) of memory."
+                     : model.fit.detail, danger: true)
+            } else {
+                if !model.fit.detail.isEmpty { line(model.fit.detail) }
+                if diskShort {
+                    line(model.disk.label.isEmpty ? "Not enough free disk space for this download." : model.disk.label,
+                         danger: true)
+                }
             }
         }
     }
@@ -110,7 +129,7 @@ struct ModelDownloadRow: View {
                 store.startDownload(model.id)
             }
             .buttonStyle(.kit(.ink))
-            .disabled(pending || !model.fitsThisMac || !store.connection.isConnected)
+            .disabled(pending || tooBig || diskShort || !store.connection.isConnected)
         }
     }
 
@@ -131,6 +150,96 @@ struct ModelDownloadRow: View {
             engine.start()
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             store.refreshNow()
+        }
+    }
+}
+
+
+/// "Fits" / "Fits in Low memory" / "Needs 24 GB": how a catalog model fits this Mac's memory.
+struct FitBadge: View {
+    let fit: CatalogFit
+
+    var body: some View {
+        if !fit.label.isEmpty {
+            KitBadge(text: fit.label, kind: kind)
+                .help(fit.detail)
+        }
+    }
+
+    private var kind: KitBadge.Kind {
+        switch fit.level {
+        case "fits": return .good
+        case "low_memory": return .outline
+        case "needs": return .danger
+        default: return .muted
+        }
+    }
+}
+
+/// "Try a Sample": one short clip with the starter model, opened when it is done.
+struct TrySampleCard: View {
+    @EnvironmentObject private var store: EngineStore
+
+    var body: some View {
+        if let model = store.sampleModel, let sm = model.sample {
+            HStack(alignment: .center, spacing: Theme.Space.s5) {
+                VStack(alignment: .leading, spacing: Theme.Space.s1) {
+                    Text("Try a sample")
+                        .font(Theme.Fonts.rowMedium)
+                        .foregroundStyle(Theme.Palette.ink)
+                    Text(detail(model, sm))
+                        .font(Theme.Fonts.meta)
+                        .foregroundStyle(failed ? Theme.Palette.danger : Theme.Palette.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if case .running(_, let p) = store.sample {
+                        ProgressLine(value: p, width: nil, height: Theme.Metric.progressHeight)
+                            .padding(.top, Theme.Space.s1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                button
+            }
+            .padding(.horizontal, Theme.Space.s5)
+            .padding(.vertical, Theme.Space.s4)
+            .background(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
+                .fill(Theme.Palette.white))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
+                .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metric.hairline))
+            .animation(Motion.smooth, value: store.sample)
+        }
+    }
+
+    private var failed: Bool {
+        if case .failed = store.sample { return true }
+        return false
+    }
+
+    private func detail(_ model: CatalogModel, _ sm: CatalogSample) -> String {
+        switch store.sample {
+        case .idle:
+            return "Makes a short clip with \(model.name) (\(sm.height)x\(sm.width), \(sm.frames) frames) from a ready-made prompt, then opens it. About a minute on a 16 GB Mac."
+        case .running(_, let p):
+            return p > 0 ? "Making the sample… \(Fmt.percent(p))" : "Starting the sample…"
+        case .done:
+            return "Done. The video opened in your video player."
+        case .failed(let why):
+            return why
+        }
+    }
+
+    @ViewBuilder private var button: some View {
+        switch store.sample {
+        case .running:
+            Button("Making…") {}
+                .buttonStyle(.kit(.line))
+                .disabled(true)
+        case .done(let out) where !out.isEmpty:
+            Button("Open Video") { NSWorkspace.shared.open(URL(fileURLWithPath: out)) }
+                .buttonStyle(.kit(.line))
+        default:
+            Button("Try a Sample") { store.trySample() }
+                .buttonStyle(.kit(.ink))
+                .disabled(!store.connection.isConnected)
         }
     }
 }

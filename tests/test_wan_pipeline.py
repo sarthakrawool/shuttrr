@@ -424,3 +424,18 @@ def test_adapter_run(tmp_path, vae_file, monkeypatch):
     with pytest.raises(MemoryRefused):
         ad.run(Job(request=req), ctx2)
     assert ctx2.models.log == []
+
+
+def test_adapter_small_mac_defaults(tmp_path):
+    """The model entry's options set the default size / frames / steps (catalog.preset_for gives Macs under
+    24 GB 320x512 x 33 frames); an explicit request still wins."""
+    from shutter.adapters.wan import WanAdapter
+    from shutter.types import JobRequest
+    build = make_build(tmp_path, None)
+    ad = WanAdapter("tiny", build, {"default_size": [320, 512], "default_frames": 33, "default_steps": 20})
+    s = ad.settings_for(JobRequest(model="tiny", prompt="x"))
+    assert (s.height, s.width, s.frames, s.steps) == (320, 512, 33, 20)
+    s = ad.settings_for(JobRequest(model="tiny", prompt="x", width=832, height=480, frames=17, steps=12))
+    assert (s.height, s.width, s.frames, s.steps) == (480, 832, 17, 12)
+    plain = WanAdapter("tiny", build, {}).settings_for(JobRequest(model="tiny", prompt="x"))
+    assert (plain.height, plain.width) != (320, 512) or plain.frames != 33

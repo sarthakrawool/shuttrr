@@ -46,27 +46,52 @@ CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
-# Wan models. No 8-bit Wan builds are published yet, so a download fetches the official repo (bf16 / fp32) into
+# Wan 2.1 T2V 1.3B: a published Shuttrr build (8-bit DiT, Wan's own umT5 + tokenizer + VAE), downloaded as is.
+# On a Mac with under 24 GB it is the recommended first model ("starter"); `sample` is the request "Try a sample"
+# sends (sized to finish in about a minute on a 16 GB M5: measured 54 s, 6.4 GB peak).
+WAN13_SHAPE = dict(dim=1536, in_dim=16, out_dim=16, ffn_dim=8960, num_layers=30)
+WAN13_CHECKED = [
+    {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+     "size": "320x512", "frames": 33, "steps": 20, "identical": True,
+     "peaks_gb": {"resident": 6.23, "split": 6.23, "staged": 4.61, "stream_wide": 4.67, "stream_tight": 4.67},
+     "seconds": {"resident": 166, "split": 153, "staged": 163, "stream_wide": 169, "stream_tight": 160}},
+    {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+     "size": "480x832", "frames": 33, "steps": 30, "vae_tile": True,
+     "peaks_gb": {"staged": 6.93}, "seconds": {"staged": 676},
+     "stopped": ["stream_wide", "stream_tight"]},
+]
+CATALOG["wan2.1-t2v-1.3b-8bit"] = {
+    "name": "Wan 2.1 Text to Video 1.3B",
+    "summary": "Short video clips from a text prompt. The smallest Wan model: quick, and fits a 16 GB Mac.",
+    "kind": "video",
+    "adapter": "wan", "family": "wan", "variant": "wan2.1-t2v-1.3b",
+    "repo": "SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem",
+    "folder": "Wan2.1-T2V-1.3B-MLX-8bit-LowMem",
+    "size_gb": 12.3,          # GiB (13.2 GB), the published repo
+    "min_memory_gb": 16,
+    "shape": WAN13_SHAPE,
+    "starter": True,
+    "checked_on": WAN13_CHECKED,
+    "sample": {"prompt": "A red fox running through fresh snow in a pine forest, morning light, cinematic",
+               "width": 512, "height": 320, "frames": 17, "steps": 12, "seed": 42},
+    "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
+              "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
+    "check_files": ["shuttrr.json", "dit", "text_encoder", "tokenizer", "vae"],
+}
+
+
+# Other Wan models. No 8-bit builds of these are published yet, so a download fetches the official repo (bf16 / fp32) into
 # <models>/sources/<repo> and then runs the converter into <models>/<id>-shuttrr-8bit. Source sizes are approximate
 # (they include the umT5 text encoder and the VAE in their original precision). The built size and the smallest
 # Mac are worked out from the model's shape (shutter.families.wan.spec) and the family's memory check, not typed in.
 _WAN_SOURCES: dict[str, dict[str, Any]] = {
+    # superseded by the published build above; kept so `shutter download wan2.1-t2v-1.3b` and builds already
+    # made from the official repo keep working, but not listed (hidden) unless it is installed or downloading
     "wan2.1-t2v-1.3b": {
-        "name": "Wan 2.1 Text to Video 1.3B",
-        "summary": "Short video clips from a text prompt. The smallest Wan model: quick, and fits most Macs.",
+        "name": "Wan 2.1 Text to Video 1.3B (converted here)",
+        "summary": "The same model, downloaded from the official repo and converted on this Mac.",
         "source_repo": "Wan-AI/Wan2.1-T2V-1.3B", "source_size_gb": 17,
-        "shape": dict(dim=1536, in_dim=16, out_dim=16, ffn_dim=8960, num_layers=30),
-        # measured with scripts/wan_check.py (docs/WAN.md, "Checked on"); an installed build reads its own list
-        "checked_on": [
-            {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
-             "size": "320x512", "frames": 33, "steps": 20, "identical": True,
-             "peaks_gb": {"resident": 6.23, "split": 6.23, "staged": 4.61, "stream_wide": 4.67, "stream_tight": 4.67},
-             "seconds": {"resident": 166, "split": 153, "staged": 163, "stream_wide": 169, "stream_tight": 160}},
-            {"date": "2026-11-26", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
-             "size": "480x832", "frames": 33, "steps": 30, "vae_tile": True,
-             "peaks_gb": {"staged": 6.93}, "seconds": {"staged": 676},
-             "stopped": ["stream_wide", "stream_tight"]},
-        ],
+        "shape": WAN13_SHAPE, "checked_on": WAN13_CHECKED, "hidden": True,
     },
     "wan2.2-ti2v-5b": {
         "name": "Wan 2.2 Text and Image to Video 5B",
@@ -124,7 +149,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
         built, min_gb = _wan_numbers(mid)
         out[mid] = {
             "name": src["name"], "summary": src["summary"], "kind": "video", "adapter": "wan",
-            "family": "wan", "variant": mid,
+            "family": "wan", "variant": mid, "shape": dict(src["shape"]),
             "repo": src["source_repo"], "source_repo": src["source_repo"],
             "folder": f"{mid}-shuttrr-8bit",
             "source_folder": f"sources/{src['source_repo'].split('/')[-1]}",
@@ -133,6 +158,7 @@ def _wan_entries() -> dict[str, dict[str, Any]]:
             "built_size_gb": built,
             "min_memory_gb": min_gb,
             "checked_on": list(src.get("checked_on", [])),   # Macs it was measured on; empty until it is
+            "hidden": bool(src.get("hidden")),
             "needs": ["mlx>=0.31", "safetensors>=0.4", "huggingface_hub>=0.34", "transformers>=4.48",
                       "sentencepiece", "Pillow", "imageio", "imageio-ffmpeg", "ftfy"],
             "check_files": ["shuttrr.json", "text_encoder", "tokenizer", "vae"],
@@ -175,7 +201,118 @@ def preset_for(model_id: str, total_bytes: int) -> dict[str, Any]:
             "This Mac has under 24 GB of memory, so Shuttrr uses Lowest memory and the half-size final decode.",
             "The half-size decode is not bit-identical to the full one (a 46.6 dB match).",
         ]
+    elif entry["adapter"] == "wan" and 0 < total_bytes < SMALL_MAC_BYTES:
+        h, w, f, steps = WAN_SMALL_MAC_DEFAULTS
+        out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps}
+        out["notes"] = [
+            f"This Mac has under {SMALL_MAC_BYTES // GB} GB of memory, so Wan makes {h}x{w} clips of {f} frames by "
+            "default. Short 480x832 clips work with the tiled decode (vae_tile); 81-frame 480x832 clips need a "
+            f"Mac with {SMALL_MAC_BYTES // GB} GB or more.",
+        ]
     return out
+
+
+SMALL_MAC_BYTES = 24 * GB
+WAN_SMALL_MAC_DEFAULTS = (320, 512, 33, 20)     # height, width, frames, steps: measured on a 16 GB M5 (docs/WAN.md)
+
+
+def _wan_estimates(shape: dict[str, Any], variant: str, h: int, w: int, f: int,
+                   tiled: bool = False) -> dict[str, int]:
+    """Engine memory estimate (bytes) per memory step for a Wan model of this shape, before it is downloaded."""
+    from shutter.core import modes as M
+    from shutter.core import parts as P
+    from shutter.families.wan.spec import WanShape, part_sizes, stage_needs
+
+    ws = WanShape(**shape)
+    cfg = ws.to_config(variant)
+    ps = part_sizes(cfg, image_encoder=cfg["model_type"] in ("i2v", "ti2v"))
+    needs = stage_needs(cfg, h, w, f, tiled_decode=tiled)
+    return {r: int(P.estimate(ps, needs, r)["peak"]) for r in M.RUNG_IDS}
+
+
+def _longcat_estimates(total_bytes: int) -> dict[str, int]:
+    from shutter.adapters import longcat as L
+    from shutter.core import modes as M
+    from shutter.types import JobRequest
+
+    small = 0 < total_bytes < L.SMALL_MAC_BYTES
+    plan = L.resolve_render(JobRequest(model="longcat", params={"size": L.SMALL_MAC_LOAD_SIZE} if small else {}))
+    if 0 < total_bytes < SMALL_MAC_BYTES:
+        plan.vae_bf16 = True      # preset_for turns the half-size decode on for these Macs
+    return {r: int(L.estimate_rung(plan, r).peak) for r in M.RUNG_IDS}
+
+
+def default_request(model_id: str, total_bytes: int) -> tuple[int, int, int]:
+    """(height, width, frames) a Wan model makes by default on a Mac with `total_bytes` of memory."""
+    e = CATALOG[model_id]
+    if 0 < total_bytes < SMALL_MAC_BYTES:
+        h, w, f, _ = WAN_SMALL_MAC_DEFAULTS
+        return h, w, f
+    if e.get("shape", {}).get("in_dim") == 48:     # TI2V 5B: 704x1280
+        return 704, 1280, 121
+    return 480, 832, 81
+
+
+def fit_for(model_id: str, total_bytes: int, headroom: int) -> dict[str, Any]:
+    """How a catalog model fits this Mac's memory (its total, not what is free right now), from the engine's own
+    per-step estimates at the size it would run by default here:
+      fits        the fastest step (resident) fits
+      low_memory  only a lower step fits (Shuttrr steps down by itself; slower, same frames)
+      needs       not even the lowest step fits: needs a Mac with `min_memory_gb`
+    `label` is the words to show."""
+    e = CATALOG[model_id]
+    need_gb = int(e["min_memory_gb"])
+    if not total_bytes:
+        return {"level": "unknown", "label": "", "detail": "This Mac's memory could not be read."}
+    try:
+        if e["adapter"] == "wan":
+            h, w, f = default_request(model_id, total_bytes)
+            est = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
+            at = f"{h}x{w}, {f} frames"
+        elif e["adapter"] == "longcat-avatar":
+            est = _longcat_estimates(total_bytes)
+            at = "the default size"
+        else:
+            est = {}
+            at = ""
+    except Exception:
+        est = {}
+        at = ""
+    budget = total_bytes - headroom
+    if total_bytes < need_gb * GB:
+        return {"level": "needs", "label": f"Needs {need_gb} GB",
+                "detail": f"Needs a Mac with at least {need_gb} GB of memory; this one has {total_bytes / GB:.0f} GB."}
+    if not est:
+        return {"level": "fits", "label": "Fits", "detail": f"This Mac has {total_bytes / GB:.0f} GB of memory."}
+    fast, low = est.get("resident", 0), min(est.values())
+    # a model that needs more than half of this Mac's memory only runs with most other apps closed: say so
+    tight = (f" It needs about {low / GB:.0f} GB free when it runs, so close other apps first."
+             if low > total_bytes / 2 else "")
+    if fast <= budget:
+        return {"level": "fits", "label": "Fits",
+                "detail": f"Runs at full speed here: about {fast / GB:.1f} GB at {at}.", "peak_bytes": fast}
+    if low <= budget:
+        return {"level": "low_memory", "label": "Fits in Low memory",
+                "detail": f"Runs here in Low memory: about {low / GB:.1f} GB at {at} (the fastest step would "
+                          f"need about {fast / GB:.0f} GB).{tight}", "peak_bytes": low}
+    more = max(need_gb, int(-(-(low + headroom) // GB)))
+    return {"level": "needs", "label": f"Needs {more} GB",
+            "detail": f"Even Low memory needs about {low / GB:.0f} GB at {at}; this Mac has "
+                      f"{total_bytes / GB:.0f} GB.", "peak_bytes": low}
+
+
+def disk_for(entry: dict[str, Any], free: int, done_bytes: int = 0, installed: bool = False) -> dict[str, Any]:
+    """Disk space a download needs (what is left to fetch, plus the converted build when there is one, plus room
+    to spare) against `free`. `label` is empty when it fits."""
+    if installed:
+        return {"ok": True, "need_bytes": 0, "label": ""}
+    size = int(entry["size_gb"] * GB)
+    need = max(0, size - int(done_bytes or 0)) + DISK_HEADROOM
+    if entry.get("needs_conversion"):
+        need += int(entry.get("built_size_gb", 0) * GB)
+    ok = free <= 0 or free >= need
+    return {"ok": ok, "need_bytes": need,
+            "label": "" if ok else f"Needs {need / GB:.0f} GB of free disk space ({free / GB:.0f} GB free)"}
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -234,6 +371,8 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
         folder = Path(os.path.expanduser(spec["dir"])) if spec.get("dir") else models_home(cfg) / e["folder"]
         installed = bool(spec) and is_complete(folder, e)
         st = read_state(cfg, mid)
+        if e.get("hidden") and not installed and not (st and st.get("state") in RUNNING):
+            continue
         if installed and st and st.get("state") in RUNNING + ("stopped", "failed", "cancelled"):
             st = None if st.get("state") not in RUNNING else st
         try:
@@ -247,10 +386,16 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
                 checked = json.loads((folder / "shuttrr.json").read_text()).get("checked_on", checked)
             except (OSError, ValueError):
                 pass
+        fit = fit_for(mid, total, cfg.headroom_for(total) if total else 0)
+        disk = disk_for(e, free, (st or {}).get("done_bytes", 0) if (st or {}).get("state") != "converting" else 0,
+                        installed)
         rows.append({
             "id": mid, "name": e["name"], "summary": e["summary"], "kind": e["kind"], "source": e["repo"],
+            "fit": fit, "disk": disk,
+            "recommended": bool(e.get("starter")) and 0 < total < SMALL_MAC_BYTES and fit["level"] != "needs",
+            "sample": e.get("sample"),
             "size_bytes": int(e["size_gb"] * GB), "min_memory_bytes": int(e["min_memory_gb"] * GB),
-            "fits_this_mac": total == 0 or total >= e["min_memory_gb"] * GB,
+            "fits_this_mac": total == 0 or fit["level"] != "needs",
             "dir": str(folder), "installed": installed, "free_bytes": free,
             "notes": preset["notes"], "download": st,
             "needs_conversion": bool(e.get("needs_conversion")),
@@ -258,6 +403,9 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "size_approximate": bool(e.get("size_approximate")),
             "checked_on": checked,
         })
+    # the recommended starter first, then models that fit, then the rest (stable within each group)
+    order = {"fits": 0, "low_memory": 1, "unknown": 1, "needs": 2}
+    rows.sort(key=lambda r: (not r["recommended"], order.get(r["fit"]["level"], 1)))
     return rows
 
 

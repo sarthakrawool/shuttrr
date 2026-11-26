@@ -267,7 +267,7 @@ def test_daemon_ladder_matches_modes_py():
 def test_catalog_lists_downloadable_models(client):
     r = client.get("/v1/catalog")
     assert r.status_code == 200
-    row = r.json()["models"][0]
-    assert row["id"] == "longcat-avatar-1.6-8bit" and row["installed"] is False and row["size_bytes"] > 30 * 2**30
+    row = {m["id"]: m for m in r.json()["models"]}["longcat-avatar-1.6-8bit"]
+    assert row["installed"] is False and row["size_bytes"] > 30 * 2**30
     assert client.post("/v1/catalog/nope/download").status_code == 404
     assert client.delete("/v1/catalog/longcat-avatar-1.6-8bit/download").status_code == 200

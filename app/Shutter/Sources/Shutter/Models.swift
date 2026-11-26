@@ -496,6 +496,66 @@ struct CatalogDownload: Decodable, Hashable, Sendable {
     var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : 0 }
 }
 
+/// How a catalog model fits this Mac's memory (its total, from the engine's per-step estimates).
+struct CatalogFit: Decodable, Hashable, Sendable {
+    /// fits, low_memory, needs, unknown
+    var level: String = "unknown"
+    /// "Fits", "Fits in Low memory", "Needs 24 GB"; empty when unknown.
+    var label: String = ""
+    var detail: String = ""
+
+    enum CodingKeys: String, CodingKey { case level, label, detail }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        level = c.value(.level, "unknown")
+        label = c.value(.label, "")
+        detail = c.value(.detail, "")
+    }
+}
+
+/// Free disk space a download needs; `label` is empty when it fits.
+struct CatalogDisk: Decodable, Hashable, Sendable {
+    var ok: Bool = true
+    var needBytes: Int = 0
+    var label: String = ""
+
+    enum CodingKeys: String, CodingKey { case ok, label, needBytes = "need_bytes" }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = c.value(.ok, true)
+        needBytes = c.value(.needBytes, 0)
+        label = c.value(.label, "")
+    }
+}
+
+/// The request "Try a Sample" sends with a model (sized to finish in about a minute).
+struct CatalogSample: Decodable, Hashable, Sendable {
+    var prompt: String = ""
+    var width: Int = 512
+    var height: Int = 320
+    var frames: Int = 17
+    var steps: Int = 12
+    var seed: Int = 42
+
+    enum CodingKeys: String, CodingKey { case prompt, width, height, frames, steps, seed }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        prompt = c.value(.prompt, "")
+        width = c.value(.width, 512)
+        height = c.value(.height, 320)
+        frames = c.value(.frames, 17)
+        steps = c.value(.steps, 12)
+        seed = c.value(.seed, 42)
+    }
+}
+
 struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var id: String = ""
     var name: String = ""
@@ -509,9 +569,14 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var dir: String = ""
     var notes: [String] = []
     var download: CatalogDownload?
+    var fit = CatalogFit()
+    var disk = CatalogDisk()
+    /// The starter model for this Mac (under 24 GB: the smallest Wan).
+    var recommended: Bool = false
+    var sample: CatalogSample?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, summary, kind, installed, dir, notes, download
+        case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
         case freeBytes = "free_bytes"
@@ -532,6 +597,10 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         dir = c.value(.dir, "")
         notes = c.value(.notes, [])
         download = c.optional(.download)
+        fit = c.optional(.fit) ?? CatalogFit()
+        disk = c.optional(.disk) ?? CatalogDisk()
+        recommended = c.value(.recommended, false)
+        sample = c.optional(.sample)
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }
@@ -707,10 +776,16 @@ struct NewJobRequest: Encodable, Sendable {
     var priority: Int = 0
     /// Per-job overrides such as `mode` / `efficiency`; nil sends nothing (engine defaults).
     var params: [String: JSONValue]? = nil
+    /// Size, length and steps (text-to-video models); nil sends nothing.
+    var width: Int? = nil
+    var height: Int? = nil
+    var frames: Int? = nil
+    var steps: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         // `framing` is not sent: the engine no longer has it.
         case model, prompt, image, audio, output, durationS = "duration_s", seed, priority, params
+        case width, height, frames, steps
     }
 }
 

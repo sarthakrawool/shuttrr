@@ -8,6 +8,25 @@ Wan runs from a **Shuttrr build**: a folder made by `shutter convert` that holds
 the umT5 text encoder in bf16, the tokenizer and the VAE. You can make one from a Hugging Face download, a ComfyUI
 file or a fine-tune. `shutter download` does the same for the models in the catalog.
 
+## The published 1.3B build (starter model)
+
+`wan2.1-t2v-1.3b-8bit` is a ready-made Shuttrr build on Hugging Face:
+[SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem)
+(13.2 GB, 25 files). `shutter download wan2.1-t2v-1.3b-8bit` fetches it and checks every file's size and sha256;
+no conversion runs on your Mac. It is self-contained: the DiT, umT5 text encoder, tokenizer and VAE all come from
+the official `Wan-AI/Wan2.1-T2V-1.3B` release. The release's `.pth` files were copied to safetensors with
+`scripts/pth_to_safetensors.py` (no PyTorch, and the pickle's code never runs: only the names a plain state dict
+uses are accepted), then converted with `shutter convert`.
+
+Checked before upload on the 16 GB M5 MacBook, 320x512, 33 frames, 20 steps, prompt encoded once: resident
+6.48 GB / 139 s, stream_tight 4.94 GB / 131 s, frames identical bit for bit.
+
+On a Mac with under 24 GB the app recommends it as the first model, and the catalog gives Wan models 320x512,
+33 frames, 20 steps as defaults there (model options `default_size`, `default_frames`, `default_steps`; a request
+that names its own size or length wins). "Try a Sample" sends 320x512, 17 frames, 12 steps (measured 54 s, 6.4 GB
+through the engine). The convert-it-yourself `wan2.1-t2v-1.3b` entry is still there for `shutter download`, but is
+no longer listed.
+
 ## What runs
 
 | Model | Task | Video model in 8-bit | Built folder | Download (original, approx.) | Smallest Mac (estimate) |

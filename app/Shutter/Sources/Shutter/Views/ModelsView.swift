@@ -58,6 +58,10 @@ struct ModelsView: View {
                         .foregroundStyle(Theme.Palette.muted)
                 }
 
+                if store.sampleModel != nil {
+                    TrySampleCard()
+                }
+
                 VStack(alignment: .leading, spacing: Theme.Space.s3) {
                     SectionHeader(title: "Available", count: store.models.count)
                     if store.models.isEmpty {

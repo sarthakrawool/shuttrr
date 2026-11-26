@@ -562,6 +562,10 @@ private struct ReadyPage: View {
                 LiveDownloadCard(model: model)
                     .padding(.top, Theme.Space.s5)
             }
+            if live.isEmpty && store.sampleModel != nil {
+                TrySampleCard()
+                    .padding(.top, Theme.Space.s5)
+            }
             VStack(alignment: .leading, spacing: live.isEmpty ? Theme.Space.s4 : Theme.Space.s3) {
                 NumberedPoint(number: "1", title: "It lives in the menu bar",
                               text: "Click the aperture icon at the top of the screen.")

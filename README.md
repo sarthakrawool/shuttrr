@@ -61,8 +61,16 @@ Python, Homebrew or Terminal needed.
 git clone https://github.com/sarthakrawool/shuttrr && cd shuttrr
 scripts/install.sh                         # engine in ~/.shutter/venv, Shuttrr.app in ~/Applications
 shutter doctor                             # is this Mac ready?
-shutter download longcat-avatar-1.6-8bit   # 37.5 GB from Hugging Face
+shutter download wan2.1-t2v-1.3b-8bit      # starter model: text to video, fits a 16 GB Mac
+shutter download longcat-avatar-1.6-8bit   # talking video, 37.5 GB from Hugging Face
 ```
+
+**Starter model.** On a Mac with under 24 GB of memory the app recommends
+[Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem)
+as the first model: one click in the app, no conversion. Every model in the list says whether it fits this Mac
+("Fits", "Fits in Low memory" or "Needs N GB", from the engine's own memory estimates against the Mac's total
+memory) and how much disk it needs. Once a model is installed, **Try a Sample** on the Models page makes a short
+clip from a ready-made prompt (320×512, 17 frames, 12 steps: about a minute on a 16 GB M5) and opens it.
 
 ### Requirements
 
@@ -70,7 +78,7 @@ shutter download longcat-avatar-1.6-8bit   # 37.5 GB from Hugging Face
 | --- | --- |
 | Mac | Apple silicon (M1 or newer), macOS 14 or newer |
 | Memory | **24 GB or more** for LongCat. Wan 2.1 1.3B runs on 16 GB. |
-| Disk | About 40 GB free for LongCat |
+| Disk | About 18 GB free for the Wan starter model, about 40 GB for LongCat |
 
 ## Make your first video
 
@@ -144,7 +152,8 @@ turn it on, and it matches the full decode at 46.6 dB.
 | Model | Kind | Download | Status |
 | --- | --- | --- | --- |
 | [LongCat-Video-Avatar 1.6, 8-bit low-memory](https://huggingface.co/SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem) | talking video from image + audio | 37.5 GB | supported |
-| Wan 2.1 family (T2V 1.3B checked; other 2.1 checkpoints and fine-tunes accepted) | text to video | your own checkpoint, converted to 8-bit low-memory with `shutter convert` | early support |
+| [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem) | text to video | 13.2 GB, one click (`shutter download wan2.1-t2v-1.3b-8bit`) | supported, starter model on 16 GB Macs |
+| Wan 2.1 family (other 2.1 checkpoints and fine-tunes) | text to video | your own checkpoint, converted to 8-bit low-memory with `shutter convert` | early support |
 
 Shuttrr accepts Wan 2.1 checkpoints in the official, diffusers and ComfyUI layouts, bare fine-tune files, and
 LoRAs (official, PEFT and kohya names). `shutter inspect <path>` says what a checkpoint is and whether this Mac
@@ -170,7 +179,9 @@ To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clie
 
 - **16 GB Macs:** LongCat does not fit yet. The guard needs about 12 GB free at 480p, and a 16 GB Mac with a
   browser open had 3.4 to 5.9 GB free in our tests.
-- **Wan:** 480p at 81 frames, the streamed steps at 480p and the 14B models are not measured yet.
+- **Wan:** 480p at 81 frames, the streamed steps at 480p and the 14B models are not measured yet. On a Mac with
+  under 24 GB, Wan makes 320×512 clips of 33 frames by default; short 480×832 clips work with the tiled decode
+  (`vae_tile`), and 81-frame 480×832 clips did not fit beside normal apps on 16 GB.
 - **Other Macs:** LongCat is only measured on an M5 Max and Wan on a 16 GB M5 so far. Smaller chips will be slower, and the lowest steps read
   the model from the SSD on every step.
 - **One request at a time.** Shuttrr runs heavy work one request at a time on purpose.

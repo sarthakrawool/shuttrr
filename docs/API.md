@@ -42,7 +42,7 @@ Conventions:
   "output": null,                       // output path; default <outputs>/<id>.<ext>
   "priority": 0,
   "params": {"mode": "low_memory", "efficiency": 0.75},   // adapter-specific, passed through
-  "client": "comfyui-shutter/0.1.0"     // optional, recorded on the job (not part of the request)
+  "client": "comfyui-shutter/0.2.0"     // optional, recorded on the job (not part of the request)
 }
 ```
 
@@ -80,7 +80,7 @@ Conventions:
   "eta_s": 12.5,                         // only while running and progress > 1%
   "result": {"output": "/…/outputs/d98530c84d6c.mp4", "seconds": 0.002, "peak_bytes": 17179869184, "…": "…"},
   "node": "local",
-  "client": "comfyui-shutter/0.1.0",     // null when no client was named
+  "client": "comfyui-shutter/0.2.0",     // null when no client was named
   "request": { "model": "…", "prompt": "…", "negative_prompt": "", "width": null, "height": null,
                "frames": null, "duration_s": null, "fps": null, "steps": 2, "guidance": null,
                "seed": 42, "inputs": {}, "output": "…", "priority": 0, "params": {} }
@@ -167,7 +167,7 @@ The ComfyUI pack uses `fits` to decide whether to unload ComfyUI's own models be
 
 ```json
 {"window_s": 600,
- "clients": [{"client": "comfyui-shutter/0.1.0", "requests": 3, "requests_total": 5,
+ "clients": [{"client": "comfyui-shutter/0.2.0", "requests": 3, "requests_total": 5,
               "first_seen": 1795589100.2, "last_seen": 1795589400.9, "idle_s": 4.2}]}
 ```
 
@@ -273,8 +273,17 @@ Limits:
 
 `GET /v1/catalog` lists the models Shuttrr can download: `{"models": [{"id", "name", "summary", "kind",
 "source", "size_bytes", "min_memory_bytes", "fits_this_mac", "free_bytes", "dir", "installed", "notes",
-"download"}], "restart_needed"}`. `download` is null or `{"state", "done_bytes", "total_bytes", "error"}` with
-state `downloading`, `done`, `failed`, `stopped` (the download process died; it can resume) or `cancelled`.
+"download", "fit", "disk", "recommended", "sample"}], "restart_needed"}`. `download` is null or `{"state",
+"done_bytes", "total_bytes", "error"}` with state `downloading`, `done`, `failed`, `stopped` (the download process
+died; it can resume) or `cancelled`.
+
+`fit` says how the model fits this Mac's memory (its total, not what is free now), from the engine's own per-step
+estimates at the size it runs by default here: `{"level": "fits" | "low_memory" | "needs" | "unknown", "label":
+"Fits" | "Fits in Low memory" | "Needs 24 GB", "detail"}`. `disk` is `{"ok", "need_bytes", "label"}` (label empty
+when the download fits on the disk). `recommended` is true for the starter model on a Mac with under 24 GB.
+`sample` is null or the request "Try a Sample" sends (`{"prompt", "width", "height", "frames", "steps", "seed"}`);
+the app posts it to `POST /v1/jobs` with the model's id. Rows come sorted: the recommended model first, then the
+models that fit.
 `restart_needed` (Rust engine only) is true when a model finished downloading after the engine started.
 
 `POST /v1/catalog/{id}/download` starts or resumes the download and returns the catalog (202).

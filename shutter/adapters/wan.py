@@ -83,12 +83,14 @@ class WanAdapter(Adapter):
         from shutter.families.wan.pipeline import Settings, align
         cfg = self.cfg
         p = request.params or {}
-        dh, dw = cfg.get("default_size") or ((704, 1280) if cfg["model_type"] == "ti2v" else (480, 832))
+        # defaults: the model entry's options (preset_for gives small Macs 320x512), else the variant's own
+        dh, dw = (self._opt("default_size", None) or cfg.get("default_size")
+                  or ((704, 1280) if cfg["model_type"] == "ti2v" else (480, 832)))
         h = int(request.height or p.get("height") or dh)
         w = int(request.width or p.get("width") or dw)
         fps = float(request.fps or cfg.get("sample_fps", 16))
         frames = request.frames or (int(round(request.duration_s * fps)) + 1 if request.duration_s else None) \
-            or int(cfg.get("frame_num", 81))
+            or int(self._opt("default_frames", 0) or cfg.get("frame_num", 81))
         gs = request.guidance if request.guidance is not None else p.get("guidance")
         default_gs = cfg.get("sample_guide_scale", 5.0)
         if gs is None:
@@ -96,10 +98,11 @@ class WanAdapter(Adapter):
         if cfg.get("dual_model") and not isinstance(gs, (list, tuple)):
             gs = (float(gs), float(p.get("guidance_high", gs)))
         s = Settings(prompt=request.prompt, negative_prompt=request.negative_prompt or "", height=h, width=w,
-                     frames=int(frames), steps=int(request.steps or p.get("steps") or cfg.get("sample_steps", 40)),
+                     frames=int(frames), steps=int(request.steps or p.get("steps") or self._opt("default_steps", 0)
+                               or cfg.get("sample_steps", 40)),
                      guidance=gs, shift=float(p.get("shift", cfg.get("sample_shift", 5.0))), seed=int(request.seed),
                      scheduler=str(p.get("scheduler", "unipc")), image=request.image,
-                     vae_tile=_truthy(p.get("vae_tile", False)), loras=list(p.get("loras") or []))
+                     vae_tile=_truthy(p.get("vae_tile", self._opt("vae_tile", False))), loras=list(p.get("loras") or []))
         return align(cfg, s)
 
     # ---- memory

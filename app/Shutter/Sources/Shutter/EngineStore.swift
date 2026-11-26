@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -32,6 +33,16 @@ final class EngineStore: ObservableObject {
     /// Ids whose Download or Stop button was just pressed (until the engine answers).
     @Published private(set) var catalogPending: Set<String> = []
     private var lastCatalogFetch = Date.distantPast
+
+    /// "Try a Sample": the job it sent, and what to show while it runs.
+    enum SampleState: Equatable {
+        case idle
+        case running(jobID: String, progress: Double)
+        case done(output: String)
+        case failed(String)
+    }
+    @Published private(set) var sample: SampleState = .idle
+    private var sampleTask: Task<Void, Never>?
 
     private var pollTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
@@ -75,6 +86,13 @@ final class EngineStore: ObservableObject {
         !catalog.isEmpty && !models.contains { $0.installed && $0.family != "dummy" }
     }
     var catalogDownloading: Bool { catalog.contains { $0.isDownloading } }
+
+    /// The installed model "Try a Sample" uses: the recommended starter first, then any installed model with a
+    /// sample request.
+    var sampleModel: CatalogModel? {
+        let ready = catalog.filter { $0.installed && $0.sample != nil && !catalogRestartNeeded }
+        return ready.first { $0.recommended } ?? ready.first
+    }
 
     /// SF Symbol for the menu bar: changes while a job runs or memory is refused.
     var menuBarSymbol: String {
@@ -346,6 +364,43 @@ final class EngineStore: ObservableObject {
         } catch {
             lastError = error.localizedDescription
             return false
+        }
+    }
+
+    /// Send the starter model's sample request, follow the job, and open the video when it is done.
+    func trySample() {
+        guard let model = sampleModel, let sm = model.sample else { return }
+        if case .running = sample { return }
+        sampleTask?.cancel()
+        sample = .running(jobID: "", progress: 0)
+        sampleTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let req = NewJobRequest(model: model.id, prompt: sm.prompt, seed: sm.seed,
+                                    width: sm.width, height: sm.height, frames: sm.frames, steps: sm.steps)
+            do {
+                let job = try await APIClient.current().submit(req)
+                self.sample = .running(jobID: job.id, progress: 0)
+                self.refreshNow()
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    let j = try await APIClient.current().job(id: job.id)
+                    switch j.state {
+                    case .done:
+                        let out = j.outputPath ?? ""
+                        self.sample = .done(output: out)
+                        if !out.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: out)) }
+                        self.refreshNow()
+                        return
+                    case .failed, .cancelled:
+                        self.sample = .failed(j.message.isEmpty ? "The sample did not finish." : j.message)
+                        return
+                    default:
+                        self.sample = .running(jobID: job.id, progress: j.progress)
+                    }
+                }
+            } catch {
+                self.sample = .failed(error.localizedDescription)
+            }
         }
     }
 

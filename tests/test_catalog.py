@@ -40,7 +40,7 @@ def test_download_registers_model_with_small_mac_preset(cfg, monkeypatch):
     spec = fresh.models[MID]
     assert spec["adapter"] == "longcat-avatar" and spec["options"] == {"vae_bf16": True}
     assert (fresh.default_mode, fresh.default_efficiency) == ("low_memory", 1.0)
-    row = cat.catalog_rows(fresh)[0]
+    row = {r["id"]: r for r in cat.catalog_rows(fresh)}[MID]
     assert row["installed"] and row["download"]["state"] == "done" and row["notes"]
 
 
@@ -68,7 +68,7 @@ def test_failure_is_recorded_in_plain_words(cfg):
 def test_incomplete_download_is_not_registered(cfg):
     with pytest.raises(cat.DownloadError, match="files are missing"):
         cat.download(MID, cfg, fetch=lambda r, d: None, total_of=lambda r: 31, poll_s=0.01)
-    assert not cat.catalog_rows(cfg)[0]["installed"]
+    assert not {r["id"]: r for r in cat.catalog_rows(cfg)}[MID]["installed"]
 
 
 def test_not_enough_disk(cfg):
@@ -160,6 +160,7 @@ def test_disk_check_keeps_five_gb_spare(cfg, monkeypatch):
 # ---------------------------------------------------------------- Wan: download the source, then convert
 
 WAN = "wan2.1-t2v-1.3b"
+STARTER = "wan2.1-t2v-1.3b-8bit"
 A14B = "wan2.2-t2v-a14b"
 
 
@@ -201,6 +202,10 @@ def fake_hub(tmp_path, monkeypatch):
 
     mod = types.SimpleNamespace(snapshot_download=snapshot_download, HfApi=HfApi)
     monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
+    # the real Wan sizes are checked against free disk space: give these tests a roomy disk, whatever this Mac has
+    import collections
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(cat.shutil, "disk_usage", lambda p: usage(4096 * GB, 0, 4096 * GB))
     calls.src = src
     return calls
 
@@ -208,14 +213,17 @@ def fake_hub(tmp_path, monkeypatch):
 def test_wan_rows(cfg, monkeypatch):
     monkeypatch.setattr(cat, "total_memory", lambda: 16 * GB)
     rows = {r["id"]: r for r in cat.catalog_rows(cfg)}
-    assert rows[MID]["needs_conversion"] is False and list(rows)[0] == MID
-    for mid, repo in (("wan2.1-t2v-1.3b", "Wan-AI/Wan2.1-T2V-1.3B"), ("wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B"),
+    assert rows[MID]["needs_conversion"] is False
+    # on a 16 GB Mac the published Wan 1.3B build is the recommended starter, listed first
+    assert list(rows)[0] == STARTER and rows[STARTER]["recommended"] and not rows[MID]["recommended"]
+    assert WAN not in rows                                   # the convert-it-yourself 1.3B is hidden
+    for mid, repo in (("wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B"),
                       ("wan2.2-t2v-a14b", "Wan-AI/Wan2.2-T2V-A14B"), ("wan2.2-i2v-a14b", "Wan-AI/Wan2.2-I2V-A14B")):
         r = rows[mid]
         e = cat.CATALOG[mid]
         assert r["kind"] == "video" and r["source"] == repo and e["source_repo"] == repo and e["adapter"] == "wan"
         assert r["needs_conversion"] and r["size_approximate"] and not r["installed"]
-        assert (r["checked_on"] != []) == (mid == "wan2.1-t2v-1.3b")        # only the 1.3B is measured so far
+        assert r["checked_on"] == []                          # only the 1.3B is measured so far
         assert r["built_size_bytes"] < r["size_bytes"]
         assert r["dir"].endswith(f"{mid}-shuttrr-8bit")
     # the smallest Mac comes from the family memory check: one GB less fails it
@@ -310,5 +318,47 @@ def test_converting_state_reads_as_stopped_when_the_process_died(cfg):
 
 
 def test_doctor_skips_wan_until_installed(cfg):
-    names = [r["check"] for r in cat.doctor(cfg)]
-    assert not any(n.startswith("Wan") for n in names)
+    rows = cat.doctor(cfg)
+    wan = [r for r in rows if r["check"].startswith("Wan")]
+    # only the published starter build is offered; models that are converted on download are not worth a line
+    assert [r["check"] for r in wan] == [cat.CATALOG[STARTER]["name"]]
+    assert f"shutter download {STARTER}" in wan[0]["detail"]
+
+
+def test_fit_labels_follow_memory_estimates():
+    # Wan 1.3B on 16 GB: 320x512 x 33 at full speed (measured 6.2 GB); LongCat only in Low memory there
+    f = cat.fit_for(STARTER, 16 * GB, 2 * GB)
+    assert f["level"] == "fits" and f["label"] == "Fits" and "320x512, 33 frames" in f["detail"]
+    lc = cat.fit_for(MID, 16 * GB, 2 * GB)
+    assert lc["level"] == "low_memory" and lc["label"] == "Fits in Low memory"
+    assert cat.fit_for(MID, 64 * GB, 8 * GB)["level"] == "fits"
+    assert cat.fit_for(STARTER, 8 * GB, 2 * GB) == {**cat.fit_for(STARTER, 8 * GB, 2 * GB), "level": "needs",
+                                                     "label": "Needs 16 GB"}
+    assert cat.fit_for(STARTER, 0, 0)["level"] == "unknown"
+    # small Macs never default to 480x832 x 81 frames
+    assert cat.default_request(STARTER, 16 * GB) == (320, 512, 33)
+    assert cat.default_request(STARTER, 32 * GB) == (480, 832, 81)
+
+
+def test_disk_label():
+    e = cat.CATALOG[STARTER]
+    ok = cat.disk_for(e, 500 * GB)
+    assert ok["ok"] and ok["label"] == ""
+    short = cat.disk_for(e, 10 * GB)
+    assert not short["ok"] and short["label"].startswith("Needs ") and "10 GB free" in short["label"]
+    assert cat.disk_for(e, 1 * GB, installed=True)["ok"]
+
+
+def test_wan_starter_preset_and_sample(cfg, monkeypatch):
+    p = cat.preset_for(STARTER, 16 * GB)
+    assert p["options"] == {"default_size": [320, 512], "default_frames": 33, "default_steps": 20}
+    assert any("24 GB" in n for n in p["notes"])
+    assert cat.preset_for(STARTER, 64 * GB)["options"] == {}
+    sm = cat.CATALOG[STARTER]["sample"]
+    assert (sm["width"], sm["height"], sm["frames"], sm["steps"]) == (512, 320, 17, 12) and sm["prompt"]
+    assert cat.CATALOG[STARTER]["repo"] == "SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem"
+    assert not cat.CATALOG[STARTER].get("needs_conversion")
+    monkeypatch.setattr(cat, "total_memory", lambda: 64 * GB)
+    rows = {r["id"]: r for r in cat.catalog_rows(cfg)}
+    assert not rows[STARTER]["recommended"]                  # only Macs under 24 GB get a recommendation
+    assert rows[STARTER]["sample"] == sm and rows[STARTER]["fit"]["label"] == "Fits"
