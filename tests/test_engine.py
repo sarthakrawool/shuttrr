@@ -356,7 +356,8 @@ def test_adapter_error_fails_job_but_worker_survives(tmp_path, engines):
     good = eng.submit(req())
     wait_until(lambda: eng.get(good.id).state == JobState.DONE)
     b = eng.get(bad.id)
-    assert b.state == JobState.FAILED and "boom" in b.message
+    assert b.state == JobState.FAILED and "RuntimeError" not in b.message and "internal error" in b.message
+    assert b.result["error_detail"] == "RuntimeError: boom"
     assert not eng.gpu_lock.held
 
 

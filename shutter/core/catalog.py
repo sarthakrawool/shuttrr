@@ -375,6 +375,39 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     return out("barely", TIGHT, low)
 
 
+def memory_line(model_id: str, total_bytes: int) -> str:
+    """One line on the memory the model uses on this Mac (not its download size): measured peaks at its default
+    request when there are any, else the engine's estimate, marked as such."""
+    e = CATALOG[model_id]
+    try:
+        h, w, f = default_request_any(model_id, total_bytes)
+    except Exception:
+        return ""
+    peaks = _measured_peaks(e, h, w, f)
+    where = ""
+    if peaks:
+        c = next((c for c in e.get("checked_on") or [] if c.get("size") == f"{h}x{w}"), {})
+        mac = str(c.get("mac") or "").split(" (")[0]
+        gb = f" {c['memory_gb']} GB" if c.get("memory_gb") else ""
+        where = f" (measured on a{gb} {mac})" if mac else " (measured)"
+    else:
+        try:
+            if e["adapter"] == "wan":
+                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f)
+            elif e["adapter"] == "longcat-avatar":
+                peaks = _longcat_estimates(total_bytes)
+        except Exception:
+            peaks = {}
+        peaks = {r: v for r, v in peaks.items() if not r.startswith("stream")} or peaks
+        where = " (an estimate; not measured yet)"
+    if not peaks:
+        return ""
+    fast, low = peaks.get("resident"), min(peaks.values())
+    if fast and fast > low * 1.05:
+        return f"Uses about {fast / GB:.1f} GB of memory at full speed, {low / GB:.1f} GB at its lowest step{where}."
+    return f"Uses about {low / GB:.1f} GB of memory{where}."
+
+
 def makes_line(model_id: str, total_bytes: int) -> str:
     """One short line on what the model makes by default on this Mac, e.g. "Makes 320x512 clips on this Mac"."""
     try:
@@ -497,7 +530,7 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
                         installed)
         rows.append({
             "id": mid, "name": e["name"], "summary": e["summary"], "kind": e["kind"], "source": e["repo"],
-            "fit": fit, "disk": disk, "makes": makes_line(mid, total),
+            "fit": fit, "disk": disk, "makes": makes_line(mid, total), "memory": memory_line(mid, total),
             "recommended": fit["level"] == "recommended",
             "sample": e.get("sample"),
             "size_bytes": int(e["size_gb"] * GB), "min_memory_bytes": int(e["min_memory_gb"] * GB),

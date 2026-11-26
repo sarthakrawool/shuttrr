@@ -117,6 +117,13 @@ class ModelPool:
         if not dropped:
             return
         for _, entry, _ in dropped:
+            # a streamed model's SSD reader thread holds the blocks it read ahead: stop it, or they stay in memory
+            blocks = getattr(entry.obj, "_streamed_blocks", None)
+            if blocks is not None and callable(getattr(blocks, "close", None)):
+                try:
+                    blocks.close()
+                except Exception:
+                    pass
             entry.obj = None
         free_memory()
         for key, entry, reason in dropped:

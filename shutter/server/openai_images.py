@@ -168,7 +168,9 @@ async def _run(engine: Any, request: Request, opts: dict[str, Any], inputs: dict
                         for other in ids:
                             if other not in done:
                                 engine.cancel(other)
-                        raise ShimError(500, f"job {jid} {j.state.value}: {j.message}", None,
+                        detail = (j.result or {}).get("error_detail")
+                        raise ShimError(500, f"job {jid} {j.state.value}: {j.message}"
+                                        + (f" ({detail})" if detail else ""), None,
                                         "job_" + j.state.value, "server_error")
             if len(done) == len(ids):
                 break

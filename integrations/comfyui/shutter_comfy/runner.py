@@ -142,7 +142,9 @@ async def generate(client: ShutterClient, request: Dict[str, Any], *,
         raise
 
     if job["state"] != "done":
-        raise ShutterError(500, f"job {jid} {job['state']}: {job.get('message') or 'no message'}")
+        detail = (job.get("result") or {}).get("error_detail")
+        raise ShutterError(500, f"job {jid} {job['state']}: {job.get('message') or 'no message'}"
+                           + (f" ({detail})" if detail else ""))
     hooks.on_progress(1.0, None, None, job.get("stage", ""))
 
     # 5. output

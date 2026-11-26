@@ -240,11 +240,12 @@ private struct AvailableRow: View {
     @ViewBuilder private var status: some View {
         if !model.installed {
             statusLine("Not installed", color: Theme.Palette.muted)
+        } else if model.isLoaded && pending {
+            statusLine("Unloading…", color: Theme.Palette.ink2)
         } else if model.isLoaded {
             HStack(spacing: Theme.Space.s1) {
                 Circle().fill(Theme.Palette.good).frame(width: 6, height: 6)
-                statusLine(model.loadedBytes > 0 ? "Loaded · \(Fmt.gb(model.loadedBytes)) in memory" : "Loaded",
-                           color: Theme.Palette.ink2)
+                statusLine(loadedText, color: Theme.Palette.ink2)
             }
         } else if model.isLoading {
             statusLine("Loading into memory…", color: Theme.Palette.ink2)
@@ -253,11 +254,21 @@ private struct AvailableRow: View {
                        color: Theme.Palette.warn)
                 .fixedSize(horizontal: false, vertical: true)
                 .lineLimit(3)
+        } else if model.supportsLoad && !model.canLoad {
+            statusLine(model.loadHint.isEmpty ? "Loads when a request needs it" : model.loadHint,
+                       color: Theme.Palette.muted)
         } else if model.supportsLoad {
             statusLine("Not loaded", color: Theme.Palette.muted)
         } else {
             statusLine("Loads when a request needs it", color: Theme.Palette.muted)
         }
+    }
+
+    /// "Loaded (1.4 GB)", or "Loaded (streams from SSD) · 0.2 GB" when most of the model stays on the SSD.
+    private var loadedText: String {
+        let gb = model.loadedBytes > 0 ? Fmt.gb(model.loadedBytes) : ""
+        if model.isStreamed { return gb.isEmpty ? "Loaded (streams from SSD)" : "Loaded (streams from SSD) · \(gb)" }
+        return gb.isEmpty ? "Loaded" : "Loaded (\(gb))"
     }
 
     private func statusLine(_ text: String, color: Color) -> some View {
@@ -288,10 +299,15 @@ private struct AvailableRow: View {
                     .help("Stop waiting and do not load this model")
             }
         } else if model.isLoaded {
-            Button("Unload") { store.unloadModel(model.id) }
+            Button(pending ? "Unloading…" : "Unload") { store.unloadModel(model.id) }
                 .buttonStyle(.kit(.line))
                 .disabled(pending)
                 .help("Free the memory this model holds")
+        } else if !model.canLoad {
+            Button("Load") {}
+                .buttonStyle(.kit(.line))
+                .disabled(true)
+                .help(model.loadHint.isEmpty ? "Loads when a request needs it" : model.loadHint)
         } else {
             Button(pending ? "Loading…" : "Load") { store.loadModel(model.id) }
                 .buttonStyle(.kit(.ink))

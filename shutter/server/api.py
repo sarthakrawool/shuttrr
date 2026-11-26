@@ -23,7 +23,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Respon
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from shutter.core.engine import Engine, LoadRefused, SubmitError, UnloadRefused
+from shutter.core.engine import Engine, LoadRefused, LoadUnsupported, SubmitError, UnloadRefused
 from shutter.core.files import UploadError, content_type_for
 from shutter.core.stats import client_label
 from shutter.server import openai_images
@@ -160,6 +160,8 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
                 wait = bool(data.get("wait", False))
         try:
             job = await asyncio.to_thread(engine.load_model, mid, _client_of(request), wait)
+        except LoadUnsupported as e:
+            return _err(409, str(e))
         except SubmitError as e:
             return _err(404, str(e))
         except LoadRefused as e:

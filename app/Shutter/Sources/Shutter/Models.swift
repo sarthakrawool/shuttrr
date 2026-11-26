@@ -364,12 +364,20 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
     var name: String = ""
     /// Why the last load failed (other than memory), until the next Load or Unload.
     var loadError: String = ""
+    /// False when this model cannot be loaded ahead of a request (Load is shown disabled with `loadHint`).
+    var canLoad: Bool = true
+    var loadHint: String = ""
+    /// "resident", "streamed" (most of it is read from the SSD during a request) or "mixed"; "" when not loaded.
+    var loadedResidency: String = ""
 
     enum CodingKeys: String, CodingKey {
         case id, family, kind, dir, installed, state, waiting, name
         case loadedBytes = "loaded_bytes"
         case loadRequest = "load_request"
         case loadError = "load_error"
+        case canLoad = "can_load"
+        case loadHint = "load_hint"
+        case loadedResidency = "loaded_residency"
     }
 
     init(from decoder: Decoder) throws {
@@ -385,9 +393,13 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
         loadRequest = c.value(.loadRequest, "")
         name = c.value(.name, "")
         loadError = c.value(.loadError, "")
+        canLoad = c.value(.canLoad, true)
+        loadHint = c.value(.loadHint, "")
+        loadedResidency = c.value(.loadedResidency, "")
     }
 
     var supportsLoad: Bool { !state.isEmpty }
+    var isStreamed: Bool { loadedResidency == "streamed" }
     var isLoaded: Bool { state == "loaded" }
     var isLoading: Bool { state == "loading" }
     var isWaiting: Bool { state == "waiting_for_memory" }
@@ -457,7 +469,7 @@ struct LoadFailure: Identifiable, Equatable {
     static func other(modelID: String, name: String, reason: String) -> LoadFailure {
         let first = reason.split(separator: "\n").first.map(String.init) ?? reason
         return LoadFailure(modelID: modelID, title: "\(name) could not be loaded", body: first,
-                           help: "The engine log has the details.", isMemory: false)
+                           help: "Copy Diagnostics collects the details for a bug report.", isMemory: false)
     }
 }
 
@@ -599,9 +611,11 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var sample: CatalogSample?
     /// "Makes 320x512 clips on this Mac" (shown only behind Details).
     var makes: String = ""
+    /// The memory it uses on this Mac (measured when possible), not its download size.
+    var memory: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes
+        case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes, memory
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
         case freeBytes = "free_bytes"
@@ -627,6 +641,7 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         recommended = c.value(.recommended, false)
         sample = c.optional(.sample)
         makes = c.value(.makes, "")
+        memory = c.value(.memory, "")
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }

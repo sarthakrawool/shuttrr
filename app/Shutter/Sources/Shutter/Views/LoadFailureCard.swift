@@ -5,6 +5,18 @@ import SwiftUI
 struct LoadFailureCard: View {
     @EnvironmentObject private var store: EngineStore
     let failure: LoadFailure
+    @State private var copied = false
+
+    private func copyDiagnostics() {
+        Task { @MainActor in
+            let text = await Diagnostics.collect(engineVersion: store.system?.version)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            copied = false
+        }
+    }
 
     static let tint = Color(hex: 0xF9E4DF)        // red tinted paper
     static let edge = Color(hex: 0xC2412D, alpha: 0.35)
@@ -60,8 +72,9 @@ struct LoadFailureCard: View {
             }
             .buttonStyle(.kit(.line))
         } else {
-            Button("View Log") { NSWorkspace.shared.open(EngineProcess.logURL) }
+            Button(copied ? "Copied" : "Copy Diagnostics") { copyDiagnostics() }
                 .buttonStyle(.kit(.line))
+                .help("Copy the details (engine log included) to send with a bug report")
         }
         Button("Try Again") {
             let id = failure.modelID

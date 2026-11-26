@@ -276,6 +276,7 @@ def test_catalog_lists_downloadable_models(client):
 def test_catalog_refuses_a_model_that_does_not_fit(client, monkeypatch):
     from shutter.core import catalog as cat
     monkeypatch.setattr(cat, "total_memory", lambda: 16 * 2**30)
+    monkeypatch.setattr(cat, "macos_baseline", lambda total: cat.MACOS_BASELINE)   # not this Mac's live wired memory
     r = client.post("/v1/catalog/wan2.2-t2v-a14b/download")
     assert r.status_code == 409 and "Needs about" in r.text
     rows = {m["id"]: m for m in client.get("/v1/catalog").json()["models"]}

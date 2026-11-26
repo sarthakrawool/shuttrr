@@ -197,7 +197,7 @@ async fn models(State(s): State<AppState>) -> Response {
 // memory guard; this daemon's worker protocol has no load step yet, so it says so instead of pretending.
 
 async fn load_model(AxPath(id): AxPath<String>) -> Response {
-    err(501, &format!("This engine cannot load {id} ahead of a request yet; it loads when a request needs it. \
+    err(501, &format!("{id} loads when a request needs it; this engine cannot load it ahead of time. \
                        The Shuttrr app's own engine (shutter serve) has Load and Unload."))
 }
 

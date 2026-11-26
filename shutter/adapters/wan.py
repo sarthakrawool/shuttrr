@@ -167,16 +167,55 @@ class WanAdapter(Adapter):
         `frames` frames, the same decode and this memory step; None when there is none."""
         best = None
         try:
-            for c in self.manifest.get("checked_on") or []:
+            for c in self._checked_runs():
                 f = int(c.get("frames", 0))
                 g = (c.get("peaks_gb") or {}).get(rid)
                 if c.get("size") != size or g is None or f < frames or bool(c.get("vae_tile", False)) != bool(vae_tile):
                     continue
-                if best is None or f < best[1]:
-                    best = (int(float(g) * GB), f)
+                cand = (int(float(g) * GB), f)
+                if best is None or f < best[1] or (f == best[1] and cand[0] < best[0]):
+                    best = cand
         except Exception:
             return None
         return best
+
+    def _checked_runs(self) -> list[dict[str, Any]]:
+        """Measured runs for this build: its own shuttrr.json checked_on, plus the catalog's checked_on for this
+        model id (runs measured after the build was published, e.g. on a 16 GB MacBook)."""
+        runs = list(self.manifest.get("checked_on") or [])
+        try:
+            from shutter.core.catalog import CATALOG
+            e = CATALOG.get(self.model_id) or {}
+            if e.get("adapter") == "wan":
+                runs += list(e.get("checked_on") or [])
+        except Exception:
+            pass
+        return runs
+
+    def measured_ladder(self) -> Optional[dict[str, Any]]:
+        """Measured peak (and seconds) per memory step for this model's default request on this Mac, from its
+        checked runs at exactly that size and frame count; None when it was not measured there."""
+        try:
+            s = self.settings_for(JobRequest(model=self.model_id, prompt="x"))
+        except Exception:
+            return None
+        size = M.size_key(s.height, s.width)
+        best = None
+        for c in self._checked_runs():
+            if (c.get("size") == size and int(c.get("frames", 0)) == s.frames and not c.get("vae_tile")
+                    and c.get("peaks_gb")):
+                if best is None or len(c["peaks_gb"]) > len(best["peaks_gb"]):
+                    best = c
+        if best is None:
+            return None
+        rungs = {}
+        for rid, g in best["peaks_gb"].items():
+            row: dict[str, Any] = {"peak_bytes": int(float(g) * GB), "identical": bool(best.get("identical", True))}
+            sec = (best.get("seconds") or {}).get(rid)
+            if sec is not None:
+                row["seconds"] = float(sec)
+            rungs[rid] = row
+        return {"size": f"{size}, {s.frames} frames", "rungs": rungs}
 
     def mode_defaults(self, ctx: Optional[RunContext] = None) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -229,7 +268,7 @@ class WanAdapter(Adapter):
         import mlx.core as mx
 
         from shutter.adapters.longcat import StageMeter, write_mp4
-        from shutter.families.wan.pipeline import RUNGS, ModelSource, WanPipeline
+        from shutter.families.wan.pipeline import WanPipeline
         req = job.request
         t0 = time.time()
         s = self.settings_for(req)
@@ -250,9 +289,12 @@ class WanAdapter(Adapter):
         meter.start("prep")
         pipe = WanPipeline(self.model_dir, self.manifest, cache=ctx.cache, report=ctx.report,
                            check_cancelled=ctx.check_cancelled, meter=meter)
-        models = ModelSource(self.model_dir, self.manifest, self.model_id, ctx.models, rid,
-                             nocache=_truthy(self._opt("stream_nocache", sys.platform == "darwin")))
+        models = self.model_source(ctx, rid, room=lambda held: self._room_after_denoise(ctx, held, pick, rid))
         frames, info = pipe.generate(s, models, keep_warm=_truthy(self._opt("keep_warm", True)))
+        if models.reused:
+            info["reused_loaded"] = models.reused
+        if models.dropped_held:
+            s.notes.append("The loaded model was unloaded before the decode to make room; load it again to keep it.")
         meter.mark("write")
         ctx.report(0.97, "writing mp4")
         write_mp4(frames, None, out_path, fps=int(self.cfg.get("sample_fps", 16)))
@@ -267,3 +309,124 @@ class WanAdapter(Adapter):
                 "budget_bytes": pick["budget"], "stages": meter.records, **summ, "info": info,
                 "size_key": M.size_key(s.height, s.width), "variant": self.manifest.get("variant"),
                 **({"stepped_down_from": pick["stepped_down_from"]} if pick["stepped_down_from"] else {})}
+
+    # ---- load ahead of a request (POST /v1/models/<id>/load)
+    def model_source(self, ctx: RunContext, rid: str, room=None):
+        return held_source_class()(self.model_dir, self.manifest, self.model_id, ctx.models, rid,
+                               nocache=_truthy(self._opt("stream_nocache", sys.platform == "darwin")), room=room)
+
+    def _room_after_denoise(self, ctx: RunContext, held_bytes: int, pick: dict[str, Any], rid: str) -> bool:
+        """At a step that frees the DiT before the decode: may a model loaded on purpose stay? Only when what macOS
+        can give right now still covers this step's whole peak (the decode is part of it), so keeping it never
+        pushes the decode into swap."""
+        try:
+            smp = ctx.memory_sample()
+            avail = int(smp["available"]) if isinstance(smp, dict) else None
+        except Exception:
+            avail = None
+        if avail is None:
+            return False
+        return avail >= int(pick["estimates"][rid].peak)
+
+    def warm(self, job: Job, ctx: RunContext) -> dict[str, Any]:
+        """Load the DiT the way the default request on this Mac would (Fast mode picks the step), through the same
+        pool keys a request uses, so the next request reuses it. Streamed steps load what they keep: the non-block
+        part, the first blocks of the window, and the SSD reader thread."""
+        from shutter.families.wan.pipeline import RUNGS
+        req = job.request
+        s = self.settings_for(req)
+        ctx.report(0.0, "preparing")
+        pick = self.choose_rung(req, ctx, s)
+        rid = pick["rung"]
+        if not pick["fits"]:
+            from shutter.types import MemoryRefused
+            raise MemoryRefused(f"{rid} needs ~{pick['estimates'][rid].peak / GB:.1f} GB, budget "
+                                f"{pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
+        models = self.model_source(ctx, rid)
+        names = models.expert_names()
+        first = names[:1] if RUNGS[rid]["one_expert"] else names   # A14B: the high-noise expert runs first
+        for i, n in enumerate(first):
+            ctx.check_cancelled()
+            ctx.report(0.1 + 0.8 * i / len(first), "loading model")
+            models.get(n)
+        streamed = bool(RUNGS[rid]["window"])
+        ctx.report(1.0, "loaded")
+        note = ("The small always-loaded part is in memory; the rest of the model streams from the SSD during a "
+                "request." if streamed else "The model is in memory.")
+        if RUNGS[rid]["one_expert"] and len(names) > 1:
+            note += " This step holds one of the two experts at a time; the other loads when a request needs it."
+        return {"rung": rid, "residency": "streamed" if streamed else "resident", "note": note,
+                **({"stepped_down_from": pick["stepped_down_from"]} if pick["stepped_down_from"] else {})}
+
+    def can_load(self) -> tuple[bool, str]:
+        try:
+            self.manifest
+        except Exception:
+            return False, "This folder is not a Shuttrr Wan build."
+        return True, ""
+
+
+def _held_keys(pool) -> set:
+    try:
+        return {e["key"] for e in pool.stats()["entries"] if e.get("held")}
+    except Exception:
+        return set()
+
+
+def _pool_size(pool, key: str) -> int:
+    try:
+        return int(next(e["size_bytes"] for e in pool.stats()["entries"] if e["key"] == key))
+    except Exception:
+        return 0
+
+
+_HELD_SOURCE = None
+
+
+def held_source_class():
+    """ModelSource that respects a model loaded on purpose (pool entry `held`): a request reuses it, and a step
+    that frees the DiT after denoising keeps it when there is room for the decode (`room(held_bytes)`), so it
+    stays loaded for the next request. Without a held entry it behaves exactly like ModelSource. Built on first
+    use so importing the adapter does not import the pipeline."""
+    global _HELD_SOURCE
+    if _HELD_SOURCE is not None:
+        return _HELD_SOURCE
+    from shutter.families.wan.pipeline import ModelSource
+
+    class HeldAwareSource(ModelSource):
+        def __init__(self, *a, room=None, **kw):
+            super().__init__(*a, **kw)
+            self.room = room
+            self.reused: list[str] = []
+            self.dropped_held: list[str] = []
+
+        def get(self, name):
+            key = self.key(name)
+            if key not in self.reused and key in self.pool and key in _held_keys(self.pool):
+                self.reused.append(key)
+            return super().get(name)
+
+        def finish(self, keep_warm: bool) -> None:
+            if keep_warm and self.r["keep"]:
+                return super().finish(keep_warm)
+            held = _held_keys(self.pool)
+            mine = [self.key(n) for n in self.expert_names()]
+            keep = [k for k in mine if k in held]
+            if keep and self.room is not None and not self.room(sum(_pool_size(self.pool, k) for k in keep)):
+                self.dropped_held = keep
+                keep = []
+            for k in mine:
+                if k in keep:
+                    self._objs.pop(k, None)      # the pool keeps it; this request lets go of its reference
+                else:
+                    self._release(k)
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:
+                pass
+
+    _HELD_SOURCE = HeldAwareSource
+    return _HELD_SOURCE

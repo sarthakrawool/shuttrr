@@ -179,7 +179,47 @@ def test_failed_load_is_reported_on_the_row(tmp_path):
         job = eng.load_model("dummy")
         wait_until(lambda: eng.get(job.id).state == JobState.FAILED)
         r = row(eng)
-        assert r["state"] == "not_loaded" and "the weights are damaged" in r["load_error"]
+        assert r["state"] == "not_loaded" and r["load_error"] == "Something inside the engine failed while loading it. Copy Diagnostics has the details."
+        assert "RuntimeError" not in r["load_error"] and "the weights are damaged" in r["load_error_detail"]
     finally:
         D.DummyAdapter.warm = orig
         eng.stop(timeout=5)
+
+
+def test_model_without_a_load_step_shows_a_hint_and_refuses_load_plainly(tmp_path):
+    from shutter.adapters.base import Adapter
+    from shutter.core.config import Config
+    from shutter.core.engine import Engine, LoadUnsupported
+    from shutter.core.registry import Registry
+    from shutter.types import MemoryEstimate
+
+    class NoWarm(Adapter):
+        family = "nowarm"
+        kind = "video"
+        needs_model_dir = False
+
+        def estimate(self, request):
+            return MemoryEstimate(peak=GB, steady=GB)
+
+        def run(self, job, ctx):
+            return {}
+
+    cfg = Config(home=str(tmp_path / "home"), busy_process_pattern=None, models={"nw": {"adapter": "nowarm"}})
+    eng = Engine(cfg, probe=FakeProbe(), protected=[], registry=Registry(cfg, families={"nowarm": NoWarm}))
+    r = row(eng, "nw")
+    assert r["can_load"] is False and r["load_hint"] == "Loads when a request needs it."
+    with pytest.raises(LoadUnsupported) as e:
+        eng.load_model("nw")
+    assert str(e.value) == "nw loads when a request needs it; it cannot be loaded ahead of time."
+    d = row(eng)
+    assert d["can_load"] is True and d["load_hint"] == ""
+
+
+def test_plain_error_never_shows_python_text():
+    from shutter.core.engine import plain_error
+    assert "missing" in plain_error(FileNotFoundError("/x/dit/a.safetensors"), "Wan", True)
+    assert plain_error(ValueError("give inputs.image"), "Wan") == "give inputs.image"
+    for e in (RuntimeError("boom"), KeyError("blocks.0"), TypeError("NoneType"), AttributeError("x")):
+        msg = plain_error(e, "Wan 2.1", loading=True)
+        assert msg == "Something inside the engine failed while loading it. Copy Diagnostics has the details."
+        assert type(e).__name__ not in plain_error(e)

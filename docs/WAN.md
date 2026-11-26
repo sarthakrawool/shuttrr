@@ -230,3 +230,21 @@ vae.py`). The operations and layouts are unchanged, so the frames are bit-identi
 * Wan 2.1 / 2.2 model weights and reference code: Wan-AI / Alibaba, Apache-2.0. Each converted build includes a
   `NOTICE` file. Read the original model card for the license and acceptable-use terms.
 * The MLX model code is based on mlx-video by Prince Canuma (MIT).
+
+## Load ahead of a request
+
+`POST /v1/models/<id>/load` (the app's Load button) loads a Wan build the way the default request on this Mac would
+run: Fast mode picks the memory step, and the DiT goes into the engine's pool under the same key a request uses, so
+the next request reuses it (no second load). Resident steps keep the whole DiT; split / staged hold one A14B expert
+(the high-noise one, which runs first); the SSD-streaming steps keep the always-loaded part and start the SSD reader
+("Loaded (streams from SSD)"). The umT5 text encoder is never kept: it is read block by block per prompt, and the
+prompt embedding is cached.
+
+A step that frees the DiT before the decode (staged, streaming) keeps a model loaded on purpose only when what macOS
+can give right now still covers the step's whole peak; otherwise it unloads it before the decode and says so in the
+job's notes. Unload frees it (a streamed model's reader thread is stopped too). With no request running, critical
+memory pressure unloads idle models, loaded on purpose or not.
+
+Measured on the 16 GB MacBook Pro M5 (Wan 2.1 1.3B, 320x512, 33 frames, 4 steps, new prompt each time): Load 0.5 s
+(+1.4 GB); time to the first denoising step 13.4 s cold vs 8.2 s loaded (the rest is the prompt encode); Unload
+returns the 1.4 GB. Lowest memory: Load keeps 0.14 GB, the request peaked at 4.65 GB and reused it.

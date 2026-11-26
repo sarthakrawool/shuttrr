@@ -180,7 +180,9 @@ struct ModelDownloadRow: View {
         var out: [String] = []
         if !model.fit.reason.isEmpty { out.append(model.fit.reason) }
         if !model.makes.isEmpty { out.append(model.makes + ".") }
-        out.append("\(Fmt.gb(model.sizeBytes)) download from Hugging Face. \(Fmt.gb(model.freeBytes)) free on this Mac.")
+        if !model.memory.isEmpty { out.append(model.memory) }
+        out.append("\(Fmt.gb(model.sizeBytes)) download from Hugging Face (disk space, not memory). "
+                   + "\(Fmt.gb(model.freeBytes)) free on this Mac.")
         out.append(contentsOf: model.notes)
         return out
     }

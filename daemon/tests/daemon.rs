@@ -530,6 +530,11 @@ fn api_system_models_submit_list_pool() {
     let dummy = models.iter().find(|m| m["id"] == "dummy").unwrap();
     assert_eq!(dummy["installed"], true);
     assert_eq!(dummy["family"], "dummy");
+    assert_eq!(dummy["can_load"], false);
+    assert_eq!(dummy["load_hint"], "Loads when a request needs it.");
+    let (st, e) = d.post("/v1/models/dummy/load", json!({}));
+    assert_eq!(st, 501, "{e}");
+    assert!(!e.to_string().contains("Error:"), "{e}");
 
     let (st, job) = d.post("/v1/jobs", json!({"model": "dummy", "prompt": "x", "steps": 2, "params": {"step_s": 0}}));
     assert_eq!(st, 201, "{job}");

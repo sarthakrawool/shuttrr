@@ -643,6 +643,8 @@ impl Engine {
                 "id": id, "family": family, "kind": kind, "dir": dir.to_string_lossy(),
                 "installed": dir.is_dir() || !needs_dir, "error": null,
                 "options": spec.get("options").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+                // this daemon has no load step: the app shows Load disabled with this hint instead of an error
+                "can_load": false, "load_hint": "Loads when a request needs it.",
             });
             if let Some(wr) = by_id.get(&id) {
                 for k in ["kind", "installed", "error", "family", "dir"] {

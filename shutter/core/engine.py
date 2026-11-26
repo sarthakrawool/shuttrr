@@ -31,7 +31,7 @@ from shutter.core.cache import ContentCache
 from shutter.core.config import Config
 from shutter.core.dirlock import DirLocks
 from shutter.core.memory import (
-    ACTION_RELIEVE, ACTION_STOP, PROTECT_PREFIX, STOP_BODY, STOP_MESSAGE, GpuLock, MemoryGuard, OmlxService, ProcessRssService,
+    ACTION_RELIEVE, ACTION_STOP, PRESSURE_CRITICAL, PROTECT_PREFIX, STOP_BODY, STOP_MESSAGE, GpuLock, MemoryGuard, OmlxService, ProcessRssService,
     admission_budget, default_probe, parse_ps,
 )
 from shutter.core import memory as _memory
@@ -149,6 +149,30 @@ def _is_oom(e: BaseException) -> bool:
     t = f"{type(e).__name__}: {e}".lower()
     return isinstance(e, MemoryError) or any(k in t for k in (
         "out of memory", "insufficient memory", "memory limit", "failed to allocate", "kiogpucommandbuffercallbackerroroutofmemory"))
+
+
+NO_LOAD_HINT = "Loads when a request needs it."
+
+
+class LoadUnsupported(SubmitError):
+    """POST /v1/models/<id>/load for a model whose adapter cannot load ahead of a request."""
+
+
+def plain_error(e: BaseException, name: str = "", loading: bool = False) -> str:
+    """A sentence for people for an exception from a model (the app never shows Python's text). The exception
+    itself goes to the engine log and the job's result (`error_detail`), which Copy Diagnostics collects."""
+    if isinstance(e, (FileNotFoundError, NotADirectoryError)):
+        return (f"Some of {name or 'this model'}'s files are missing. Download it again from Setup, or check the "
+                f"folder in config.json.")
+    if isinstance(e, ImportError):
+        return "A part of the engine is missing. Restart Shuttrr; if it keeps happening, reinstall it."
+    if isinstance(e, PermissionError):
+        return f"Shuttrr may not read {name or 'this model'}'s files. Check the folder's permissions."
+    if type(e) in (ValueError, SubmitError) and str(e).strip():
+        return str(e).strip()           # raised on purpose with a sentence for people (bad input, wrong model)
+    if loading:
+        return "Something inside the engine failed while loading it. Copy Diagnostics has the details."
+    return "The request stopped because of an internal error. Copy Diagnostics has the details."
 
 
 def _prepare(adapter: Any, request: JobRequest) -> JobRequest:
@@ -339,6 +363,7 @@ class Engine:
         self._abort_reason: Optional[str] = None
         self._wait_reasons: dict[str, str] = {}
         self._load_errors: dict[str, str] = {}
+        self._load_error_details: dict[str, str] = {}
         self._midrun_refusals: dict[str, int] = {}
         self._last_idle_check = clock()
         self._settings_lock = threading.Lock()
@@ -528,6 +553,11 @@ class Engine:
         pending = self._pending_load(model_id)
         if pending is not None:
             return pending
+        ok, hint = self._can_load(model_id)
+        if not ok:
+            name = model_name(model_id, self.registry.spec(model_id).get("adapter", ""))
+            raise LoadUnsupported(f"{name} loads when a request needs it; it cannot be loaded ahead of time."
+                                  if hint == NO_LOAD_HINT else hint)
         req = JobRequest(model=model_id, params={"_action": LOAD_ACTION, **self._settings})
         if not wait:
             self.check_load(req)
@@ -586,6 +616,25 @@ class Engine:
             self.pool.release(k)
         return sorted(before - set(self.pool.keys()))
 
+    def _can_load(self, model_id: str) -> tuple[bool, str]:
+        """Whether Load works for this model, and a one-line hint for people when it does not."""
+        try:
+            adapter = self.registry.adapter_for(model_id)
+        except (UnknownModel, AdapterUnavailable):
+            return False, "This model's engine part could not start. Copy Diagnostics has the details."
+        except Exception:
+            return False, "This model could not be read. Copy Diagnostics has the details."
+        if not callable(getattr(adapter, "warm", None)):
+            return False, NO_LOAD_HINT
+        fn = getattr(adapter, "can_load", None)
+        if callable(fn):
+            try:
+                ok, hint = fn()
+                return bool(ok), str(hint or "")
+            except Exception:
+                return False, "This model could not be read. Copy Diagnostics has the details."
+        return True, ""
+
     def models(self) -> list[dict[str, Any]]:
         """GET /v1/models: the registry rows plus state (not_loaded, loading, waiting_for_memory, loaded), loaded_gb
         and, while a load waits, the guard's sentence (`waiting`)."""
@@ -613,6 +662,14 @@ class Engine:
             row["load_request"] = pending.id if pending is not None else None
             row["name"] = model_name(mid, row.get("family", ""))
             row["load_error"] = self._load_errors.get(mid) if row["state"] == "not_loaded" else None
+            row["load_error_detail"] = (self._load_error_details.get(mid) or None) if row["load_error"] else None
+            res = {e.get("residency") or "resident" for e in mine}
+            row["loaded_residency"] = ("streamed" if res == {"streamed"} else "mixed" if len(res) > 1
+                                       else "resident") if mine else None
+            if row.get("installed"):
+                row["can_load"], row["load_hint"] = self._can_load(mid)
+            else:
+                row["can_load"], row["load_hint"] = False, ""
         return rows
 
     # ------------------------------------------------------------------ settings
@@ -626,9 +683,35 @@ class Engine:
         """GET /v1/settings: defaults, the rung they pick, the ladder (+ measured numbers)."""
         out = self.settings_brief()
         ladder, used = ladder_json(self.config.home)
+        if used is None:
+            ladder, used = self._ladder_from_models(ladder)
         out["ladder"] = ladder
         out["measured_for"] = used
         return out
+
+    def _ladder_from_models(self, ladder: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
+        """Without measured.json: the measured peaks of an installed model's default request on this Mac (its
+        build's / the catalog's checked runs), so the memory steps show real numbers instead of none."""
+        for row in self.registry.list():
+            if not row.get("installed"):
+                continue
+            try:
+                fn = getattr(self.registry.adapter_for(row["id"]), "measured_ladder", None)
+                m = fn() if callable(fn) else None
+            except Exception:
+                m = None
+            if not m or not m.get("rungs"):
+                continue
+            out = []
+            for r in ladder:
+                r = dict(r)
+                e = m["rungs"].get(r["id"]) or {}
+                for k in ("peak_bytes", "seconds", "identical"):
+                    if k in e:
+                        r[k] = e[k]
+                out.append(r)
+            return out, {"model": row["id"], "size": m["size"]}
+        return ladder, None
 
     def update_settings(self, mode: Any = None, efficiency: Any = None) -> dict[str, Any]:
         """POST /v1/settings. Raises SubmitError (400) on a bad value, OSError/ValueError
@@ -880,6 +963,7 @@ class Engine:
     def _finish(self, job: Job, state: JobState, message: str = "", kind: str = "") -> None:
         if is_load(job.request) and state == JobState.FAILED:
             self._load_errors[job.request.model] = message or "the model could not be loaded"
+            self._load_error_details[job.request.model] = str((job.result or {}).get("error_detail") or "")
         job.state = state
         job.finished_at = time.time()
         job.message = message
@@ -900,6 +984,27 @@ class Engine:
                 self.pool.evict_idle(self.config.idle_unload_s)
             except Exception as e:  # pragma: no cover
                 self.worker_errors.append(f"evict_idle: {e!r}")
+            self._relieve_idle_pressure()
+
+    def _relieve_idle_pressure(self) -> list[str]:
+        """With no request running, critical memory pressure unloads idle models (loaded on purpose or not): the
+        Mac's other apps come first. Returns the keys unloaded."""
+        if self._running is not None:
+            return []
+        try:
+            if self.probe.sample().pressure != PRESSURE_CRITICAL:
+                return []
+        except Exception:
+            return []
+        freed = []
+        for e in self.pool.stats()["entries"]:
+            if e["pinned"] or e.get("in_use"):
+                continue
+            self.pool.release(e["key"])
+            freed.append(e["key"])
+        if freed:
+            self.bus.publish(Event("memory.relieved", data={"unloaded": freed, "reason": "critical memory pressure"}))
+        return freed
 
     # ------------------------------------------------------------------ worker
 
@@ -930,7 +1035,14 @@ class Engine:
             self._finish(job, JobState.FAILED, str(e))
             return
         except Exception as e:
-            self._finish(job, JobState.FAILED, f"estimate failed: {type(e).__name__}: {e}")
+            try:
+                import sys as _sys
+                print(f"shutter: estimate for {job.id} ({req.model}) failed: {type(e).__name__}: {e}\n"
+                      f"{traceback.format_exc()[-4000:]}", file=_sys.stderr, flush=True)
+            except Exception:
+                pass
+            job.result = {"error_detail": f"estimate failed: {type(e).__name__}: {e}"[:2000]}
+            self._finish(job, JobState.FAILED, plain_error(e, model_name(req.model), is_load(req)))
             return
 
         # 1. another render running on this Mac?
@@ -1169,8 +1281,8 @@ class Engine:
             if loading:
                 warm = getattr(adapter, "warm", None)
                 if not callable(warm):
-                    raise RuntimeError(f"{req.model} cannot be loaded ahead of a request; it loads when a request "
-                                       f"needs it")
+                    raise LoadUnsupported(f"{model_name(req.model, getattr(adapter, 'family', ''))} loads when a "
+                                          f"request needs it; it cannot be loaded ahead of time.")
                 result = warm(run_job, ctx) or {}
                 held = self._model_keys(req.model)
                 for k in held:
@@ -1211,10 +1323,19 @@ class Engine:
             if self._abort_reason:  # e.g. an MLX allocation failed while the watchdog was stopping the job
                 outcome = (JobState.FAILED, PROTECT_PREFIX + self._abort_reason, {})
             elif _is_oom(e):
-                outcome = (JobState.FAILED, (STOP_MESSAGE + f" ({type(e).__name__}: {e})")[:400], {})
+                outcome = (JobState.FAILED, STOP_MESSAGE, {"error_detail": f"{type(e).__name__}: {e}"[:2000]})
             else:
-                outcome = (JobState.FAILED, f"{type(e).__name__}: {e}",
-                           {"traceback": traceback.format_exc()[-4000:]})
+                detail = f"{type(e).__name__}: {e}"
+                tb = traceback.format_exc()[-4000:]
+                try:
+                    import sys as _sys
+                    print(f"shutter: {'load' if loading else 'job'} {job.id} ({req.model}) failed: {detail}\n{tb}",
+                          file=_sys.stderr, flush=True)
+                except Exception:
+                    pass
+                name = model_name(req.model, getattr(adapter, "family", ""))
+                outcome = (JobState.FAILED, plain_error(e, name, loading),
+                           {"error_detail": detail[:2000], "traceback": tb})
         finally:
             stop_sampler.set()
             stop_watch.set()
