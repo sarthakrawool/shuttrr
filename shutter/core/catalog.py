@@ -106,7 +106,9 @@ WAN5B_CHECKED = [
      "seconds": {"staged": 72, "stream_wide": 75, "stream_tight": 74},
      "note": "picture too soft at this size; resident keeps the DiT through the decode and swaps a 16 GB Mac"},
     {"date": "2026-11-26", **_M5, "size": "480x832", "frames": 49, "steps": 30, "identical": True,
-     "peaks_gb": {"staged": 6.92, "stream_tight": 6.30}, "seconds": {"staged": 455, "stream_tight": 473}},
+     "peaks_gb": {"staged": 6.92, "stream_tight": 6.30}, "seconds": {"staged": 445, "stream_tight": 456},
+     "note": "8-bit text encoder (text_encoder_q8); with the bf16 encoder: same peaks, 455 / 473 s, clip PSNR 29.1 dB "
+             "/ SSIM 0.966 between the two"},
     {"date": "2026-11-26", **_M5, "size": "480x832", "frames": 121, "steps": 30,
      "peaks_gb": {"stream_tight": 6.33}, "seconds": {"stream_tight": 1354}},
     {"date": "2026-11-26", **_M5, "size": "832x480", "frames": 25, "steps": 30, "image": True,
