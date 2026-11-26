@@ -20,9 +20,12 @@ enum Brand {
     static var resourceDirectory: URL? {
         var candidates: [URL] = []
         if let r = Bundle.main.resourceURL { candidates.append(r.appendingPathComponent("Brand")) }
-        // `swift run` from the package: Sources/Shutter/../../Resources/Brand
+        #if DEBUG
+        // `swift run` from the package: Sources/Shutter/../../Resources/Brand.
+        // Debug builds only, so a release binary carries no build-machine path.
         candidates.append(URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/Brand"))
+        #endif
         return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 

@@ -37,6 +37,8 @@ echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Shutter"
+# Drop debug symbols: they hold absolute build paths (the build machine's user name).
+strip -S -x "$APP/Contents/MacOS/Shutter"
 # Brand fonts (Fraunces, DM Sans, JetBrains Mono; all OFL) and the paper texture.
 cp -R "$PKG_DIR/Resources/Brand" "$APP/Contents/Resources/Brand"
 # App icon (white aperture mark on black; drawn by scripts/make_icon.swift)
