@@ -317,6 +317,7 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 0)
+            EngineUpgradeRow()
             UpdateAvailableRow()
         }
         .padding(.vertical, Theme.Space.s4)

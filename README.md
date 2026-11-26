@@ -62,6 +62,10 @@ Python, Homebrew or Terminal needed.
 
 3. Shuttrr opens. You only do this once. The one-line installer above skips this step entirely.
 
+**Updates.** From 0.2.1 on, Shuttrr updates itself: new versions download in the background, signed and
+checked, and install when you restart Shuttrr. The engine in `~/.shutter` follows along; your models and
+settings stay. Turn it off in Settings.
+
 If you prefer, build it yourself from source below.
 
 **From source.**
@@ -198,8 +202,8 @@ To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clie
 
 ## Privacy
 
-Everything runs on your Mac. Shuttrr only goes online to download models from Hugging Face and, once a day,
-to check GitHub for a new version (turn it off in Settings). No analytics.
+Everything runs on your Mac. Shuttrr only goes online to download models from Hugging Face and, at launch
+and once a day, to check GitHub for a new version and download it (turn it off in Settings). No analytics.
 
 ## Uninstall
 

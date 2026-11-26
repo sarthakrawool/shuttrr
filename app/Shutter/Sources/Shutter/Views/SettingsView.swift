@@ -39,7 +39,7 @@ struct SettingsView: View {
                     KVGroup {
                         KVRow(label: "Check for updates", first: true) {
                             HStack {
-                                Text("Once a day, ask GitHub whether a newer Shuttrr is out. Nothing is downloaded.")
+                                Text("Once a day, ask GitHub for a newer Shuttrr. New versions download by themselves and install when you restart Shuttrr. Your models and settings stay.")
                                     .foregroundStyle(Theme.Palette.ink2)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Spacer(minLength: Theme.Space.s3)
@@ -50,7 +50,14 @@ struct SettingsView: View {
                                     .onChange(of: checkUpdates) { _, on in UpdateChecker.shared.enabledChanged(on) }
                             }
                         }
-                        KVRow("Version", Releases.appVersion)
+                        KVRow(label: "Version") {
+                            HStack {
+                                Text(Releases.appVersion).foregroundStyle(Theme.Palette.ink2)
+                                Spacer(minLength: Theme.Space.s3)
+                                Button("Check for Updates…") { UpdateChecker.shared.checkNow() }
+                                    .buttonStyle(.kit(.line, small: true))
+                            }
+                        }
                     }
                     UpdateAvailableRow()
                 }

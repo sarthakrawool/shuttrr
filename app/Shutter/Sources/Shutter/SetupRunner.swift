@@ -61,6 +61,9 @@ final class SetupRunner: ObservableObject {
         if let env = ProcessInfo.processInfo.environment["SHUTTER_HOME"], !env.isEmpty {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
         }
+        if let d = UserDefaults.standard.string(forKey: "shutterHome"), !d.isEmpty {
+            return URL(fileURLWithPath: (d as NSString).expandingTildeInPath)
+        }
         return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".shutter")
     }
 

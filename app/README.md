@@ -1,7 +1,7 @@
 # Shutter for macOS
 
 A menu bar app and dashboard for the Shutter engine (the Python daemon on
-`http://127.0.0.1:8484`). Swift Package, SwiftUI + AppKit, macOS 14+, no dependencies.
+`http://127.0.0.1:8484`). Swift Package, SwiftUI + AppKit, macOS 14+. One dependency: Sparkle 2 for in-app updates (`Updater.swift`); releases are made with `scripts/release.sh`.
 
 ## Build
 

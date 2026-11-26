@@ -23,6 +23,11 @@ struct ShutterApp: App {
         }
         .defaultSize(width: 1000, height: 640)
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { UpdateChecker.shared.checkNow() }
+            }
+        }
 
         Window("Welcome to Shuttrr", id: OnboardingFlow.windowID) {
             OnboardingView()
@@ -175,10 +180,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let flow = OnboardingFlow()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A Shuttrr home set in the app's settings (instead of the SHUTTER_HOME variable) is passed on to every
+        // engine command the app runs.
+        if ProcessInfo.processInfo.environment["SHUTTER_HOME"] == nil,
+           let d = UserDefaults.standard.string(forKey: "shutterHome"), !d.isEmpty {
+            setenv("SHUTTER_HOME", (d as NSString).expandingTildeInPath, 1)
+        }
         // A regular app: Dock icon and app switcher, as well as the menu bar icon.
         NSApp.setActivationPolicy(.regular)
         store.start()
-        UpdateChecker.shared.checkIfDue()      // at most once a day, only when "Check for updates" is on
+        UpdateChecker.shared.start()      // Sparkle: checks now and daily, only when "Check for updates" is on
         let needsOnboarding = SetupRunner.needsOnboarding
             || ProcessInfo.processInfo.environment["SHUTTER_ONBOARDING_PAGE"] != nil
         // SwiftUI may open the Window scenes at launch; Shutter lives in the menu bar, so close the dashboard
@@ -212,7 +223,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Already set up: make sure an engine is running (unless something already answers on its port, or the user
         // switched "Start with Shuttrr" off on the Server page).
         UserDefaults.standard.register(defaults: [EngineProcess.autoStartKey: true])
-        if !needsOnboarding && UserDefaults.standard.bool(forKey: EngineProcess.autoStartKey) {
+        let autoStart = !needsOnboarding && UserDefaults.standard.bool(forKey: EngineProcess.autoStartKey)
+        // After an app update the bundled engine is newer than ~/.shutter/engine: upgrade it first (models,
+        // settings and outputs stay), then start it as usual. A failed upgrade keeps the old engine.
+        if !needsOnboarding && EngineUpgrader.needsUpgrade {
+            Task { @MainActor in
+                // An engine from the previous version may still be on the port (started by hand): stop it first.
+                EngineStopper.stopShuttrrEngine(onPortOf: APIClient.current().base, seconds: 5)
+                EngineUpgrader.shared.run { [weak self] _ in
+                    guard let self, autoStart, !self.engine.isRunning else { return }
+                    self.engine.start()
+                    self.store.refreshNow()
+                }
+            }
+        } else if autoStart {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if !store.connection.isConnected, !(await EngineProbe.answers()), !engine.isRunning {

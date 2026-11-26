@@ -13,6 +13,7 @@ nothing from these projects is modified.
 | JetBrains Mono (font) | same folders | SIL Open Font License 1.1 |
 | Inter (font) | `shutter/server/static/fonts/Inter-Variable.woff2` | SIL Open Font License 1.1 |
 | Geist Mono (font) | `shutter/server/static/fonts/GeistMono-Variable.woff2` | SIL Open Font License 1.1 |
+| [Sparkle](https://sparkle-project.org) 2 (update framework) | `Shuttrr.app/Contents/Frameworks/Sparkle.framework`, fetched by Swift Package Manager | MIT (`LICENSE.Sparkle` in the app's Resources) |
 
 | [mlx-video](https://github.com/Blaizzy/mlx-video) Wan model code (vendored, adapted) | `shutter/families/wan/model/` | MIT, Copyright (c) 2025 Prince Canuma (`LICENSE.mlx-video` next to the files) |
 

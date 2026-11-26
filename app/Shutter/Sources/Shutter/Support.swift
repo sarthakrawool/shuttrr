@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// Release support: update check, diagnostics for bug reports, uninstall, and the brand-themed confirm sheet
+// Release support: diagnostics for bug reports, uninstall, and the brand-themed confirm sheet
 // (used for quitting while a request runs and for uninstalling).
 
 // MARK: - Releases
@@ -11,7 +11,6 @@ import SwiftUI
 enum Releases {
     static let owner = "sarthakrawool"          // GitHub user or organisation that publishes Shuttrr
     static let repo = "shuttrr"
-    static let latestAPI = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/latest")!
     static let latestPage = URL(string: "https://github.com/\(owner)/\(repo)/releases/latest")!
     static let newIssue = URL(string: "https://github.com/\(owner)/\(repo)/issues/new/choose")!
 
@@ -35,86 +34,6 @@ enum Releases {
     }
 }
 
-/// Checks GitHub's latest release at most once a day (when "Check for updates" is on) and remembers what it found.
-/// It never downloads anything: the row it shows links to the release page.
-@MainActor
-final class UpdateChecker: ObservableObject {
-    static let shared = UpdateChecker()
-    static let enabledKey = "checkForUpdates"
-    private static let lastCheckKey = "updateLastCheck"
-    private static let latestTagKey = "updateLatestTag"
-
-    @Published private(set) var latestTag: String?
-
-    var updateAvailable: Bool {
-        guard UserDefaults.standard.bool(forKey: Self.enabledKey), let t = latestTag else { return false }
-        return Releases.isNewer(t, than: Releases.appVersion)
-    }
-
-    private init() {
-        UserDefaults.standard.register(defaults: [Self.enabledKey: true])
-        latestTag = UserDefaults.standard.string(forKey: Self.latestTagKey)
-    }
-
-    /// Called at launch: asks GitHub only when the switch is on and the last check is more than a day old.
-    func checkIfDue() {
-        let d = UserDefaults.standard
-        guard d.bool(forKey: Self.enabledKey) else { return }
-        let last = d.double(forKey: Self.lastCheckKey)
-        guard Date().timeIntervalSince1970 - last > 24 * 3600 else { return }
-        Task { await check() }
-    }
-
-    func check() async {
-        var req = URLRequest(url: Releases.latestAPI, timeoutInterval: 15)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("Shuttrr/\(Releases.appVersion)", forHTTPHeaderField: "User-Agent")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tag = obj["tag_name"] as? String, !tag.isEmpty else { return }
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
-        UserDefaults.standard.set(tag, forKey: Self.latestTagKey)
-        latestTag = tag
-    }
-
-    /// The switch changed: forget a stale result when it is turned off so no row shows.
-    func enabledChanged(_ on: Bool) {
-        objectWillChange.send()
-        if on { checkIfDue() }
-    }
-}
-
-/// The small "Update available" row with a link to the release page.
-struct UpdateAvailableRow: View {
-    @ObservedObject var updates = UpdateChecker.shared
-
-    var body: some View {
-        if updates.updateAvailable, let tag = updates.latestTag {
-            Link(destination: Releases.latestPage) {
-                HStack(spacing: Theme.Space.s2) {
-                    Image(systemName: "arrow.down.circle")
-                        .foregroundStyle(Theme.Palette.ink)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Update available")
-                            .font(Theme.Fonts.row)
-                            .foregroundStyle(Theme.Palette.ink)
-                        Text("\(tag) · see what's new")
-                            .font(Theme.Fonts.meta)
-                            .foregroundStyle(Theme.Palette.muted)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, Theme.Space.s2)
-                .padding(.vertical, Theme.Space.s2)
-                .background(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).fill(Theme.Palette.fill))
-            }
-            .buttonStyle(.plain)
-            .help("Opens the release page in your browser. Shuttrr never downloads updates by itself.")
-        }
-    }
-}
-
 // MARK: - Diagnostics
 
 /// The text "Copy Diagnostics" puts on the clipboard: doctor output, this Mac, versions, and the last 100 log lines.
@@ -129,6 +48,7 @@ enum Diagnostics {
             var out: [String] = []
             out.append("## Shuttrr diagnostics")
             out.append("App: \(Releases.appVersion)")
+            if let e = UserDefaults.standard.string(forKey: "updateLastError") { out.append("Last update error: \(e)") }
             out.append("Engine: \(engineVersion?.isEmpty == false ? engineVersion! : "not running")")
             out.append("Mac: \(sysctl("hw.model"))")
             out.append("Chip: \(sysctl("machdep.cpu.brand_string"))")
@@ -147,6 +67,11 @@ enum Diagnostics {
             var lines = log.components(separatedBy: "\n")
             while lines.last == "" { lines.removeLast() }
             out.append(lines.suffix(100).joined(separator: "\n"))
+            if let up = try? String(contentsOf: EngineUpgrader.logURL, encoding: .utf8), !up.isEmpty {
+                out.append("")
+                out.append("## Engine upgrade log (last 60 lines)")
+                out.append(up.components(separatedBy: "\n").suffix(60).joined(separator: "\n"))
+            }
             return out.joined(separator: "\n").replacingOccurrences(of: home, with: "~")
         }.value
     }

@@ -22,6 +22,13 @@ REPO_ROOT="$(cd "$APP_ROOT/.." && pwd)"
 BUILD_DIR="$APP_ROOT/build"
 APP="$BUILD_DIR/Shuttrr.app"
 VERSION="${SHUTTER_VERSION:-0.2.1}"
+# The bundle id stays com.shutter.app for releases. Test builds may set another one so they keep their own settings
+# (and may then point Sparkle at a local feed, see Updater.swift).
+BUNDLE_ID="${SHUTTER_BUNDLE_ID:-com.shutter.app}"
+# Sparkle updates: the feed lives on the latest GitHub release; updates must be signed with this EdDSA key
+# (the private half is in the release Mac's Keychain, see scripts/release.sh).
+FEED_URL="${SHUTTER_FEED_URL:-https://github.com/sarthakrawool/shuttrr/releases/latest/download/appcast.xml}"
+ED_PUBLIC_KEY="cZ1DWyQsPXMgUcka1hXcDzXrynsRoj9cIzPzDmB2MOk="
 
 echo "==> swift build -c release"
 cd "$PKG_DIR"
@@ -35,8 +42,14 @@ fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/Shutter"
+# Sparkle (MIT): the framework with its Autoupdate helper, Updater.app and XPC services. ditto keeps the symlinks.
+if [[ ! -d "$BIN_DIR/Sparkle.framework" ]]; then
+    echo "error: Sparkle.framework not found in $BIN_DIR" >&2
+    exit 1
+fi
+ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 # Drop debug symbols: they hold absolute build paths (the build machine's user name).
 strip -S -x "$APP/Contents/MacOS/Shutter"
 # Brand fonts (Fraunces, DM Sans, JetBrains Mono; all OFL) and the paper texture.
@@ -54,7 +67,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>Shutter</string>
     <key>CFBundleIdentifier</key>
-    <string>com.shutter.app</string>
+    <string>${BUNDLE_ID}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -73,6 +86,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>${FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${ED_PUBLIC_KEY}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
@@ -84,6 +111,8 @@ PLIST
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
+SPARKLE_LICENSE="$PKG_DIR/.build/artifacts/sparkle/Sparkle/LICENSE"
+[[ -f "$SPARKLE_LICENSE" ]] && cp "$SPARKLE_LICENSE" "$APP/Contents/Resources/LICENSE.Sparkle"
 
 echo "==> bundling the engine sources"
 ENGINE_DIR="$APP/Contents/Resources/engine"
