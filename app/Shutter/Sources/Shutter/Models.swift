@@ -731,13 +731,21 @@ struct Job: Decodable, Identifiable, Sendable {
     var result: [String: JSONValue] = [:]
     var node: String = "local"
     var request = JobRequestInfo()
-    /// Optional, not in types.py yet: seconds remaining as estimated by the engine.
+    /// Seconds left, from the engine's measured step times + decode estimate (0.2.11). Nil until the first step
+    /// has been measured: the app shows "Estimating…" then, never a guess.
     var etaS: Double?
+    /// Whether etaS includes the decode (false on a first run of a size the engine has not decoded before).
+    var etaDecodeKnown = false
+    /// While queued: how long it should take once it starts (the 0.2.10 time estimate). Nil when not measured.
+    var expectedS: Double?
+    /// Cancel was pressed on the running request; it stops at the next cancel point.
+    var cancelRequested = false
 
     enum CodingKeys: String, CodingKey {
         case id, stateRaw = "state", createdAt = "created_at", startedAt = "started_at"
         case finishedAt = "finished_at", progress, stage, message, result, node, request
-        case etaS = "eta_s"
+        case etaS = "eta_s", etaDecodeKnown = "eta_decode_known", expectedS = "expected_s"
+        case cancelRequested = "cancel_requested"
     }
 
     init(from decoder: Decoder) throws {
@@ -754,6 +762,9 @@ struct Job: Decodable, Identifiable, Sendable {
         node = c.value(.node, "local")
         request = c.value(.request, JobRequestInfo())
         etaS = c.optional(.etaS)
+        etaDecodeKnown = c.value(.etaDecodeKnown, false)
+        expectedS = c.optional(.expectedS)
+        cancelRequested = c.value(.cancelRequested, false) || stateRaw == "running" && message == "cancelling"
     }
 
     var state: JobState { JobState(rawValue: stateRaw) ?? .unknown }
@@ -788,11 +799,27 @@ struct Job: Decodable, Identifiable, Sendable {
         return max(0, end - start)
     }
 
-    /// Remaining seconds: engine value if given, else extrapolated from progress.
+    /// Remaining seconds from the engine only (measured on this run). No extrapolation from progress: that ran far
+    /// too low because the first step and the decode don't move the progress bar evenly.
     var remainingS: Double? {
-        if let e = etaS ?? result["eta_s"]?.doubleValue { return max(0, e) }
-        guard state == .running, progress > 0.02, progress < 1, let elapsed = durationS else { return nil }
-        return elapsed / progress * (1 - progress)
+        guard state == .running, !cancelRequested, let e = etaS else { return nil }
+        return max(0, e)
+    }
+
+    /// "About 3 min left", "About 40 s left", "Estimating…" while running; "About 2 min once it starts" while queued.
+    var timeLeftText: String? {
+        switch state {
+        case .running:
+            if cancelRequested { return nil }
+            guard let left = remainingS else { return "Estimating…" }
+            if left < 5 { return "Almost done" }
+            return "About \(Clock.short(left)) left" + (etaDecodeKnown ? "" : " + decode")
+        case .queued, .waitingMemory:
+            guard let s = expectedS, s > 0 else { return nil }
+            return "About \(Clock.short(s)) once it starts"
+        default:
+            return nil
+        }
     }
 }
 

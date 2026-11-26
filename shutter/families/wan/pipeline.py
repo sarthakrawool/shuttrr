@@ -375,6 +375,16 @@ class WanPipeline:
 
     # ---- the whole run
     def generate(self, s: Settings, models: ModelSource, keep_warm: bool = True) -> tuple[Any, dict[str, Any]]:
+        """Run with cancel points inside the DiT steps and the decode (model/interrupt.py) for this thread."""
+        from shutter.families.wan.model import interrupt
+        prev = interrupt.get_check()
+        interrupt.set_check(self.check_cancelled)
+        try:
+            return self._generate(s, models, keep_warm)
+        finally:
+            interrupt.set_check(prev)
+
+    def _generate(self, s: Settings, models: ModelSource, keep_warm: bool = True) -> tuple[Any, dict[str, Any]]:
         import mlx.core as mx
         import numpy as np
         from shutter.families.wan.model.scheduler import (FlowDPMPP2MScheduler, FlowMatchEulerScheduler,

@@ -77,7 +77,11 @@ Conventions:
   "progress": 1.0,                       // 0..1
   "stage": "denoise 2/2",                // human-readable; step counters parse from it
   "message": "",                         // last status line or the error text
-  "eta_s": 12.5,                         // only while running and progress > 1%
+  "eta_s": 12.5,                         // running: seconds left from this run's measured step times plus the
+                                         // decode estimate; null until the first step is done (0.2.11)
+  "eta_decode_known": true,              // false when eta_s covers the steps only (no decode measured yet)
+  "expected_s": null,                    // queued: how long it should take once it starts (measured runs only)
+  "cancel_requested": false,             // true after DELETE on a running request, until it stops
   "result": {"output": "/…/outputs/d98530c84d6c.mp4", "seconds": 0.002, "peak_bytes": 17179869184, "…": "…"},
   "node": "local",
   "client": "comfyui-shutter/0.2.8",     // null when no client was named

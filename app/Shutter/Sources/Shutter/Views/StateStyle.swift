@@ -47,11 +47,14 @@ extension Job {
     var detailLine: String {
         switch state {
         case .running:
+            if cancelRequested { return "Cancelling…" }
             let stageText = stage.isEmpty ? "Starting" : stage
-            if let left = remainingS, left > 0 { return "\(stageText) · \(Clock.short(left)) left" }
+            if let t = timeLeftText { return "\(stageText) · \(t)" }
             return stageText
         case .queued:
-            return request.priority != 0 ? "Priority \(request.priority)" : "Waiting for its turn"
+            let base = request.priority != 0 ? "Priority \(request.priority)" : "Waiting for its turn"
+            if let t = timeLeftText { return "\(base) · \(t)" }
+            return base
         case .done:
             return outputPath.map { Fmt.fileName($0) } ?? "Finished"
         case .waitingMemory:

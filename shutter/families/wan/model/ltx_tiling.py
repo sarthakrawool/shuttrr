@@ -443,6 +443,8 @@ def decode_with_tiling(
                     chunked_conv=chunked_conv,
                 )
                 mx.eval(tile_output)
+                from .interrupt import poll
+                poll()
 
                 # Clear tile_latents reference
                 del tile_latents

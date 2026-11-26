@@ -99,11 +99,9 @@ def validate_submit(data: Any) -> Optional[str]:
 
 
 def _job_json(job: Any) -> dict[str, Any]:
-    d = job.to_dict()
-    if job.state == JobState.RUNNING and job.started_at and job.progress > 0.01:
-        elapsed = max(0.0, time.time() - job.started_at)
-        d["eta_s"] = round(elapsed * (1 - job.progress) / job.progress, 1)
-    return d
+    # eta_s comes from the engine (measured step times + decode estimate, None until the first step is done;
+    # core/eta.py). Before 0.2.11 it was elapsed x (1 - progress) / progress, which ran far too low.
+    return job.to_dict()
 
 
 class _AuthMiddleware:

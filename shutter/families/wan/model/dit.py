@@ -376,9 +376,15 @@ class WanModel(nn.Module):
         )
 
         # Run transformer blocks
+        from .interrupt import BLOCK_EVERY, get_check
+        check = get_check()
+        n_blocks = len(self.blocks)
         for i, block in enumerate(self.blocks):
             kv = cross_kv_caches[i] if cross_kv_caches is not None else None
             x = block(x, cross_kv_cache=kv, **kwargs)
+            if check is not None and (i + 1) % BLOCK_EVERY == 0 and i + 1 < n_blocks:
+                mx.eval(x)       # a cancel point inside the step (same operations, same order)
+                check()
 
         # Output head
         x = self.head(x, e)

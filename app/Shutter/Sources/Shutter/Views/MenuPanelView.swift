@@ -597,12 +597,18 @@ private struct GlassRequests: View {
                         .foregroundStyle(.primary)
                         .contentTransition(.numericText())
                 }
-                Button { store.cancel(job) } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 15)).foregroundStyle(.tertiary)
+                if store.isCancelling(job) {
+                    ProgressView().controlSize(.mini)
+                        .help("Cancelling…")
+                        .accessibilityLabel("Cancelling")
+                } else {
+                    Button { store.cancel(job) } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 15)).foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel this request")
+                    .accessibilityLabel("Cancel request")
                 }
-                .buttonStyle(.plain)
-                .help("Cancel this request")
-                .accessibilityLabel("Cancel request")
             }
             if running {
                 GeometryReader { geo in

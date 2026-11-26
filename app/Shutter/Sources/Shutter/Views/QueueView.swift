@@ -193,15 +193,25 @@ private struct JobRow: View {
             .truncationMode(.middle)
             .column(Theme.Metric.colModel)
 
-            HStack(spacing: Theme.Space.s2) {
-                StateBadge(job: job)
-                if job.state == .running || (job.state.isLive && job.progress > 0) {
-                    ProgressLine(value: job.progress,
-                                 tint: selected ? Theme.Palette.onAccent : Theme.Palette.ink,
-                                 track: selected ? Theme.Palette.onAccent.opacity(0.3) : Theme.Palette.fill)
-                    Text(Fmt.percent(job.progress))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Theme.Space.s2) {
+                    StateBadge(job: job)
+                    if job.state == .running || (job.state.isLive && job.progress > 0) {
+                        ProgressLine(value: job.progress,
+                                     tint: selected ? Theme.Palette.onAccent : Theme.Palette.ink,
+                                     track: selected ? Theme.Palette.onAccent.opacity(0.3) : Theme.Palette.fill)
+                        Text(Fmt.percent(job.progress))
+                            .font(Theme.Fonts.meta)
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.rowMeta(selected: selected))
+                    }
+                }
+                // "About 3 min left" / "Estimating…" / "About 2 min once it starts" (0.2.11)
+                if job.state.isLive && !store.isCancelling(job), let t = job.timeLeftText {
+                    Text(t)
                         .font(Theme.Fonts.meta)
                         .monospacedDigit()
+                        .lineLimit(1)
                         .foregroundStyle(Theme.rowMeta(selected: selected))
                 }
             }
@@ -223,7 +233,17 @@ private struct JobRow: View {
                 .column(Theme.Metric.colPeak, .trailing)
 
             Group {
-                if job.state.isLive {
+                if job.state.isLive && store.isCancelling(job) {
+                    HStack(spacing: Theme.Space.s1) {
+                        ProgressView().controlSize(.mini)
+                        Text("Cancelling…")
+                            .font(Theme.Fonts.meta)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .foregroundStyle(Theme.rowMeta(selected: selected))
+                    }
+                    .help("Stopping at the next safe point, usually within a couple of seconds")
+                } else if job.state.isLive {
                     Button("Cancel", action: onCancel)
                         .buttonStyle(.kit(.line, small: true))
                         .help("Cancel this request")

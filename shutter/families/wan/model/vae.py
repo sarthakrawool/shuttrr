@@ -704,6 +704,8 @@ class WanVAE(nn.Module):
             _compact_cache(feat_cache)
             mx.eval(chunk, *[c for c in feat_cache if isinstance(c, mx.array)])
             outs.append(chunk)
+            from .interrupt import poll
+            poll()
         return outs[0] if len(outs) == 1 else mx.concatenate(outs, axis=2)
 
     def _count_decoder_cache_slots(self) -> int:

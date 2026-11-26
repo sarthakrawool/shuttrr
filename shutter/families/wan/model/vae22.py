@@ -1262,8 +1262,10 @@ def decode_stream(vae, z, sink=None):
     sd = StreamDecoder(vae)
     outs = []
     put = sink if sink is not None else outs.append
+    from .interrupt import poll
     for i in range(z.shape[1]):
         sd.push(z[:, i:i + 1], put)
+        poll()
     del sd
     if sink is not None:
         return None

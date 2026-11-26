@@ -18,7 +18,7 @@ CLIENT_WINDOW_S = 600.0       # GET /v1/clients: clients seen in the last 10 min
 THROUGHPUT_WINDOW_S = 3600.0  # GET /v1/system throughput: requests finished in the last hour
 MAX_CLIENT_LEN = 120
 
-_STEP_RE = re.compile(r"\b(?:denoise|denoising|step|steps|sampling|sample)\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+_STEP_RE = re.compile(r"\b(?:denoise|denoising|step|steps|sampling|sample)\s+(\d+)\s*(?:/|of)\s*(\d+)", re.IGNORECASE)
 
 
 def parse_step(stage: Any) -> Optional[tuple[int, int]]:

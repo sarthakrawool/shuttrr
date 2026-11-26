@@ -39,6 +39,7 @@ from shutter.core.pool import ModelPool
 from shutter.core.queue import EventBus, JobStore
 from shutter.core.registry import AdapterUnavailable, Registry, UnknownModel
 from shutter.core import files as _files
+from shutter.core.eta import EtaTracker, decode_estimate_from_history
 from shutter.core.stats import ClientTracker, StepRate, parse_step, throughput_from_jobs, THROUGHPUT_WINDOW_S
 from shutter.types import (
     GB, TERMINAL_STATES, Cancelled, Event, Job, JobRequest, JobState, MemoryEstimate, MemoryRefused,
@@ -475,15 +476,68 @@ class Engine:
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
             if self._running is not None and self._running.id == job_id:
-                return self._copy(self._running)
+                return self._live_copy(self._running)
         return self.store.get(job_id)
 
     def list(self, states: Optional[Iterable[JobState]] = None, limit: int = 200) -> list[Job]:
         jobs = self.store.list(states=states, limit=limit)
         with self._lock:
             if self._running is not None:
-                jobs = [self._copy(self._running) if j.id == self._running.id else j for j in jobs]
+                jobs = [self._live_copy(self._running) if j.id == self._running.id else j for j in jobs]
+        for j in jobs:
+            if j.state in (JobState.QUEUED, JobState.WAITING_MEMORY):
+                j.expected_s = self._expected_seconds(j)
         return jobs
+
+    def _live_copy(self, job: Job) -> Job:
+        """The running job with its time left worked out now (it counts down between steps)."""
+        c = self._copy(job)
+        tr = getattr(self, "_eta", None)
+        if tr is not None and not c.cancel_requested:
+            est = tr.estimate(self.clock())
+            c.eta_s, c.eta_decode_known = est["eta_s"], est["decode_known"]
+        return c
+
+    def _expected_seconds(self, job: Job) -> Optional[float]:
+        """How long a queued request should take once it starts, from the catalog's measured runs (the 0.2.10
+        estimate for the request's own size, frames, steps and decode). None when nothing is measured for it."""
+        r = job.request
+        key = (r.model, r.width, r.height, r.frames, r.steps, bool((r.params or {}).get("vae_tile")))
+        cache = self.__dict__.setdefault("_expected_cache", {})
+        if key in cache:
+            return cache[key]
+        val: Optional[float] = None
+        try:
+            from shutter.core import request_options as ro
+            body = {k: v for k, v in (("width", r.width), ("height", r.height), ("frames", r.frames),
+                                      ("steps", r.steps)) if v}
+            if "vae_tile" in (r.params or {}):
+                body["vae_tile"] = bool(r.params["vae_tile"])
+            val = ro.estimate(self.config, r.model, body).get("seconds")
+            val = round(float(val), 1) if val else None
+        except Exception:
+            val = None
+        cache[key] = val
+        return val
+
+    def _decode_estimate(self, job: Job) -> Optional[float]:
+        """Seconds the decode should take: earlier finished runs of the same request on this Mac first, then the
+        catalog's measured run for exactly this request. None when neither exists."""
+        try:
+            hist = decode_estimate_from_history(self.store.list([JobState.DONE], limit=200), job.request.model,
+                                                job.request)
+            if hist:
+                return hist
+            from shutter.core import catalog as cat
+            e = cat.CATALOG.get(job.request.model)
+            if e and job.request.width and job.request.height and job.request.frames:
+                c = cat._measured_entry(e, job.request.height, job.request.width, job.request.frames,
+                                        bool((job.request.params or {}).get("vae_tile")))
+                d = c.get("decode_s")
+                return float(d) if d else None
+        except Exception:
+            return None
+        return None
 
     def cancel(self, job_id: str) -> Optional[Job]:
         """Cancel a job. Queued/waiting: cancelled at once. Running: the adapter stops at
@@ -492,6 +546,9 @@ class Engine:
             if self._running is not None and self._running.id == job_id:
                 self._cancel.set()
                 self._running.message = "cancelling"
+                self._running.cancel_requested = True
+                self._running.eta_s = None
+                self._publish("job.cancelling", self._running)
                 return self._copy(self._running)
             job = self.store.get(job_id)
             if job is None:
@@ -967,6 +1024,7 @@ class Engine:
         job.state = state
         job.finished_at = time.time()
         job.message = message
+        job.eta_s = None
         if state == JobState.DONE:
             job.progress = 1.0
         self.store.update(job)
@@ -1152,6 +1210,8 @@ class Engine:
         state = {"persist": t_start, "publish": 0.0, "watch": t_start, "stage": None}
 
         self._steprate.reset()
+        eta = EtaTracker(self._decode_estimate(job), clock=self.clock)
+        self._eta = eta
 
         def report(progress: float, stage: str = "") -> None:
             p = min(1.0, max(0.0, float(progress)))
@@ -1159,19 +1219,22 @@ class Engine:
             st = parse_step(stage)
             if st is not None:
                 self._steprate.update(*st)
+            eta.update(stage or "", now)
+            est = eta.estimate(now)
             with self._lock:
                 job.progress = p
                 job.stage = stage or job.stage
+                if not job.cancel_requested:
+                    job.eta_s = est["eta_s"]
+                    job.eta_decode_known = est["decode_known"]
                 if now - state["persist"] >= self.progress_persist_s or p >= 1.0:
                     state["persist"] = now
                     self.store.update(job)
-            elapsed = now - t_start
-            eta = elapsed * (1 - p) / p if p > 0.01 else None
             if stage != state["stage"] or now - state["publish"] >= 0.1 or p >= 1.0:
                 state["publish"] = now
                 state["stage"] = stage
-                self._publish("job.progress", job, progress=p, stage=job.stage,
-                              eta_s=round(eta, 1) if eta is not None else None)
+                self._publish("job.progress", job, progress=p, stage=job.stage, eta_s=job.eta_s,
+                              eta_decode_known=job.eta_decode_known)
 
         wd = {"relieve": False, "stop_at": None, "lock": threading.Lock(), "events": []}
 

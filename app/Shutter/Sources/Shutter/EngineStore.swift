@@ -156,6 +156,7 @@ final class EngineStore: ObservableObject {
             let list = try await api.jobs(limit: 50)
             system = sys
             jobs = list.filter { !$0.isModelOperation }
+            markCancelling()
             if requestsOpen && unseenFailures > 0 { markRequestsSeen() }
             onSystem?(sys)
             failures = 0
@@ -194,7 +195,7 @@ final class EngineStore: ObservableObject {
                 clients = (try? await api.clients()) ?? []
             }
             startEventsIfNeeded()
-            return 2
+            return cancelling.isEmpty ? 2 : 0.3
         } catch {
             failures += 1
             connection = .disconnected(Self.describe(error))
@@ -382,14 +383,35 @@ final class EngineStore: ObservableObject {
         }
     }
 
+    /// Requests whose Cancel was pressed and that have not stopped yet. They show "Cancelling…" at once (the button
+    /// turns into a spinner) and the store polls every 0.3 s until the engine confirms, instead of every 2 s.
+    @Published private(set) var cancelling: Set<String> = []
+
+    func isCancelling(_ job: Job) -> Bool { cancelling.contains(job.id) || job.cancelRequested }
+
     func cancel(_ job: Job) {
+        guard !cancelling.contains(job.id) else { return }
+        cancelling.insert(job.id)
+        markCancelling()
         Task {
             do {
                 _ = try await APIClient.current().cancel(id: job.id)
             } catch {
+                cancelling.remove(job.id)
+                markCancelling()
                 lastError = error.localizedDescription
             }
             refreshNow()
+        }
+    }
+
+    /// Shows Cancelling… on the rows whose Cancel was pressed; forgets requests that have stopped.
+    private func markCancelling() {
+        guard !cancelling.isEmpty else { return }
+        let live = Set(jobs.filter { $0.state.isLive }.map(\.id))
+        cancelling = cancelling.filter { live.contains($0) }
+        for i in jobs.indices where cancelling.contains(jobs[i].id) && jobs[i].state == .running {
+            jobs[i].cancelRequested = true
         }
     }
 

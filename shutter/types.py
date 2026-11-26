@@ -177,6 +177,12 @@ class Job:
     result: dict[str, Any] = field(default_factory=dict)  # output path, timings, peak memory
     node: str = "local"               # which machine ran it (for multi-Mac later)
     client: Optional[str] = None      # free text the submitter sent, e.g. "comfyui/0.46"
+    # 0.2.11: time left while running (None until the first step is measured), whether that includes the decode,
+    # the expected run time while queued, and whether Cancel was pressed on the running request
+    eta_s: Optional[float] = None
+    eta_decode_known: bool = False
+    expected_s: Optional[float] = None
+    cancel_requested: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -191,6 +197,10 @@ class Job:
             "result": self.result,
             "node": self.node,
             "client": self.client,
+            "eta_s": self.eta_s,
+            "eta_decode_known": self.eta_decode_known,
+            "expected_s": self.expected_s,
+            "cancel_requested": self.cancel_requested,
             "request": self.request.to_dict(),
         }
 
@@ -209,6 +219,10 @@ class Job:
             result=d.get("result", {}),
             node=d.get("node", "local"),
             client=d.get("client"),
+            eta_s=d.get("eta_s"),
+            eta_decode_known=bool(d.get("eta_decode_known", False)),
+            expected_s=d.get("expected_s"),
+            cancel_requested=bool(d.get("cancel_requested", False)),
         )
 
 
