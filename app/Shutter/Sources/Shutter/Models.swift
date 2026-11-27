@@ -878,6 +878,8 @@ struct JobList: Decodable, Sendable {
 struct NewJobRequest: Encodable, Sendable {
     var model: String
     var prompt: String
+    /// What the picture should not have (image models; used with guidance above 1). Nil sends nothing.
+    var negativePrompt: String? = nil
     var image: String?
     var audio: String?
     var output: String?
@@ -898,7 +900,8 @@ struct NewJobRequest: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         // `framing` is not sent: the engine no longer has it.
-        case model, prompt, image, audio, output, durationS = "duration_s", seed, priority, params
+        case model, prompt, negativePrompt = "negative_prompt", image, audio, output, durationS = "duration_s", seed,
+             priority, params
         case width, height, frames, steps, guidance, mode
     }
 }
@@ -1058,8 +1061,32 @@ struct RequestEstimate: Decodable, Equatable, Sendable {
 }
 
 /// GET /v1/models/{id}/request-options (also the answer of PUT and DELETE .../defaults).
+/// A look preset an image model offers (e.g. "3D animated"): words the engine adds around the prompt.
+struct StylePreset: Decodable, Identifiable, Equatable, Sendable {
+    var id: String = ""
+    var label: String = ""
+
+    enum CodingKeys: String, CodingKey { case id, label }
+
+    init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.value(.id, "")
+        label = c.value(.label, "")
+    }
+}
+
 struct RequestOptions: Decodable, Equatable, Sendable {
     var model: String = ""
+    /// "image" for image models (size, steps and guidance only), else "" (video).
+    var kind: String = ""
+    var styles: [StylePreset] = []
+    /// The model takes LoRAs (a file and a strength).
+    var lora: Bool = false
     var editable: Bool = false
     var defaults = RequestValues()
     var macDefaults = RequestValues()
@@ -1069,13 +1096,18 @@ struct RequestOptions: Decodable, Equatable, Sendable {
     var estimate: RequestEstimate?
 
     enum CodingKeys: String, CodingKey {
-        case model, editable, defaults, macDefaults = "mac_defaults", userDefaults = "user_defaults"
+        case model, kind, styles, lora, editable, defaults, macDefaults = "mac_defaults", userDefaults = "user_defaults"
         case sizes, limits, estimate
     }
+
+    var isImage: Bool { kind == "image" }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         model = c.value(.model, "")
+        kind = c.value(.kind, "")
+        styles = c.value(.styles, [])
+        lora = c.value(.lora, false)
         editable = c.value(.editable, false)
         defaults = c.value(.defaults, RequestValues())
         macDefaults = c.value(.macDefaults, RequestValues())

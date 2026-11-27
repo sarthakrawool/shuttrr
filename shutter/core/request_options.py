@@ -27,8 +27,100 @@ LIMITS_WAN = {"min_side": 256, "frames_min": 5, "frames_max": 241, "frames_rule"
               "shift_min": 0.5, "shift_max": 20.0}
 
 
+LIMITS_IMAGE = {"min_side": 256, "max_side": 2048, "steps_min": 1, "steps_max": 50, "guidance_min": 0.0,
+                "guidance_max": 20.0, "size_multiple": 16, "count_min": 1, "count_max": 8}
+IMAGE_SIZES = [(1024, 1024, "1024x1024 (square)"), (768, 768, "768x768 (square, faster)"),
+               (896, 1152, "896x1152 (portrait)"), (1152, 896, "1152x896 (landscape)"),
+               (720, 1280, "720x1280 (tall, 9:16)"), (1280, 720, "1280x720 (wide, 16:9)")]
+#: style presets for image models: words added around the prompt (named for the look, never a studio)
+IMAGE_STYLES = {
+    "3d-animated": {"label": "3D animated",
+                    "prefix": "3D animated film still: ",
+                    "suffix": ", big expressive eyes, soft subsurface skin, stylised proportions, warm cinematic "
+                              "lighting, shallow depth of field"},
+}
+
+
+def styled_prompt(prompt: str, style: Optional[str]) -> str:
+    st = IMAGE_STYLES.get(str(style or ""))
+    return f"{st['prefix']}{prompt}{st['suffix']}" if st else prompt
+
+
 class OptionsError(ValueError):
     pass
+
+
+def _is_image(spec: dict[str, Any]) -> bool:
+    return spec.get("adapter") == "z-image"
+
+
+def _image_mac(model_id: str, total: int) -> dict[str, Any]:
+    e = cat.CATALOG.get(model_id) or {}
+    h, w = e.get("image_default_size") or (1024, 1024)
+    return {"width": int(w), "height": int(h), "steps": int(e.get("image_default_steps", 9)), "guidance": 0.0}
+
+
+def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int) -> dict[str, Any]:
+    mac = _image_mac(model_id, total)
+    if model_id in cat.CATALOG:
+        mac.update({k: v for k, v in _from_options(cat.preset_for(model_id, total)["options"]).items()
+                    if k in ("width", "height", "steps", "guidance")})
+    opts = dict(spec.get("options") or {})
+    user = {k: v for k, v in _from_options(opts, list(opts.get("user_keys") or [])).items()
+            if k in ("width", "height", "steps", "guidance")}
+    defaults = {**mac, **user}
+    return {"model": model_id, "kind": "image", "editable": True, "defaults": defaults, "mac_defaults": mac,
+            "user_defaults": user,
+            "sizes": [{"width": w, "height": h, "label": lab} for w, h, lab in IMAGE_SIZES],
+            "limits": LIMITS_IMAGE,
+            "styles": [{"id": k, "label": v["label"]} for k, v in IMAGE_STYLES.items()],
+            "lora": True,
+            "estimate": estimate(cfg, model_id, defaults, total_bytes=total, _defaults=defaults)}
+
+
+def _image_issues(v: dict[str, Any]) -> list[dict[str, Any]]:
+    lim, out = LIMITS_IMAGE, []
+    m = lim["size_multiple"]
+    for k in ("width", "height"):
+        x = v[k]
+        if x % m or not lim["min_side"] <= x <= lim["max_side"]:
+            fix = min(lim["max_side"], max(lim["min_side"], int(x // m) * m))
+            out.append({"field": k, "message": f"{k.capitalize()} must be a multiple of {m} between "
+                        f"{lim['min_side']} and {lim['max_side']}; it would be made {fix}.", "fix": fix})
+    for k in ("steps", "guidance"):
+        lo, hi = lim[f"{k}_min"], lim[f"{k}_max"]
+        if not lo <= v[k] <= hi:
+            out.append({"field": k, "message": f"{k.capitalize()} should be between {lo:g} and {hi:g}.",
+                        "fix": min(hi, max(lo, v[k]))})
+    return out
+
+
+def _image_estimate(cfg: Config, model_id: str, body: dict[str, Any], total: int,
+                    defaults: Optional[dict[str, Any]]) -> dict[str, Any]:
+    defaults = defaults or _image_options(cfg, model_id, _spec(cfg, model_id), total)["defaults"]
+    v = {**defaults, **{k: x for k, x in _clean_values(body or {}).items() if k in ("width", "height", "steps",
+                                                                                     "guidance")}}
+    count = int((body or {}).get("count") or 1)
+    issues = _image_issues(v)
+    h, w, steps = v["height"], v["width"], v["steps"]
+    t = cat.expected_time(model_id, total, h=h, w=w, f=1, steps=steps) if model_id in cat.CATALOG \
+        else {"seconds": None, "label": "", "measured": False, "basis": ""}
+    if t.get("seconds") and float(v.get("guidance") or 0) > 1:
+        t = dict(t, seconds=t["seconds"] * 2, measured=False)
+    if t.get("seconds") and count > 1:
+        t = dict(t, seconds=t["seconds"] * count)
+    if t.get("seconds"):
+        sec = t["seconds"]
+        t["label"] = (f"About {cat._seconds(sec)} on this Mac" + (f" for {count} images" if count > 1 else "")
+                      + ("" if t["measured"] else " (estimate)"))
+    peak, fit = cat.request_peak(model_id, total, h, w, 1, False) if model_id in cat.CATALOG else (0, None)
+    warnings = []
+    if float(v.get("guidance") or 0) > 1:
+        warnings.append("Guidance above 1 runs the model twice per step (about twice as long). Z-Image Turbo is "
+                        "made to run without it.")
+    return {"seconds": t["seconds"], "label": t["label"], "measured": t["measured"], "basis": t["basis"],
+            "peak_bytes": int(peak or 0), "fit": fit or {"level": "unknown", "reason": ""},
+            "warnings": warnings, "issues": issues}
 
 
 def _spec(cfg: Config, model_id: str) -> dict[str, Any]:
@@ -118,6 +210,8 @@ def _clean_values(body: dict[str, Any]) -> dict[str, Any]:
 
 def request_options(cfg: Config, model_id: str, total_bytes: Optional[int] = None) -> dict[str, Any]:
     spec = _spec(cfg, model_id)
+    if _is_image(spec):
+        return _image_options(cfg, model_id, spec, cat.total_memory() if total_bytes is None else total_bytes)
     if spec.get("adapter") != "wan":
         return {"model": model_id, "editable": False, "defaults": {}, "mac_defaults": {}, "user_defaults": {},
                 "sizes": [], "limits": {}, "estimate": None}
@@ -162,6 +256,9 @@ def _issues(v: dict[str, Any], lim: dict[str, Any]) -> list[dict[str, Any]]:
 def estimate(cfg: Config, model_id: str, body: dict[str, Any], total_bytes: Optional[int] = None,
              _wcfg: Optional[dict[str, Any]] = None, _defaults: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     spec = _spec(cfg, model_id)
+    if _is_image(spec):
+        return _image_estimate(cfg, model_id, body, cat.total_memory() if total_bytes is None else total_bytes,
+                               _defaults)
     if spec.get("adapter") != "wan":
         return {"seconds": None, "label": "", "measured": False, "basis": "", "peak_bytes": 0,
                 "fit": {"level": "unknown", "reason": ""}, "warnings": [], "issues": []}
@@ -198,8 +295,12 @@ def save_defaults(cfg: Config, model_id: str, body: dict[str, Any]) -> dict[str,
         raise OptionsError("nothing to save")
     cfg = Config.load(cfg.path)
     spec = dict(_spec(cfg, model_id))
-    if spec.get("adapter") != "wan":
+    if spec.get("adapter") != "wan" and not _is_image(spec):
         raise OptionsError("this model has no editable defaults")
+    if _is_image(spec):
+        values = {k: v for k, v in values.items() if k in ("width", "height", "steps", "guidance")}
+        if not values:
+            raise OptionsError("nothing to save")
     opts = dict(spec.get("options") or {})
     new = _to_options(values)
     opts.update(new)

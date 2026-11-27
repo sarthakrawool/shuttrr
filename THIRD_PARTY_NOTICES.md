@@ -1,7 +1,7 @@
 # Third-party notices
 
 Shuttrr's own code is MIT licensed (see `LICENSE`). This file lists what ships inside this repository or the
-Shuttrr app, and what the installer fetches on the user's Mac. Apart from the vendored mlx-video code below,
+Shuttrr app, and what the installer fetches on the user's Mac. Apart from the vendored mlx-video and mflux code below,
 nothing from these projects is modified.
 
 ## Bundled in this repository and in Shuttrr.app
@@ -16,9 +16,11 @@ nothing from these projects is modified.
 | [Sparkle](https://sparkle-project.org) 2 (update framework) | `Shuttrr.app/Contents/Frameworks/Sparkle.framework`, fetched by Swift Package Manager | MIT (`LICENSE.Sparkle` in the app's Resources) |
 
 | [mlx-video](https://github.com/Blaizzy/mlx-video) Wan model code (vendored, adapted) | `shutter/families/wan/model/` | MIT, Copyright (c) 2025 Prince Canuma (`LICENSE.mlx-video` next to the files) |
+| [mflux](https://github.com/filipstrand/mflux) 0.24.0 Z-Image model code and low-memory VAE decoder (vendored, trimmed) | `shutter/families/zimage/model.py`, `vae_decode.py` | MIT, Copyright (c) 2026 Filip Strand (`NOTICE.md` next to the files) |
 
-The Wan model code in `shutter/families/wan/model/` is the only vendored third-party source; it was adapted
-for Shuttrr (bounded-memory VAE decode, loader changes) and keeps its MIT notice. The Metal kernels in
+The Wan model code in `shutter/families/wan/model/` was adapted for Shuttrr (bounded-memory VAE decode, loader
+changes) and keeps its MIT notice. The Z-Image code in `shutter/families/zimage/` is mflux's, trimmed to text to
+image with the arithmetic unchanged, and keeps its MIT notice. The Metal kernels in
 `shutter/kernels/` and the app's Swift code are Shuttrr's own.
 
 ## Installed on the user's Mac by `scripts/bootstrap.sh` (not shipped in the app)
@@ -43,3 +45,7 @@ Shuttrr does not include model weights. LongCat-Video-Avatar weights (and the ML
 `code/` folder) are downloaded from Hugging Face on request and are covered by their own licence on the model
 card: https://huggingface.co/SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem and the upstream
 LongCat-Video-Avatar model card from Meituan. Check those terms before commercial use.
+
+Z-Image Turbo (Tongyi-MAI, Apache License 2.0, https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) is downloaded on
+request as the mflux-community 8-bit build (https://huggingface.co/mflux-community/z-image-turbo-mflux-q8,
+Apache License 2.0), pinned to one revision and checked file by file against its SHA-256.

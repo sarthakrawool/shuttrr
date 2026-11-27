@@ -23,6 +23,7 @@ BUILTIN_FAMILIES: dict[str, str] = {
     "longcat-avatar": "shutter.adapters.longcat:LongCatAvatarAdapter",
     "fish-drama3": "shutter.adapters.drama3:Drama3Adapter",
     "wan": "shutter.adapters.wan:WanAdapter",
+    "z-image": "shutter.adapters.zimage:ZImageAdapter",
     "dummy": "shutter.adapters.dummy:DummyAdapter",
     "dummy-image": "shutter.adapters.dummy:DummyImageAdapter",
 }

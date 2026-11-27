@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from shutter.core.config import Config
-from shutter.core.pinned_files import DRAMA3_Q8, WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE
+from shutter.core.pinned_files import DRAMA3_Q8, WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE, ZIMAGE_Q8
 
 GB = 1024**3
 
@@ -343,6 +343,27 @@ def _wan_estimates(shape: dict[str, Any], variant: str, h: int, w: int, f: int,
     return {r: int(P.estimate(ps, needs, r)["peak"]) for r in M.RUNG_IDS}
 
 
+def _image_estimates(model_id: str, h: int, w: int) -> dict[str, int]:
+    """Engine memory estimate (bytes) per memory step for an image model, before it is downloaded."""
+    from shutter.adapters.zimage import ZImageAdapter
+    from shutter.types import JobRequest
+    a = ZImageAdapter(model_id, Path("/nonexistent"), {})
+    a._parts = None
+    ests = a.rung_estimates(JobRequest(model=model_id, prompt="x", width=w, height=h))
+    return {r: int(v.peak) for r, v in ests.items()}
+
+
+def _estimates_any(model_id: str, total_bytes: int, h: int, w: int, f: int, tiled: bool) -> dict[str, int]:
+    e = CATALOG[model_id]
+    if e.get("kind") == "image":
+        return _image_estimates(model_id, h, w)
+    if e["adapter"] == "wan":
+        return _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
+    if e["adapter"] == "longcat-avatar":
+        return _longcat_estimates(total_bytes)
+    return {}
+
+
 def _longcat_estimates(total_bytes: int) -> dict[str, int]:
     from shutter.adapters import longcat as L
     from shutter.core import modes as M
@@ -434,6 +455,35 @@ CATALOG["fish-drama3-8bit"] = {
                         fps={"resident": 60.2, "stream_wide": 20.8, "stream_tight": 19.5})],
     "stream_note": "Fits, about 3x slower",
 }
+
+# Z-Image Turbo (text to image; shutter/adapters/zimage.py, model code vendored from mflux in shutter/families/zimage).
+# The mflux-community 8-bit build is downloaded as is (no conversion), pinned and checked file by file. Measured with
+# the Shuttrr app running and the requests sent to its engine: peaks are the engine's memory footprint plus the app's
+# (top MEM, sampled every second), so Python, the SSD read buffers and the app are all counted. On the 16 GB M5 the
+# full-memory steps were not run: with the other apps open, loading the whole 6.5 GB DiT made swap grow (stream_wide at
+# 1024 also grew swap by 1 GB at 4.1 GB), so only stream_tight is recorded.
+_ZIMAGE_M5 = {"date": "2026-11-27", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+              "chip": "Apple M5", "gpu_cores": 10, "frames": 1, "steps": 9, "identical": True, "with_app": True}
+ZIMAGE_CHECKED = [
+    dict(_ZIMAGE_M5, size="1024x1024", peaks_gb={"stream_tight": 3.12}, seconds={"stream_tight": 61},
+         mlx_peaks_gb={"stream_tight": 1.78}),
+    dict(_ZIMAGE_M5, size="768x768", peaks_gb={"stream_tight": 2.70}, seconds={"stream_tight": 34},
+         mlx_peaks_gb={"stream_tight": 1.56}),
+]
+CATALOG["z-image-turbo-8bit"] = {
+    "name": "Z-Image Turbo",
+    "summary": "Pictures from a text prompt, in 9 steps. Photos, illustrations and 3D animated looks.",
+    "kind": "image", "adapter": "z-image", "family": "z-image", "variant": "z-image-turbo",
+    "repo": "mflux-community/z-image-turbo-mflux-q8", "folder": "Z-Image-Turbo-mflux-q8",
+    "revision": ZIMAGE_Q8["revision"], "files": ZIMAGE_Q8["files"],
+    "size_gb": round(sum(f["size"] for f in ZIMAGE_Q8["files"]) / GB, 1), "min_memory_gb": 16,
+    "needs": ["mlx>=0.31", "tokenizers>=0.20", "huggingface_hub>=0.34"],
+    "check_files": ["transformer", "text_encoder", "vae", "tokenizer/tokenizer.json"],
+    "checked_on": ZIMAGE_CHECKED,
+    "image_default_size": (1024, 1024), "image_default_steps": 9,
+    "sample": {"prompt": "3D animated film still: a small robot cooking pancakes in a sunny kitchen, big expressive "
+                         "eyes, soft lighting", "width": 768, "height": 768, "steps": 9, "seed": 42},
+}
 AUDIO_FRAMES_PER_S = 44100 / 2048
 
 
@@ -499,6 +549,10 @@ def default_request_any(model_id: str, total_bytes: int) -> tuple[int, int, int]
     e = CATALOG[model_id]
     if e.get("kind") == "audio":
         return 0, 0, 0
+    if e.get("kind") == "image":
+        h, w = (preset_for(model_id, total_bytes)["options"].get("default_size")
+                or e.get("image_default_size") or (1024, 1024))
+        return int(h), int(w), 1
     if e["adapter"] == "longcat-avatar":
         from shutter.adapters import longcat as L
         h, w = (480, 832) if 0 < total_bytes < L.SMALL_MAC_BYTES else (704, 1312)
@@ -581,7 +635,7 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     usable = max(0, int(total_bytes) - base)
     try:
         h, w, f = default_request_any(model_id, total_bytes)
-        at = f"{h}x{w}, {f} frames"
+        at = f"{h}x{w} image" if e.get("kind") == "image" else f"{h}x{w}, {f} frames"
     except Exception:
         h = w = f = 0
         at = ""
@@ -595,10 +649,7 @@ def classify_fit(model_id: str, total_bytes: int, baseline: Optional[int] = None
     measured = bool(peaks)
     if not peaks:
         try:
-            if e["adapter"] == "wan":
-                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
-            elif e["adapter"] == "longcat-avatar":
-                peaks = _longcat_estimates(total_bytes)
+            peaks = _estimates_any(model_id, total_bytes, h, w, f, tiled)
         except Exception:
             peaks = {}
     if peaks and not measured:
@@ -680,10 +731,7 @@ def memory_line(model_id: str, total_bytes: int) -> str:
         where = f" (measured on a{gb} {mac})" if mac else " (measured)"
     else:
         try:
-            if e["adapter"] == "wan":
-                peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
-            elif e["adapter"] == "longcat-avatar":
-                peaks = _longcat_estimates(total_bytes)
+            peaks = _estimates_any(model_id, total_bytes, h, w, f, tiled)
         except Exception:
             peaks = {}
         peaks = {r: v for r, v in peaks.items() if not r.startswith("stream")} or peaks
@@ -720,6 +768,12 @@ def makes_line(model_id: str, total_bytes: int) -> str:
             return (f"Makes speech {speed} "
                     f"(measured on a {c.get('memory_gb')} GB {str(c.get('mac', '')).split(' (')[0]})")
         return "Makes speech from text"
+    if e.get("kind") == "image":
+        t = expected_time(model_id, total_bytes)
+        if t.get("seconds"):
+            est = "" if t["measured"] else " (estimate)"
+            return f"Makes {w}x{h} images, about {_seconds(t['seconds'])} each on this Mac{est}"
+        return f"Makes {w}x{h} images on this Mac"
     if e["adapter"] == "longcat-avatar":
         return f"Makes {'480p' if h < 700 else '720p'} talking videos on this Mac"
     if e["adapter"] == "wan" and e.get("shape"):
@@ -738,6 +792,10 @@ def _wan_fps(e: dict[str, Any]) -> float:
     return float(VARIANTS.get(e.get("variant", ""), {}).get("fps", 16))
 
 
+def _seconds(seconds: float) -> str:
+    return f"{seconds:.0f} s" if seconds < 90 else _minutes(seconds)
+
+
 def _minutes(seconds: float) -> str:
     m = seconds / 60
     if m < 1.5:
@@ -752,6 +810,8 @@ def default_steps(model_id: str, total_bytes: int) -> int:
     opt = preset_for(model_id, total_bytes)["options"].get("default_steps")
     if opt:
         return int(opt)
+    if CATALOG[model_id].get("kind") == "image":
+        return int(CATALOG[model_id].get("image_default_steps", 9))
     from shutter.families.wan.spec import VARIANTS
     return int(VARIANTS.get(CATALOG[model_id].get("variant", ""), {}).get("steps", 50))
 
@@ -769,13 +829,17 @@ def expected_time(model_id: str, total_bytes: int, h: Optional[int] = None, w: O
     Returns {"seconds", "label", "measured", "basis"}; seconds None when nothing can be said."""
     e = CATALOG[model_id]
     none = {"seconds": None, "label": "", "measured": False, "basis": ""}
-    if e.get("adapter") != "wan" or not e.get("shape"):
+    image = e.get("kind") == "image"
+    if not image and (e.get("adapter") != "wan" or not e.get("shape")):
         return none
     if h is None:
-        h, w, f = default_request(model_id, total_bytes)
+        h, w, f = default_request_any(model_id, total_bytes)
+    if image:
+        f = 1
     steps = int(steps or default_steps(model_id, total_bytes))
     tiled = _default_tiled(e, total_bytes) if tiled is None else bool(tiled)
-    stride = (4, 16, 16) if e["shape"].get("out_dim") == 48 else (4, 8, 8)
+    # image: 1 "frame", 16x16 pixel tokens; seconds scale with tokens (attention grows a little faster: kept simple)
+    stride = (1, 8, 8) if image else ((4, 16, 16) if e["shape"].get("out_dim") == 48 else (4, 8, 8))
     me = chip_info()
     cores = me.get("gpu_cores") or 0
     runs = []
@@ -810,7 +874,8 @@ def expected_time(model_id: str, total_bytes: int, h: Optional[int] = None, w: O
     gb = f"{c['memory_gb']} GB " if c.get("memory_gb") else ""
     mac = str(c.get("mac") or "").split(" (")[0]
     basis = (f"measured on a {gb}{mac}" if measured else f"scaled from a run on a {gb}{mac}") if mac else ""
-    label = f"About {_minutes(seconds)} on this Mac" + ("" if measured else " (estimate)")
+    label = (f"About {_seconds(seconds) if image else _minutes(seconds)} on this Mac"
+             + ("" if measured else " (estimate)"))
     return {"seconds": round(seconds), "label": label, "measured": measured, "basis": basis}
 
 
@@ -819,11 +884,13 @@ def request_peak(model_id: str, total_bytes: int, h: int, w: int, f: int,
     """(peak bytes at the lowest memory step, a fit verdict) for one request on this Mac: measured when this exact
     request was measured, else the engine's estimate (whole-model steps only, as classify_fit)."""
     e = CATALOG[model_id]
+    if e.get("kind") == "image":
+        f = 1
     peaks = _measured_peaks(e, h, w, f, tiled)
     measured = bool(peaks)
     if not peaks:
         try:
-            peaks = _wan_estimates(e["shape"], e.get("variant", model_id), h, w, f, tiled=tiled)
+            peaks = _estimates_any(model_id, total_bytes, h, w, f, tiled)
         except Exception:
             peaks = {}
     if not peaks:

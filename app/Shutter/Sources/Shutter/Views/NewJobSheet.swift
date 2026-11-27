@@ -27,6 +27,12 @@ struct NewJobSheet: View {
     @State private var refText = ""
     @State private var takes = 1
     @State private var splitText = true
+    // Image models (Z-Image): negative prompt, how many pictures, look preset, LoRA
+    @State private var negativePrompt = ""
+    @State private var imageCount = 1
+    @State private var style = ""
+    @State private var loraPath = ""
+    @State private var loraStrength = 1.0
     @State private var submitting = false
     @State private var error: String?
 
@@ -56,6 +62,12 @@ struct NewJobSheet: View {
         (store.models.first { $0.id == model }?.kind ?? "") == "audio"
     }
 
+    /// The chosen model makes pictures (kind "image"): prompt, negative prompt, count and style instead of
+    /// image / audio paths and duration.
+    private var isImage: Bool {
+        options?.isImage == true || (store.models.first { $0.id == model }?.kind ?? "") == "image"
+    }
+
     private var modelChoices: [ModelInfo] {
         store.installedModels.isEmpty ? store.models : store.installedModels
     }
@@ -76,6 +88,8 @@ struct NewJobSheet: View {
 
                 if isVoice {
                     voiceFields
+                } else if isImage {
+                    imageFields
                 } else {
                 LabeledField("Prompt") {
                     TextField("", text: $prompt, prompt: Text("Optional"), axis: .vertical)
@@ -212,6 +226,73 @@ struct NewJobSheet: View {
         }
     }
 
+    // MARK: Image (Z-Image)
+
+    private var imageFields: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s4) {
+            LabeledField("Prompt") {
+                TextField("", text: $prompt, prompt: Text("What the picture shows, e.g. an old man and his dog on a porch"),
+                          axis: .vertical)
+                    .lineLimit(3...6)
+                    .kitField(height: nil)
+                    .frame(minHeight: Theme.Metric.promptHeight, alignment: .top)
+            }
+            HStack(alignment: .top, spacing: Theme.Space.s4) {
+                LabeledField("Style") {
+                    Picker("Style", selection: $style) {
+                        Text("None").tag("")
+                        ForEach(options?.styles ?? []) { s in Text(s.label).tag(s.id) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, minHeight: Theme.Metric.fieldHeight, alignment: .leading)
+                    .help("Adds words for the look around your prompt")
+                }
+                LabeledField("Pictures") {
+                    Stepper(value: $imageCount, in: 1...8) {
+                        Text("\(imageCount)").monospacedDigit()
+                    }
+                    .help("Several pictures of the same prompt with seeds seed, seed + 1, …")
+                    .frame(height: Theme.Metric.fieldHeight)
+                }
+                .frame(width: 120)
+                LabeledField("Seed") {
+                    TextField("", value: $seed, format: .number.grouping(.never)).kitField()
+                }
+                .frame(width: 140)
+            }
+            LabeledField("Negative prompt (optional)") {
+                TextField("", text: $negativePrompt, prompt: Text("Used only when guidance is above 1"))
+                    .kitField()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var loraFields: some View {
+        if options?.lora == true {
+            HStack(alignment: .top, spacing: Theme.Space.s4) {
+                LabeledField("Style LoRA (optional)") {
+                    PathField(path: $loraPath, placeholder: "~/Downloads/style-lora.safetensors",
+                              types: [.data], title: "LoRA")
+                }
+                LabeledField("LoRA strength") {
+                    HStack(spacing: Theme.Space.s2) {
+                        Slider(value: $loraStrength, in: 0...2, step: 0.05)
+                            .tint(Theme.Palette.violet)
+                            .disabled(loraPath.isEmpty)
+                        Text(RequestValues.text(loraStrength))
+                            .font(Theme.Fonts.row)
+                            .monospacedDigit()
+                            .frame(width: 36, alignment: .trailing)
+                    }
+                    .frame(height: Theme.Metric.fieldHeight)
+                }
+                .frame(width: 200)
+            }
+        }
+    }
+
     // MARK: Advanced
 
     private var advanced: some View {
@@ -242,13 +323,14 @@ struct NewJobSheet: View {
                     if editable, let options {
                         RequestValueFields(draft: $draft, options: options, estimate: estimate)
                     }
+                    loraFields
                     if showsMemoryStep { memoryStep }
                     if editable, let options {
                         HStack {
                             Spacer()
-                            Button("Reset to defaults") { draft = RequestDraft(options.defaults) }
+                            Button("Reset to defaults") { draft = RequestDraft(options.defaults, image: options.isImage) }
                                 .buttonStyle(.kit(.line, small: true))
-                                .disabled(draft == RequestDraft(options.defaults))
+                                .disabled(draft == RequestDraft(options.defaults, image: options.isImage))
                                 .help("Back to this model's defaults: \(options.defaults.summary)")
                         }
                     }
@@ -300,7 +382,7 @@ struct NewJobSheet: View {
         let loaded = try? await APIClient.current().requestOptions(model: model)
         guard !Task.isCancelled, let loaded else { return }
         options = loaded
-        draft = RequestDraft(loaded.defaults)
+        draft = RequestDraft(loaded.defaults, image: loaded.isImage)
         estimate = loaded.estimate
         // Testing: SHUTTER_TEST_FRAMES=<n> and SHUTTER_TEST_UNTILED=1 change the fields (for screenshots).
         let env = ProcessInfo.processInfo.environment
@@ -311,7 +393,7 @@ struct NewJobSheet: View {
     /// The estimate follows the fields, 300 ms after the last change.
     private func refreshEstimate() async {
         guard let options, options.editable, options.model == model else { return }
-        if draft == RequestDraft(options.defaults), let e = options.estimate {
+        if draft == RequestDraft(options.defaults, image: options.isImage), let e = options.estimate {
             estimate = e
             return
         }
@@ -353,6 +435,17 @@ struct NewJobSheet: View {
             advancedOpen = true
             return
         }
+        if isImage {
+            if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                error = "Write what the picture should show."
+                return
+            }
+            if !loraPath.isEmpty && !FileManager.default.fileExists(atPath: (loraPath as NSString).expandingTildeInPath) {
+                error = "The LoRA file was not found."
+                advancedOpen = true
+                return
+            }
+        }
         if isVoice {
             if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 error = "Write the text to speak."
@@ -383,7 +476,26 @@ struct NewJobSheet: View {
             if takes > 1 { params["takes"] = .number(Double(takes)) }
             params["max_chars"] = .number(splitText ? 120 : 300)
         }
-        if editable && !isVoice {
+        if isImage {
+            req.image = nil
+            req.audio = nil
+            req.durationS = nil
+            let neg = negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !neg.isEmpty { req.negativePrompt = neg }
+            if imageCount > 1 { params["count"] = .number(Double(imageCount)) }
+            if !style.isEmpty { params["style"] = .string(style) }
+            if !loraPath.isEmpty && loraStrength != 0 {
+                params["loras"] = .array([.object(["path": .string((loraPath as NSString).expandingTildeInPath),
+                                                   "strength": .number(loraStrength)])])
+            }
+            if editable {
+                let v = draft.values
+                req.width = v.width
+                req.height = v.height
+                req.steps = v.steps
+                req.guidance = v.guidance
+            }
+        } else if editable && !isVoice {
             let v = draft.values
             req.width = v.width
             req.height = v.height

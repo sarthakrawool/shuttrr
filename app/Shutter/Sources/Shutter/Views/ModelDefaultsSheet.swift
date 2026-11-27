@@ -51,7 +51,7 @@ struct ModelDefaultsSheet: View {
                     Button("Save") { save() }
                         .buttonStyle(.kit(.ink))
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(busy || options.map { draft == RequestDraft($0.defaults) } ?? true)
+                        .disabled(busy || options.map { draft == RequestDraft($0.defaults, image: $0.isImage) } ?? true)
                 }
             }
             .padding(.horizontal, Theme.Space.s5)
@@ -112,7 +112,7 @@ struct ModelDefaultsSheet: View {
 
     private func adopt(_ o: RequestOptions) {
         options = o
-        draft = RequestDraft(o.defaults)
+        draft = RequestDraft(o.defaults, image: o.isImage)
         estimate = o.estimate
         phase = .ready
     }
@@ -131,7 +131,7 @@ struct ModelDefaultsSheet: View {
 
     private func refreshEstimate() async {
         guard let options, options.editable else { return }
-        if draft == RequestDraft(options.defaults), let e = options.estimate {
+        if draft == RequestDraft(options.defaults, image: options.isImage), let e = options.estimate {
             estimate = e
             return
         }

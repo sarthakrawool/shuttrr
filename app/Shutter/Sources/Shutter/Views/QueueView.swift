@@ -249,6 +249,8 @@ private struct JobRow: View {
                         .help("Cancel this request")
                 } else if job.state == .done && !job.audioOutputs.isEmpty {
                     PlayButton(files: job.audioOutputs)
+                } else if job.state == .done && !job.imageOutputs.isEmpty {
+                    ImageThumbButton(files: job.imageOutputs)
                 } else {
                     Color.clear.frame(height: 1)
                 }
@@ -278,6 +280,11 @@ private struct JobMenu: View {
     let onCancel: () -> Void
 
     var body: some View {
+        if job.imageOutputs.count > 1 {
+            Button("Open Pictures") {
+                for f in job.imageOutputs { NSWorkspace.shared.open(URL(fileURLWithPath: f)) }
+            }
+        }
         if let path = job.outputPath {
             Button("View in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

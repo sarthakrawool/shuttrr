@@ -132,3 +132,22 @@ DRAMA3_Q8: dict[str, Any] = {"revision": None, "files": [
     {'path': 'tokenizer_config.json', 'size': 103580, 'sha256': None},
     {'path': 'tower.safetensors', 'size': 2445859253, 'sha256': '4904a6b385da75d62a1e3e881b1a87fe0ab52cd7c644b210b22759a556d409ef'},
 ]}
+
+# Z-Image Turbo 8-bit, mflux-community/z-image-turbo-mflux-q8 revision 4ccff289 (mflux-saved, Apache 2.0), 11.0 GB
+ZIMAGE_Q8: dict[str, Any] = {"revision": '4ccff28917346aa9daae49cd3c477cf5260a242c', "files": [
+    {'path': '.gitattributes', 'size': 1580, 'sha256': None},
+    {'path': 'README.md', 'size': 2893, 'sha256': None},
+    {'path': 'text_encoder/0.safetensors', 'size': 2145936704, 'sha256': 'f8a4d2ca25f65c788d8f408827b36fa50be1f27481d928abe63ce46fb75c18e9'},
+    {'path': 'text_encoder/1.safetensors', 'size': 2128216857, 'sha256': '47584d51c56dcb47a4e53a9a1c19f9497a36310b89c165e735553f8f12e26a23'},
+    {'path': 'text_encoder/model.safetensors.index.json', 'size': 51332, 'sha256': None},
+    {'path': 'tokenizer/chat_template.jinja', 'size': 4168, 'sha256': None},
+    {'path': 'tokenizer/tokenizer.json', 'size': 11422650, 'sha256': 'be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506'},
+    {'path': 'tokenizer/tokenizer_config.json', 'size': 692, 'sha256': None},
+    {'path': 'transformer/0.safetensors', 'size': 2134613189, 'sha256': '20de1fe69bf32c5c3a92ce75d1b2680cdd4eabf6318effe3f88ff3f70931601c'},
+    {'path': 'transformer/1.safetensors', 'size': 2146080675, 'sha256': '1b9c6aedbafb58bada03052b588b05df9516f5cd4df2beb036cf82abf1879694'},
+    {'path': 'transformer/2.safetensors', 'size': 2130413997, 'sha256': '2b3f75e9c759aa7063c2247612816b384e41596d12bc862f52b62764978a05d1'},
+    {'path': 'transformer/3.safetensors', 'size': 129578808, 'sha256': 'aa0645b369ae1340c59bd480a0f9cf179a3f47a4eb972b08469f0d590311e818'},
+    {'path': 'transformer/model.safetensors.index.json', 'size': 61606, 'sha256': None},
+    {'path': 'vae/0.safetensors', 'size': 165702761, 'sha256': '31a58bd9cb5a17c77de300c9808ff15d1a201facac7277f3c38119b06d2004c9'},
+    {'path': 'vae/model.safetensors.index.json', 'size': 17378, 'sha256': None},
+]}

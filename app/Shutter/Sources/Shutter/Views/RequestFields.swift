@@ -11,10 +11,13 @@ struct RequestDraft: Equatable {
     var shift = ""
     var vaeTile = true
     var fps: Double = 0
+    /// An image model: no frames, duration, shift or tiled decode.
+    var image = false
 
     init() {}
 
-    init(_ v: RequestValues) {
+    init(_ v: RequestValues, image: Bool = false) {
+        self.image = image
         width = v.width.map(String.init) ?? ""
         height = v.height.map(String.init) ?? ""
         frames = v.frames.map(String.init) ?? ""
@@ -36,9 +39,10 @@ struct RequestDraft: Equatable {
         var v = RequestValues()
         v.width = Self.int(width)
         v.height = Self.int(height)
-        v.frames = Self.int(frames)
         v.steps = Self.int(steps)
         v.guidance = Self.number(guidance)
+        if image { return v }
+        v.frames = Self.int(frames)
         v.shift = Self.number(shift)
         v.vaeTile = vaeTile
         return v
@@ -48,7 +52,7 @@ struct RequestDraft: Equatable {
     var problem: String? {
         let v = values
         if v.width == nil || v.height == nil { return "Width and height must be whole numbers." }
-        if v.frames == nil { return "Frames must be a whole number." }
+        if !image && v.frames == nil { return "Frames must be a whole number." }
         if v.steps == nil { return "Steps must be a whole number." }
         if !guidance.isEmpty, v.guidance == nil { return "Guidance must be a number." }
         if !shift.isEmpty, v.shift == nil { return "Shift must be a number." }
@@ -116,6 +120,16 @@ struct RequestValueFields: View {
                 LabeledField("Width") { TextField("", text: $draft.width).kitField() }
                 LabeledField("Height") { TextField("", text: $draft.height).kitField() }
             }
+            if options.isImage {
+                row(issues: ["steps", "guidance"]) {
+                    LabeledField("Steps") { TextField("", text: $draft.steps).kitField() }
+                    LabeledField("Guidance") {
+                        TextField("", text: $draft.guidance).kitField()
+                            .help("0 = off (Z-Image Turbo is made for 0). Above 1 also uses the negative prompt and "
+                                  + "takes about twice as long.")
+                    }
+                }
+            } else {
             row(issues: ["frames", "duration", "steps"]) {
                 LabeledField("Frames") {
                     TextField("", text: $draft.frames).kitField().focused($focus, equals: .frames)
@@ -138,6 +152,7 @@ struct RequestValueFields: View {
                         .frame(height: Theme.Metric.fieldHeight)
                         .help("Decodes the video in tiles: less memory, a little slower.")
                 }
+            }
             }
             let rest = (estimate?.issues ?? []).filter { !Self.shown.contains($0.field) }
             if !rest.isEmpty { issueLines(rest) }

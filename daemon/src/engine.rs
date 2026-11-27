@@ -595,6 +595,7 @@ impl Engine {
         match family {
             "dummy" => ("video", false),
             "dummy-image" => ("image", false),
+            "z-image" => ("image", true),
             "longcat-avatar" => ("video", true),
             _ => ("", true),
         }
@@ -1556,5 +1557,17 @@ impl Engine {
         if matches!(state, "failed") && job.message.starts_with(PROTECT_PREFIX) {
             crate::log!("shutterd: job {id} {}", job.message);
         }
+    }
+}
+
+#[cfg(test)]
+mod family_tests {
+    use super::Engine;
+
+    #[test]
+    fn image_families_write_png() {
+        assert_eq!(Engine::family_info("z-image"), ("image", true));
+        assert_eq!(Engine::family_info("dummy-image"), ("image", false));
+        assert_eq!(Engine::family_info("wan").0, "");
     }
 }
