@@ -108,7 +108,10 @@ struct ModelsView: View {
     private var gpuLine: String {
         guard let g = store.system?.gpuLock else { return " " }
         guard g.held else { return "GPU lock is free." }
-        if let h = g.holder, !h.label.isEmpty { return "GPU lock held by \(h.label) (pid \(h.pid))." }
+        if let h = g.holder, !h.label.isEmpty {
+            // the engine's label may already name the pid ("shutter (pid 71622)"): say it once
+            return h.label.contains("pid") ? "GPU lock held by \(h.label)." : "GPU lock held by \(h.label) (pid \(h.pid))."
+        }
         return "GPU lock held."
     }
 
