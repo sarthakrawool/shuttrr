@@ -24,6 +24,7 @@ BUILTIN_FAMILIES: dict[str, str] = {
     "fish-drama3": "shutter.adapters.drama3:Drama3Adapter",
     "wan": "shutter.adapters.wan:WanAdapter",
     "z-image": "shutter.adapters.zimage:ZImageAdapter",
+    "h3-image": "shutter.adapters.h3image:H3ImageAdapter",
     "dummy": "shutter.adapters.dummy:DummyAdapter",
     "dummy-image": "shutter.adapters.dummy:DummyImageAdapter",
 }

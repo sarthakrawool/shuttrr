@@ -50,18 +50,24 @@ class OptionsError(ValueError):
     pass
 
 
+#: image adapters; H3-Image always runs its own 6 steps without guidance and has no LoRA support yet
+IMAGE_ADAPTERS = ("z-image", "h3-image")
+FIXED_STEP_IMAGE = {"h3-image": 6}
+
+
 def _is_image(spec: dict[str, Any]) -> bool:
-    return spec.get("adapter") == "z-image"
+    return spec.get("adapter") in IMAGE_ADAPTERS
 
 
-def _image_mac(model_id: str, total: int) -> dict[str, Any]:
+def _image_mac(model_id: str, total: int, adapter: str = "z-image") -> dict[str, Any]:
     e = cat.CATALOG.get(model_id) or {}
     h, w = e.get("image_default_size") or (1024, 1024)
-    return {"width": int(w), "height": int(h), "steps": int(e.get("image_default_steps", 9)), "guidance": 0.0}
+    steps = FIXED_STEP_IMAGE.get(adapter) or int(e.get("image_default_steps", 9))
+    return {"width": int(w), "height": int(h), "steps": steps, "guidance": 0.0}
 
 
 def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int) -> dict[str, Any]:
-    mac = _image_mac(model_id, total)
+    mac = _image_mac(model_id, total, spec.get("adapter") or "z-image")
     if model_id in cat.CATALOG:
         mac.update({k: v for k, v in _from_options(cat.preset_for(model_id, total)["options"]).items()
                     if k in ("width", "height", "steps", "guidance")})
@@ -74,7 +80,8 @@ def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int)
             "sizes": [{"width": w, "height": h, "label": lab} for w, h, lab in IMAGE_SIZES],
             "limits": LIMITS_IMAGE,
             "styles": [{"id": k, "label": v["label"]} for k, v in IMAGE_STYLES.items()],
-            "lora": True,
+            "lora": spec.get("adapter") == "z-image",
+            "fixed_steps": FIXED_STEP_IMAGE.get(spec.get("adapter") or ""),
             "estimate": estimate(cfg, model_id, defaults, total_bytes=total, _defaults=defaults)}
 
 
