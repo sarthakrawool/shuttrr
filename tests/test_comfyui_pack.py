@@ -165,7 +165,7 @@ def test_client_basics(live):
         c.submit({"model": "nope"})
     assert e.value.status == 404 or e.value.status == 400
     assert c.cancel("doesnotexist") is None
-    assert {r["client"] for r in eng.clients.list()["clients"]} >= {"comfyui-shutter/0.3.0"}
+    assert {r["client"] for r in eng.clients.list()["clients"]} >= {"comfyui-shutter/0.3.1"}
     with pytest.raises(ShutterError) as e:
         ShutterClient("http://127.0.0.1:1", timeout=1).models()
     assert e.value.status == 0 and "cannot reach" in str(e.value)
@@ -187,7 +187,7 @@ def test_generate_image(live, tmp_path):
     ps = [p for p, _, _ in seen]
     assert ps == sorted(ps) and ps[-1] == 1.0 and len(ps) >= 2
     assert any(n == 4 for _, _, n in seen)        # step counters parsed from "denoise k/4"
-    assert eng.get(res.job["id"]).client == "comfyui-shutter/0.3.0"
+    assert eng.get(res.job["id"]).client == "comfyui-shutter/0.3.1"
 
 
 def test_image_input_goes_through_files(live, tmp_path):
