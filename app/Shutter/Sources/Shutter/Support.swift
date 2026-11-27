@@ -202,6 +202,10 @@ final class QuitConfirm: ObservableObject {
     @Published var asking = false
     /// Set before quitting on purpose (after Uninstall) so no question is asked.
     var skipNext = false
+    /// 0.3.2: set when Shuttrr should quit completely (menu bar "Quit Shuttrr", Uninstall, installing an update,
+    /// logout or shutdown). Any other quit (⌘Q, Dock > Quit, the app menu) only closes the windows: the menu bar
+    /// icon and the engine keep running.
+    var quitEverything = false
     /// Set by the app delegate: called with the user's answer.
     var answer: ((Bool) -> Void)?
 

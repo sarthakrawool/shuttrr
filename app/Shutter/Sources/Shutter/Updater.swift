@@ -108,6 +108,7 @@ final class UpdateChecker: NSObject, ObservableObject {
     func installNow() {
         if let block = installNowBlock {
             installNowBlock = nil
+            QuitConfirm.shared.quitEverything = true      // installing quits completely (engine too)
             block()
         } else {
             checkNow()
@@ -138,6 +139,15 @@ extension UpdateChecker: SPUUpdaterDelegate {
         }
         // Only reached for silent downloads, which 0.2.2 no longer does (a 0.2.1 install updating itself does).
         return true      // our own "Restart to Update" row instead of Sparkle's alert
+    }
+
+    /// Sparkle is about to quit Shuttrr to install an update and open the new version: quit completely.
+    nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { QuitConfirm.shared.quitEverything = true }
+        } else {
+            DispatchQueue.main.sync { MainActor.assumeIsolated { QuitConfirm.shared.quitEverything = true } }
+        }
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {

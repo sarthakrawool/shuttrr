@@ -212,6 +212,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         // A regular app: Dock icon and app switcher, as well as the menu bar icon.
         NSApp.setActivationPolicy(.regular)
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.powerOffSeen = true }
+        }
+        // Testing (test builds only, another bundle id): distributed notifications press the menu bar panel's
+        // "Quit Shuttrr" and "Open Shuttrr", for checks without Accessibility access.
+        if (Bundle.main.bundleIdentifier ?? "") != UpdateChecker.productionBundleID {
+            let dnc = DistributedNotificationCenter.default()
+            dnc.addObserver(forName: Notification.Name("com.shutter.test.menuQuit"), object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { AppDelegate.quitEverything() }
+            }
+            dnc.addObserver(forName: Notification.Name("com.shutter.test.menuOpen"), object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    if let open = OnboardingOpener.shared.openWindow { WindowFront.show(AppDelegate.dashboardID, open: open) }
+                }
+            }
+        }
+        // After ⌘Q the app runs in the menu bar only (accessory). Any of its windows coming forward again (Open
+        // Shuttrr in the menu bar, a quit question, Check for Updates…) brings the Dock icon back.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil,
+                                               queue: .main) { note in
+            MainActor.assumeIsolated {
+                guard let w = note.object as? NSWindow, !WindowFront.isMenuBarPanel(w),
+                      w.identifier?.rawValue.isEmpty == false,
+                      NSApp.activationPolicy() != .regular else { return }
+                NSApp.setActivationPolicy(.regular)
+            }
+        }
         store.start()
         UpdateChecker.shared.start()      // Sparkle: checks now and daily, only when "Check for updates" is on
         let needsOnboarding = SetupRunner.needsOnboarding
@@ -315,8 +343,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Closing the last window keeps Shuttrr running (menu bar icon, engine).
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// A click on the Dock icon brings the main window forward, or opens it when none is visible.
+    /// A click on the Dock icon, or opening Shuttrr again from Finder or Spotlight while it runs in the menu bar,
+    /// brings the main window forward (and the Dock icon back), or opens it when none is visible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         let visible = NSApp.windows.contains { $0.isVisible && !WindowFront.isMenuBarPanel($0)
             && ($0.identifier?.rawValue ?? "").isEmpty == false }
         if !visible {
@@ -328,15 +358,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         return true
     }
 
-    /// Quitting Shuttrr stops its engine too: the one this app started, and a Shuttrr engine left on the app's port
-    /// by a previous run or started by hand. A running request asks first.
+    /// The menu bar's "Quit Shuttrr": quit completely (engine included).
+    static func quitEverything() {
+        QuitConfirm.shared.quitEverything = true
+        NSApp.terminate(nil)
+    }
+
+    /// True when macOS itself is quitting Shuttrr: logout, restart or shutdown (the quit Apple event's reason).
+    static var systemIsEnding: Bool {
+        guard let ev = NSAppleEventManager.shared().currentAppleEvent,
+              ev.eventClass == kCoreEventClass, ev.eventID == kAEQuitApplication,
+              let why = ev.attributeDescriptor(forKeyword: kAEQuitReason)?.enumCodeValue else { return false }
+        return [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog, kAERestart, kAEShutDown]
+            .map { OSType($0) }.contains(why)
+    }
+
+    static let menuBarNoteKey = "menuBarNoteShown"
+
+    /// ⌘Q, Dock > Quit and the app menu's Quit (0.3.2): close the windows and the Dock icon; the menu bar icon and
+    /// the engine keep running, and so do running and queued requests. The first time, a short note says so.
+    private func keepRunningInMenuBar() {
+        for w in NSApp.windows where !WindowFront.isMenuBarPanel(w) && w.isVisible {
+            w.close()
+        }
+        NSApp.setActivationPolicy(.accessory)
+        guard !UserDefaults.standard.bool(forKey: Self.menuBarNoteKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.menuBarNoteKey)
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Shuttrr keeps running in the menu bar"
+            alert.informativeText = "The engine stays on, so your requests keep going. To stop everything, click "
+                + "the Shuttrr icon in the menu bar and choose Quit Shuttrr."
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Quit Completely")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertSecondButtonReturn { AppDelegate.quitEverything() }
+        }
+    }
+
+    /// Quitting Shuttrr completely stops its engine too: the one this app started, and a Shuttrr engine left on
+    /// the app's port by a previous run or started by hand. A running request asks first.
     /// The question is the app's own sheet in the main window (QuitConfirm), answered with terminateLater.
+    /// Any other quit keeps Shuttrr in the menu bar (keepRunningInMenuBar).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let confirm = QuitConfirm.shared
+        let systemEnding = Self.systemIsEnding || powerOffSeen
+        if !confirm.quitEverything && !confirm.skipNext && !systemEnding {
+            keepRunningInMenuBar()
+            return .terminateCancel
+        }
+        if systemEnding { confirm.skipNext = true }      // no question at logout: stop the engine cleanly and go
         if store.hasActiveJob && !confirm.skipNext {
             guard !confirm.asking else { return .terminateCancel }
             confirm.answer = { [weak self] quit in
-                if quit { self?.stopEngines() }
+                if quit { self?.stopEngines() } else { QuitConfirm.shared.quitEverything = false }
                 NSApp.reply(toApplicationShouldTerminate: quit)
             }
             confirm.asking = true
@@ -347,6 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         stopEngines()
         return .terminateNow
     }
+
+    /// Set when macOS announces a logout, restart or shutdown (NSWorkspace.willPowerOffNotification).
+    private var powerOffSeen = false
 
     private func stopEngines() {
         engine.stopAndWait(seconds: 5)

@@ -179,7 +179,7 @@ struct MenuPanelView: View {
                 WindowFront.show(AppDelegate.dashboardID, open: { openWindow(id: $0) })
             }
             .keyboardShortcut("d")
-            GlassRow(title: "Quit Shuttrr", symbol: "power", shortcut: "⌘Q") { NSApp.terminate(nil) }
+            GlassRow(title: "Quit Shuttrr", symbol: "power", shortcut: "⌘Q") { AppDelegate.quitEverything() }
                 .keyboardShortcut("q")
         }
     }

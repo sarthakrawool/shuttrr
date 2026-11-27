@@ -106,6 +106,7 @@ struct SettingsView: View {
                          onCancel: { showUninstall = false },
                          onConfirm: {
                              QuitConfirm.shared.skipNext = true
+                             QuitConfirm.shared.quitEverything = true
                              NSApp.terminate(nil)
                          })
         } else {
