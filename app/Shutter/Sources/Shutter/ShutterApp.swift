@@ -212,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         // A regular app: Dock icon and app switcher, as well as the menu bar icon.
         NSApp.setActivationPolicy(.regular)
+        // The owner's Admin page: checked once at start, only when an admin token is in the Keychain.
+        AdminStore.shared.start()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
                                                           object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.powerOffSeen = true }

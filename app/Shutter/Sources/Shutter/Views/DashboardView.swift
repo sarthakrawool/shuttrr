@@ -7,6 +7,11 @@ enum DashboardSection: String, CaseIterable, Identifiable, Hashable {
     case memory = "Memory"
     case server = "Server"
     case settings = "Settings"
+    /// The owner's private page. Not in allCases: it has no shortcut and its sidebar row shows only while
+    /// AdminStore has a verified token.
+    case admin = "Admin"
+
+    static var allCases: [DashboardSection] { [.models, .queue, .memory, .server, .settings] }
 
     var id: DashboardSection { self }
 
@@ -17,6 +22,7 @@ enum DashboardSection: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "memorychip"
         case .server: return "server.rack"
         case .settings: return "gearshape"
+        case .admin: return "lock.square"
         }
     }
 
@@ -27,6 +33,7 @@ enum DashboardSection: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "3"
         case .server: return "4"
         case .settings: return "5"
+        case .admin: return "6"      // unused: admin is not in allCases, so no shortcut is made
         }
     }
 }
@@ -63,6 +70,7 @@ struct DashboardView: View {
     @State private var newJobModel: String?
     @FocusState private var searchFocused: Bool
     @ObservedObject private var quit = QuitConfirm.shared
+    @ObservedObject private var admin = AdminStore.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -179,6 +187,7 @@ struct DashboardView: View {
             store.rescanModels()
         }
         .onChange(of: section) { _, s in if s == .models { store.rescanModels() } }
+        .onChange(of: admin.verified) { _, ok in if !ok && section == .admin { section = .settings } }
     }
 
     /// The one-time Help The Dev Improve question: only after set-up, never while the first-run window is open,
@@ -276,6 +285,8 @@ struct DashboardView: View {
             ServerView()
         case .settings:
             SettingsView()
+        case .admin:
+            if admin.verified { AdminView() } else { SettingsView() }
         }
     }
 
@@ -346,6 +357,7 @@ struct SidebarView: View {
     @Binding var section: DashboardSection
     var starting = false
     @Namespace private var selection
+    @ObservedObject private var admin = AdminStore.shared
 
     init(section: Binding<DashboardSection>, starting: Bool = false) {
         self._section = section
@@ -379,6 +391,16 @@ struct SidebarView: View {
             }
 
             Spacer(minLength: 0)
+            if admin.verified {
+                SidebarRow(symbol: DashboardSection.admin.symbol, title: DashboardSection.admin.rawValue,
+                           isOn: section == .admin, namespace: selection) {
+                    EmptyView()
+                } action: {
+                    section = .admin
+                }
+                .opacity(section == .admin ? 1 : 0.8)
+                .transition(.opacity)
+            }
             EngineUpgradeRow()
             UpdateAvailableRow()
             SidebarVersionFooter()
@@ -409,7 +431,7 @@ struct SidebarView: View {
             return Text(Fmt.gb(MemoryParts(sys).free)).font(Theme.Fonts.mono).foregroundColor(on ? Theme.Palette.onAccent : Theme.Palette.muted).monospacedDigit()
         case .server:
             return nil
-        case .settings:
+        case .settings, .admin:
             return nil
         }
     }

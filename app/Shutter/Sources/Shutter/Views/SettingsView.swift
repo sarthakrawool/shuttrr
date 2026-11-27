@@ -15,6 +15,9 @@ struct SettingsView: View {
     @State private var uninstalling = false
     @State private var uninstallResult: (ok: Bool, message: String)?
     @State private var showTelemetry = false
+    /// The owner's hidden Admin Token… button: only while Option is held (or by Option-clicking the version).
+    @State private var optionHeld = false
+    @State private var showAdminToken = false
 
     var body: some View {
         ScrollView {
@@ -54,7 +57,14 @@ struct SettingsView: View {
                         KVRow(label: "Version") {
                             HStack {
                                 Text(Releases.appVersion).foregroundStyle(Theme.Palette.ink2)
+                                    .onTapGesture {
+                                        if NSEvent.modifierFlags.contains(.option) { showAdminToken = true }
+                                    }
                                 Spacer(minLength: Theme.Space.s3)
+                                if optionHeld {
+                                    Button("Admin Token…") { showAdminToken = true }
+                                        .buttonStyle(.kit(.line, small: true))
+                                }
                                 Button("Check for Updates…") { UpdateChecker.shared.checkNow() }
                                     .buttonStyle(.kit(.line, small: true))
                             }
@@ -131,6 +141,8 @@ struct SettingsView: View {
         .background(EmptyView().sheet(isPresented: $showTelemetry) {
             TelemetryDetailsSheet().environmentObject(store)
         })
+        .background(EmptyView().sheet(isPresented: $showAdminToken) { AdminTokenSheet() })
+        .modifier(OptionKeyWatcher(held: $optionHeld))
     }
 
     @ViewBuilder private var uninstallSheet: some View {
