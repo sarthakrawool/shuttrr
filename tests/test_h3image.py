@@ -269,3 +269,16 @@ def test_vae_tiles_cover_the_image_with_overlap():
         st, t = V.tile_starts(n)
         assert st[0] == 0 and st[-1] + t == n and t == 16
         assert all(b - a <= t - V.MIN_OVERLAP for a, b in zip(st, st[1:]))
+
+
+def test_catalog_entry_pinned_with_licence_gate():
+    from shutter.core import catalog as C
+    e = C.CATALOG["minimax-h3-image-8bit"]
+    assert e["adapter"] == "h3-image" and e["kind"] == "image" and e["beta"] and e["revision"]
+    assert "MiniMax-H3-Image" in e["name"]
+    assert all(f["sha256"] for f in e["files"] if f["path"].endswith(".safetensors"))
+    assert any("United States" in p for p in e["licence"]["points"])
+    assert any("MiniMax-H3-Image" in p for p in e["licence"]["points"])
+    fit = C.classify_fit("minimax-h3-image-8bit", 16 * GB, baseline=3 * GB)
+    assert fit["level"] == "recommended" and fit["measured"]
+    assert C.default_request_any("minimax-h3-image-8bit", 16 * GB)[:2] == (640, 512)

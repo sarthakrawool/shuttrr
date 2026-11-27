@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from shutter.core.config import Config
-from shutter.core.pinned_files import DRAMA3_Q8, WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE, ZIMAGE_Q8
+from shutter.core.pinned_files import DRAMA3_Q8, H3IMAGE_Q8, WAN5B_Q8, WAN13_BF16_TE, WAN13_Q8_TE, ZIMAGE_Q8
 
 GB = 1024**3
 
@@ -349,9 +349,11 @@ def _wan_estimates(shape: dict[str, Any], variant: str, h: int, w: int, f: int,
 
 def _image_estimates(model_id: str, h: int, w: int) -> dict[str, int]:
     """Engine memory estimate (bytes) per memory step for an image model, before it is downloaded."""
+    from shutter.adapters.h3image import H3ImageAdapter
     from shutter.adapters.zimage import ZImageAdapter
     from shutter.types import JobRequest
-    a = ZImageAdapter(model_id, Path("/nonexistent"), {})
+    cls = H3ImageAdapter if CATALOG[model_id].get("adapter") == "h3-image" else ZImageAdapter
+    a = cls(model_id, Path("/nonexistent"), {})
     a._parts = None
     ests = a.rung_estimates(JobRequest(model=model_id, prompt="x", width=w, height=h))
     return {r: int(v.peak) for r, v in ests.items()}
@@ -487,6 +489,49 @@ CATALOG["z-image-turbo-8bit"] = {
     "image_default_size": (1024, 1024), "image_default_steps": 9,
     "sample": {"prompt": "3D animated film still: a small robot cooking pancakes in a sunny kitchen, big expressive "
                          "eyes, soft lighting", "width": 768, "height": 768, "steps": 9, "seed": 42},
+}
+# MiniMax-H3-Image (text to image; shutter/adapters/h3image.py, shutter/families/h3image). Shuttrr's own MLX build
+# (converted from the ComfyUI / leejet GGUFs: DiT exact from Q8_0, text encoder exact from Q4_K), gated on Hugging Face
+# behind the licence click-through. The licence excludes the EU, the UK, South Korea and the USA, and a commercial UI
+# must show "MiniMax-H3-Image": the name carries it and the download asks for the licence first. Measured with the
+# Shuttrr app running and the request sent to its engine (engine + app footprint, top MEM).
+H3IMAGE_LICENCE = {
+    "name": "MiniMax-H3-Image Community License Agreement",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/LICENSE",
+    "points": [
+        "Not licensed for use in the European Union, the United Kingdom, South Korea or the United States of "
+        "America. Do not download it there.",
+        "Commercial use is allowed below USD 1 million annual revenue; above that, or to offer it to others as a "
+        "hosted service, MiniMax needs to give you a separate licence.",
+        "Products that use it must show \"MiniMax-H3-Image\".",
+        "Do not use the pictures it makes to train or improve other AI models. Disclose AI-generated pictures when "
+        "you publish them.",
+        "MiniMax-H3-Image is licensed under the MiniMax-H3-Image Community License Agreement, Copyright © 2026 "
+        "MiniMax. All Rights Reserved.",
+    ],
+}
+_H3IMAGE_M5 = {"date": "2026-11-27", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
+               "chip": "Apple M5", "gpu_cores": 10, "frames": 1, "steps": 6, "identical": True, "with_app": True}
+H3IMAGE_CHECKED = [
+    dict(_H3IMAGE_M5, size="640x512", peaks_gb={"stream_tight": 3.25}, seconds={"stream_tight": 62},
+         mlx_peaks_gb={"stream_tight": 2.01}),
+]
+CATALOG["minimax-h3-image-8bit"] = {
+    "name": "MiniMax-H3-Image (Beta)",
+    "summary": "Pictures from a text prompt in 6 steps: photos, illustrations, 3D animated looks and legible text. "
+               "Licensed by MiniMax, not for use in the EU, the UK, South Korea or the USA.",
+    "beta": True,
+    "kind": "image", "adapter": "h3-image", "family": "h3-image", "variant": "minimax-h3-image",
+    "repo": "SarthakRawool/MiniMax-H3-Image-MLX-8bit-LowMem", "folder": "MiniMax-H3-Image-MLX-8bit-LowMem",
+    "revision": H3IMAGE_Q8["revision"], "files": H3IMAGE_Q8["files"],
+    "size_gb": round(sum(f["size"] for f in H3IMAGE_Q8["files"]) / GB, 1), "min_memory_gb": 16,
+    "licence": H3IMAGE_LICENCE,
+    "needs": ["mlx>=0.31", "tokenizers>=0.20", "huggingface_hub>=0.34"],
+    "check_files": ["h3image.json", "transformer", "text_encoder", "vae", "tokenizer/tokenizer.json"],
+    "checked_on": H3IMAGE_CHECKED,
+    "image_default_size": (640, 512), "image_default_steps": 6,
+    "sample": {"prompt": "A friendly cartoon robot holding a big white sign that reads HELLO, clean 3D animation "
+                         "style, soft studio lighting", "width": 512, "height": 640, "seed": 42},
 }
 AUDIO_FRAMES_PER_S = 44100 / 2048
 
