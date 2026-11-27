@@ -39,7 +39,7 @@ and the video that comes out is **identical, bit for bit**. It costs about 5% mo
   "Stopped to protect your Mac: it was running out of memory. Close other apps or pick a smaller size."
 - **One app, no Terminal.** Download the app, open it, pick a model. It installs its own engine and
   downloads the weights for you.
-- **Plays well with others.** A local HTTP API, an OpenAI-compatible images endpoint and a ComfyUI node pack.
+- **Plays well with others.** A local HTTP API, an OpenAI-compatible images endpoint and [ComfyUI nodes](https://github.com/sarthakrawool/ComfyUI-Shuttrr).
   It reads from local LLM servers such as oMLX, but never unloads or changes them.
 
 ## Install
@@ -192,7 +192,9 @@ The engine listens on `http://127.0.0.1:8484` (local only by default).
 
 - **Shuttrr API:** submit requests, watch progress, load and unload models. See [docs/API.md](docs/API.md).
 - **OpenAI-compatible images:** `POST /v1/images/generations` and `/v1/images/edits`.
-- **ComfyUI:** a node pack in [`integrations/comfyui`](integrations/comfyui).
+- **ComfyUI:** [ComfyUI-Shuttrr](https://github.com/sarthakrawool/ComfyUI-Shuttrr) adds Shuttrr Image and Shuttrr
+  Video nodes. Clone it into `ComfyUI/custom_nodes`, keep the Shuttrr app open, and the results come back as normal
+  ComfyUI images and video.
 - **Dashboard:** open `http://127.0.0.1:8484` in a browser.
 
 To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clients then send

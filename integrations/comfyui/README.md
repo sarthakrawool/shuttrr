@@ -1,3 +1,7 @@
+> **Use [ComfyUI-Shuttrr](https://github.com/sarthakrawool/ComfyUI-Shuttrr) instead.** It is the released,
+> tested version of these nodes (Shuttrr Image, Shuttrr Video and more), installable with ComfyUI Manager or
+> `git clone`. This folder is the original prototype, kept for its tests.
+
 # comfyui-shutter
 
 ComfyUI nodes that run Shuttrr's models over Shuttrr's HTTP API. Shuttrr keeps its own process and memory
