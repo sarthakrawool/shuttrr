@@ -139,25 +139,38 @@ class _StreamReader:
         self.pos = 0
 
     def read(self, n: int) -> bytes:
-        out = bytearray()
-        while len(out) < n:
-            b = self.f.read(n - len(out))
-            if not b:
-                raise EOFError(f"stream ended at byte {self.pos + len(out)} (wanted {n} more)")
-            out += b
+        return self.read_array(n).tobytes() if n < (1 << 20) else memoryview(self.read_array(n))
+
+    def read_array(self, n: int) -> np.ndarray:
+        """n bytes into one preallocated array (no second copy: the token embedding alone is 1.6 GB)."""
+        out = np.empty(n, dtype=np.uint8)
+        mv = memoryview(out)
+        got = 0
+        readinto = getattr(self.f, "readinto", None)
+        while got < n:
+            if readinto is not None:
+                k = readinto(mv[got:])
+            else:
+                b = self.f.read(n - got)
+                k = len(b)
+                mv[got:got + k] = b
+            if not k:
+                raise EOFError(f"stream ended at byte {self.pos + got} (wanted {n - got} more)")
+            got += k
         self.pos += n
-        return bytes(out)
+        return out
 
     def skip_to(self, offset: int) -> None:
         if offset < self.pos:
             raise ValueError(f"stream is past offset {offset} (at {self.pos})")
         while self.pos < offset:
-            self.read(min(1 << 20, offset - self.pos))
+            self.read_array(min(1 << 20, offset - self.pos))
 
 
-def stream_tensors(f):
+def stream_tensors(f, chunked=None, chunk_bytes: int = 64 << 20):
     """Yield (GGUFTensor, raw bytes as uint8 array) for every tensor of a GGUF read from file object `f`, in file
-    order. Header parsing matches GGUFFile."""
+    order. Header parsing matches GGUFFile. Tensors for which `chunked(tensor)` is true come as (GGUFTensor, iterator
+    of uint8 chunks) instead, so a 1.6 GB embedding is never in memory at once (consume it before the next item)."""
     r = _StreamReader(f)
 
     def rd(fmt: str):
@@ -199,7 +212,19 @@ def stream_tensors(f):
         tensors.append(GGUFTensor(name, tuple(reversed(ne)), t, data_start + off, n // per * size))
     for tt in sorted(tensors, key=lambda x: x.offset):
         r.skip_to(tt.offset)
-        yield tt, np.frombuffer(r.read(tt.nbytes), dtype=np.uint8)
+        if chunked is not None and chunked(tt):
+            def chunks(tt=tt):
+                left = tt.nbytes
+                while left:
+                    k = min(chunk_bytes, left)
+                    yield r.read_array(k)
+                    left -= k
+            it = chunks()
+            yield tt, it
+            for _ in it:          # whatever the caller did not read
+                pass
+        else:
+            yield tt, r.read_array(tt.nbytes)
 
 
 GGML_Q4_K, GGML_Q6_K = 12, 14

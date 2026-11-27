@@ -36,7 +36,7 @@ from typing import Any, Iterable, Optional
 
 import numpy as np
 
-SHARD_BYTES = 512 * 1024**2
+SHARD_BYTES = 128 * 1024**2
 TE_LAYERS = 50
 NOTICE = ("MiniMax-H3-Image is licensed under the MiniMax-H3-Image Community License Agreement, Copyright © 2026 "
           "MiniMax. All Rights Reserved.\n\n"
@@ -120,6 +120,32 @@ def write_safetensors(path: Path, tensors: dict[str, Any], metadata: Optional[di
             while len(mv):
                 n = os.write(fd, mv[: 1 << 28])
                 mv = mv[n:]
+    finally:
+        os.close(fd)
+
+
+def write_safetensors_chunks(path: Path, name: str, dtype: str, shape, nbytes: int, chunks) -> None:
+    """One tensor written from an iterator of byte chunks (F_NOCACHE), never whole in memory."""
+    import os
+    import struct
+    from shutter.core.stream import _apply_nocache
+    header = {"__metadata__": {"format": "mlx"}, name: {"dtype": dtype, "shape": list(shape),
+                                                      "data_offsets": [0, int(nbytes)]}}
+    hj = json.dumps(header, separators=(",", ":")).encode()
+    hj += b" " * ((8 - len(hj) % 8) % 8)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        _apply_nocache(fd, True)
+        os.write(fd, struct.pack("<Q", len(hj)) + hj)
+        done = 0
+        for c in chunks:
+            mv = memoryview(c)
+            while len(mv):
+                k = os.write(fd, mv)
+                mv = mv[k:]
+            done += len(c)
+        if done != nbytes:
+            raise EOFError(f"{name}: wrote {done} of {nbytes} bytes")
     finally:
         os.close(fd)
 
@@ -213,10 +239,19 @@ def convert_te_gguf(src, out: Path, log=print) -> dict[str, Any]:
     from shutter.families.h3image import gguf as G
     w = ShardWriter(out)
     n = 0
+    big = lambda t: t.type == G.GGML_BF16 and t.nbytes > (256 << 20)      # noqa: E731  (the token embedding)
     with _source(src) as f:
-        for t, raw in G.stream_tensors(f):
+        for t, raw in G.stream_tensors(f, chunked=big):
             if not t.name.startswith("model."):
                 continue                            # visual.*
+            if big(t):
+                name = t.name[len("model."):]
+                fname = "embed-00001.safetensors"
+                write_safetensors_chunks(out / fname, name, "BF16", t.shape, t.nbytes, raw)
+                w.weight_map[name] = fname
+                w.total += t.nbytes
+                n += 1
+                continue
             name = t.name[len("model."):]
             if name.startswith("layers.") and int(name.split(".")[1]) >= TE_LAYERS:
                 continue
