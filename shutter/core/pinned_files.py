@@ -152,12 +152,12 @@ ZIMAGE_Q8: dict[str, Any] = {"revision": '4ccff28917346aa9daae49cd3c477cf5260a24
     {'path': 'vae/model.safetensors.index.json', 'size': 17378, 'sha256': None},
 ]}
 
-# MiniMax-H3-Image MLX 8-bit, revision 13fc7b3f (2026-11-27, Shuttrr 0.3.3)
-H3IMAGE_Q8: dict[str, Any] = {"revision": '13fc7b3f005a6c0f05df4b36c3b9f0f7ff5a6680', "files": [
+# MiniMax-H3-Image MLX 8-bit, revision 2640fe93 (2026-11-28, Shuttrr 0.3.5: + vision/ and vae_encoder/ for reference pictures)
+H3IMAGE_Q8: dict[str, Any] = {"revision": '2640fe93b3453f70490e5827b4fdbfd28f3f4979', "files": [
     {'path': '.gitattributes', 'size': 1519, 'sha256': None},
     {'path': 'LICENSE', 'size': 18208, 'sha256': None},
-    {'path': 'NOTICE', 'size': 416, 'sha256': None},
-    {'path': 'README.md', 'size': 4108, 'sha256': None},
+    {'path': 'NOTICE', 'size': 513, 'sha256': None},
+    {'path': 'README.md', 'size': 4813, 'sha256': None},
     {'path': 'h3image.json', 'size': 616, 'sha256': None},
     {'path': 'text_encoder/embed-00001.safetensors', 'size': 1555824776, 'sha256': 'e202c1ca33b1fa1d8dd04f31ce8858e403321139b8b10e64b4cb0cf727c33323'},
     {'path': 'text_encoder/model-00001.safetensors', 'size': 139274584, 'sha256': '3eeef51106bf3e6713c099f8d219b4046b6b0765492dbbcf4d6a96ec13e66308'},
@@ -424,4 +424,8 @@ H3IMAGE_Q8: dict[str, Any] = {"revision": '13fc7b3f005a6c0f05df4b36c3b9f0f7ff5a6
     {'path': 'vae/model-00001.safetensors', 'size': 539030600, 'sha256': 'ab36d1749ad7b3b1a647a3704e0e9ec995e1f2ddece5f7b61a46bd5e195cbc79'},
     {'path': 'vae/model-00002.safetensors', 'size': 268786272, 'sha256': '60f30a8c4953c3cbb3c57e60763fd68d28d46a2b26313a85848638ab31f4dca7'},
     {'path': 'vae/model.safetensors.index.json', 'size': 22214, 'sha256': None},
+    {'path': 'vae_encoder/model-00001.safetensors', 'size': 360688264, 'sha256': '84354790945031f4d20b5e5094a551472c0f1346b5c428fa84176600d960ddb0'},
+    {'path': 'vae_encoder/model.safetensors.index.json', 'size': 7921, 'sha256': None},
+    {'path': 'vision/model-00001.safetensors', 'size': 1190570888, 'sha256': 'c5b45d1bc5763431116b3ce5b22c2c6b6ad2aae9570afee75770949a6987dcff'},
+    {'path': 'vision/model.safetensors.index.json', 'size': 23012, 'sha256': None},
 ]}

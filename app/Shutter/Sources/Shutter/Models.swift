@@ -649,10 +649,12 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var available = true
     var availabilityNote = ""
     var beta = false
+    /// Installed, but files this Shuttrr needs are missing (MiniMax-H3-Image's picture reader): Download fetches them.
+    var update: CatalogUpdate?
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes, memory
-        case licence, licenceAccepted = "licence_accepted", available, beta
+        case licence, licenceAccepted = "licence_accepted", available, beta, update
         case availabilityNote = "availability_note"
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
@@ -685,10 +687,25 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         available = c.value(.available, true)
         availabilityNote = c.value(.availabilityNote, "")
         beta = c.value(.beta, false)
+        update = c.optional(.update)
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }
     var needsLicence: Bool { licence != nil && !licenceAccepted }
+}
+
+/// Missing files of an installed model (bytes to fetch and what they are for).
+struct CatalogUpdate: Decodable, Hashable, Sendable {
+    var bytes: Int = 0
+    var label: String = ""
+
+    enum CodingKeys: String, CodingKey { case bytes, label }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bytes = c.value(.bytes, 0)
+        label = c.value(.label, "")
+    }
 }
 
 /// The licence a catalog model is under, in short points (the full text is at `url`).

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shutter-engine"
-version = "0.3.4"
+version = "0.3.5"
 description = "Shuttrr: a Mac-native engine that runs large video and image diffusion models in less memory"
 requires-python = ">=3.11"
 license = { text = "MIT" }

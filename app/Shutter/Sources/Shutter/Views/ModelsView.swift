@@ -216,6 +216,10 @@ private struct AvailableRow: View {
 
     private var pending: Bool { store.modelPending.contains(model.id) }
     private var folderExists: Bool { !model.dir.isEmpty && FileManager.default.fileExists(atPath: model.dir) }
+    /// The catalog row of this model when it is installed but missing files this Shuttrr needs.
+    private var catalogUpdate: CatalogModel? {
+        store.catalog.first { $0.id == model.id && $0.installed && ($0.update?.bytes ?? 0) > 0 }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -226,6 +230,7 @@ private struct AvailableRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 status
+                updateLine
             }
             .padding(.vertical, Theme.Space.s2)
             .modelColumn(nil)
@@ -273,6 +278,23 @@ private struct AvailableRow: View {
             statusLine("Not loaded", color: Theme.Palette.muted)
         } else {
             statusLine("Loads when a request needs it", color: Theme.Palette.muted)
+        }
+    }
+
+    @ViewBuilder private var updateLine: some View {
+        if let c = catalogUpdate, let u = c.update {
+            HStack(spacing: Theme.Space.s2) {
+                if c.isDownloading {
+                    ProgressView().controlSize(.mini)
+                    statusLine("Downloading the \(u.label)…", color: Theme.Palette.ink2)
+                } else {
+                    statusLine("New: the \(u.label) (\(Fmt.gb(u.bytes)))", color: Theme.Palette.violet)
+                    Button("Download") { store.startDownload(c.id) }
+                        .buttonStyle(.kit(.line, small: true))
+                        .disabled(!store.connection.isConnected)
+                        .help("Fetches only the missing files; the rest of the model stays")
+                }
+            }
         }
     }
 

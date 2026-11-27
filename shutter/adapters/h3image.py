@@ -91,7 +91,9 @@ def stage_needs(h: int, w: int, text_tokens: int = 256, refs: tuple = ()) -> P.S
     vis = [R.bound_short_edge(rw, rh, R.VISION_MIN_SHORT, R.VISION_MAX_SHORT) for rw, rh in refs]
     text_tokens += sum(image_tokens(vh, vw) for vw, vh in vis) + 16 * len(refs)
     seq = image_tokens(h, w) + text_tokens + ref_rows
-    denoise = int(seq * 520_000)                       # one block's activations at float32 residuals (+ modulation)
+    # one block's activations (float32 residual stream); measured on the M5 at 1024 / 2048: ~0.4 MB per token, the FFN
+    # runs in 4096-token chunks above 8192 tokens
+    denoise = int(min(seq, 8192) * 420_000 + max(0, seq - 8192) * 260_000)
     vae_tokens = (h // 16) * (w // 16)
     decode = int(810_000_000 + vae_tokens * 1024 * 4 * 24)   # float32 copy of the decoder + its activations
     encode = int(text_tokens * 25600 * 4 * 4)          # one layer's activations

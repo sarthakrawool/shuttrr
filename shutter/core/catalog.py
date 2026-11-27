@@ -513,13 +513,18 @@ H3IMAGE_LICENCE = {
 _H3IMAGE_M5 = {"date": "2026-11-27", "mac": "MacBook Pro M5 (Mac17,2)", "memory_gb": 16, "mlx": "0.32.5",
                "chip": "Apple M5", "gpu_cores": 10, "frames": 1, "steps": 6, "identical": True, "with_app": True}
 H3IMAGE_CHECKED = [
-    dict(_H3IMAGE_M5, size="640x512", peaks_gb={"stream_tight": 3.25}, seconds={"stream_tight": 62},
-         mlx_peaks_gb={"stream_tight": 2.01}),
+    dict(_H3IMAGE_M5, size="640x512", peaks_gb={"stream_tight": 3.06}, seconds={"stream_tight": 30},
+         mlx_peaks_gb={"stream_tight": 2.22}),
+    dict(_H3IMAGE_M5, size="1024x1024", peaks_gb={"stream_tight": 3.22}, seconds={"stream_tight": 43},
+         mlx_peaks_gb={"stream_tight": 2.66}),
+    dict(_H3IMAGE_M5, size="2048x2048", peaks_gb={"stream_tight": 4.76}, seconds={"stream_tight": 165},
+         mlx_peaks_gb={"stream_tight": 3.73}),
 ]
 CATALOG["minimax-h3-image-8bit"] = {
     "name": "MiniMax-H3-Image (Beta)",
-    "summary": "Pictures from a text prompt in 6 steps: photos, illustrations, 3D animated looks and legible text. "
-               "Licensed by MiniMax, not for use in the EU, the UK, South Korea or the USA.",
+    "summary": "Pictures from a text prompt in 6 steps, or edits of up to 3 of your own pictures (<Picture 1>): "
+               "photos, illustrations, 3D animated looks and legible text. Licensed by MiniMax, not for use in the EU, "
+               "the UK, South Korea or the USA.",
     "beta": True,
     "kind": "image", "adapter": "h3-image", "family": "h3-image", "variant": "minimax-h3-image",
     "repo": "SarthakRawool/MiniMax-H3-Image-MLX-8bit-LowMem", "folder": "MiniMax-H3-Image-MLX-8bit-LowMem",
@@ -528,6 +533,8 @@ CATALOG["minimax-h3-image-8bit"] = {
     "licence": H3IMAGE_LICENCE,
     "needs": ["mlx>=0.31", "tokenizers>=0.20", "huggingface_hub>=0.34"],
     "check_files": ["h3image.json", "transformer", "text_encoder", "vae", "tokenizer/tokenizer.json"],
+    # added in 0.3.5 (HF revision 2640fe93): an install from 0.3.3 / 0.3.4 lacks them and is offered just these
+    "update_parts": {"folders": ["vision", "vae_encoder"], "label": "picture reader for reference pictures"},
     "checked_on": H3IMAGE_CHECKED,
     "image_default_size": (640, 512), "image_default_steps": 6,
     "sample": {"prompt": "A friendly cartoon robot holding a big white sign that reads HELLO, clean 3D animation "
@@ -1018,6 +1025,21 @@ def already_downloaded(folder: Path, entry: dict[str, Any], files: Optional[list
     return legacy_revision(folder, entry) is not None
 
 
+def update_for(folder: Path, entry: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """For an installed model whose pinned file list has files the folder lacks: {"bytes", "label"}; else None.
+    Only folders `entry["update_parts"]` names count (other differences are left to the full check)."""
+    parts = entry.get("update_parts")
+    files = entry.get("files")
+    if not parts or not files:
+        return None
+    missing = [f for f in files
+               if str(f["path"]).split("/")[0] in parts["folders"] and not (folder / f["path"]).is_file()]
+    if not missing:
+        return None
+    return {"bytes": int(sum(int(f.get("size") or 0) for f in missing)), "label": parts["label"],
+            "files": len(missing)}
+
+
 def legacy_revision(folder: Path, entry: dict[str, Any]) -> Optional[str]:
     """The earlier revision `folder` is a complete copy of (every file of its pinned list, same sizes), else None."""
     for old in entry.get("legacy") or []:
@@ -1086,6 +1108,7 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
         fit = fit_for(mid, total, cfg.headroom_for(total) if total else 0)
         disk = disk_for(e, free, (st or {}).get("done_bytes", 0) if (st or {}).get("state") != "converting" else 0,
                         installed)
+        update = update_for(folder, e) if installed else None
         rows.append({
             "id": mid, "name": e["name"], "summary": e["summary"], "kind": e["kind"], "source": e["repo"],
             "fit": fit, "disk": disk, "makes": makes_line(mid, total), "memory": memory_line(mid, total),
@@ -1105,6 +1128,9 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "availability_note": "" if installed or remote_ready(mid) else
                                  "Coming soon: the model files are still uploading. Check back later.",
             "beta": bool(e.get("beta")),
+            # installed, but files a newer Shuttrr needs are missing (e.g. H3-Image's picture reader): Download fetches
+            # only those
+            "update": update,
         })
     # Recommended, then Fits but barely, then Doesn't fit (stable within each group)
     order = {"recommended": 0, "barely": 1, "unknown": 1, "no_fit": 2}

@@ -43,6 +43,9 @@ DIT_CONFIG = dict(hidden_size=5376, num_layers=50, token_refiner_num_layers=2, n
 #: the model's six-step schedule (sd.cpp `pdd_sigmas`); `--sigmas minimax-h3-image`
 PDD_SIGMAS = (1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132, 0.0)
 
+#: sequences longer than this (pictures above ~2900x2900) run the FFN MLP_CHUNK tokens at a time
+MLP_CHUNK_ABOVE, MLP_CHUNK = 8192, 4096
+
 #: modality tags: one AdaLN row per (timestep, tag)
 TAG_IMAGE, TAG_TEXT = 0, 1
 MODALITIES = 3
@@ -181,14 +184,51 @@ class TransformerBlock(nn.Module):
         m = lin(self.adaln_proj.linear, temb).astype(mx.float32)
         return m.reshape(-1, 6, self.hidden)
 
-    def __call__(self, x: mx.array, temb: mx.array, rows: mx.array, rope) -> mx.array:
-        m = self.modulation(temb)[rows]                         # (S, 6, hidden), one row per token
+    def __call__(self, x: mx.array, temb: mx.array, rows, rope) -> mx.array:
+        """`rows`: one AdaLN row per token, as an (S,) array, or as `Segments` (runs of tokens sharing a row): then
+        the modulation is applied run by run with (hidden,) vectors instead of an (S, 6, hidden) table: the same
+        numbers, but several GB less at 16 MP."""
         dt = x.dtype
+        if isinstance(rows, Segments):
+            m = self.modulation(temb).astype(dt)                 # (T * 3, 6, hidden)
+
+            def mod(y, ishift, iscale):
+                return mx.concatenate([y[:, a:b] * (1 + m[r, iscale]) + m[r, ishift] for a, b, r in rows], axis=1)
+
+            def gate(x, o, ig):
+                return mx.concatenate([x[:, a:b] + o[:, a:b] * m[r, ig] for a, b, r in rows], axis=1)
+
+            x = gate(x, self.attn(mod(self.norm1(x), 0, 1), rope), 2)
+            h = mod(self.norm2(x), 3, 4)
+            n = h.shape[1]
+            if n > MLP_CHUNK_ABOVE:          # 16 MP pictures: the 28672-wide FFN in token chunks (rows are independent)
+                o = []
+                for a in range(0, n, MLP_CHUNK):
+                    o.append(self.mlp(h[:, a:a + MLP_CHUNK]))
+                    mx.eval(o[-1])
+                out = mx.concatenate(o, axis=1)
+            else:
+                out = self.mlp(h)
+            return gate(x, out, 5)
+        m = self.modulation(temb)[rows]                         # (S, 6, hidden), one row per token
         sh1, sc1, g1, sh2, sc2, g2 = (m[:, i].astype(dt) for i in range(6))
         h = self.norm1(x) * (1 + sc1) + sh1
         x = x + self.attn(h, rope) * g1
         h = self.norm2(x) * (1 + sc2) + sh2
         return x + self.mlp(h) * g2
+
+
+class Segments(tuple):
+    """((start, end, AdaLN row), ...) covering a packed sequence in order."""
+
+    @classmethod
+    def of(cls, rows: list[int]) -> "Segments":
+        out, a = [], 0
+        for i in range(1, len(rows) + 1):
+            if i == len(rows) or rows[i] != rows[a]:
+                out.append((a, i, int(rows[a])))
+                a = i
+        return cls(out)
 
 
 class FinalLayer(nn.Module):
@@ -324,10 +364,10 @@ class MiniMaxH3ImageDiT(nn.Module):
         if n_ref:
             # timestep row 0: the step's t (text and generated rows), row 1: the references' t
             temb = self.time_embedding(mx.array([t, ref_t], dtype=mx.float32))
-            rows = mx.array(tags + [MODALITIES + TAG_IMAGE] * n_ref + [TAG_IMAGE] * n_img, dtype=mx.int32)
+            rows = Segments.of(tags + [MODALITIES + TAG_IMAGE] * n_ref + [TAG_IMAGE] * n_img)
         else:
             temb = self.time_embedding(mx.array([t], dtype=mx.float32))
-            rows = mx.array(tags + [TAG_IMAGE] * n_img, dtype=mx.int32)   # timestep row 0: row = tag
+            rows = Segments.of(tags + [TAG_IMAGE] * n_img)           # timestep row 0: row = tag
         if blocks is None:
             for b in self.blocks:
                 x = b(x, temb, rows, rope)
