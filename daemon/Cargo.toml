@@ -1,6 +1,6 @@
 [package]
 name = "shutterd"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "Shutter engine daemon: HTTP API, job queue, memory guard, GPU locks and the worker watchdog"
 license = "MIT"
