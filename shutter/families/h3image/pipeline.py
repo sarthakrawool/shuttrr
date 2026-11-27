@@ -56,6 +56,7 @@ class Settings:
     height: int = 1024
     seed: int = 42
     count: int = 1
+    images: list[str] = field(default_factory=list)      # reference pictures (paths), referred to as <Picture i>
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -74,31 +75,40 @@ def align(s: Settings) -> Settings:
     return s
 
 
-def torch_randn(seed: int, n: int) -> np.ndarray:
-    """`torch.manual_seed(seed); torch.randn(n)` on the CPU, in numpy (sd.cpp MT19937RNG): mt19937 seeded with
-    init_genrand, 24-bit uniforms, Box-Muller in blocks of 16."""
-    rs = np.random.RandomState(int(seed) & 0xFFFFFFFF)
+class TorchRandn:
+    """`torch.Generator().manual_seed(seed)` on the CPU, drawing `torch.randn` tensors one after another (sd.cpp
+    MT19937RNG): mt19937 seeded with init_genrand, 24-bit uniforms, Box-Muller in blocks of 16, the tail redrawn."""
 
-    def uniforms(k: int) -> np.ndarray:
-        u = rs.randint(0, 2**32, size=k, dtype=np.uint32).astype(np.uint64) & ((1 << 24) - 1)
+    def __init__(self, seed: int):
+        self.rs = np.random.RandomState(int(seed) & 0xFFFFFFFF)
+
+    def _uniforms(self, k: int) -> np.ndarray:
+        u = self.rs.randint(0, 2**32, size=k, dtype=np.uint32).astype(np.uint64) & ((1 << 24) - 1)
         return u.astype(np.float32) * np.float32(2.0 ** -24)
 
-    def fill16(d: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _fill16(d: np.ndarray) -> np.ndarray:
         u1 = np.float32(1.0) - d[:8]
         u2 = d[8:16]
         r = np.sqrt(np.float32(-2.0) * np.log(u1))
         th = np.float32(2.0 * np.pi) * u2
         return np.concatenate([r * np.cos(th), r * np.sin(th)]).astype(np.float32)
 
-    if n < 16:
-        raise ValueError("latents are always at least 16 values")
-    u = uniforms(n)
-    out = u.copy()
-    for i in range(0, n - 15, 16):
-        out[i:i + 16] = fill16(u[i:i + 16])
-    if n % 16:
-        out[n - 16:] = fill16(uniforms(16))
-    return out
+    def randn(self, n: int) -> np.ndarray:
+        if n < 16:
+            raise ValueError("latents are always at least 16 values")
+        u = self._uniforms(n)
+        out = u.copy()
+        for i in range(0, n - 15, 16):
+            out[i:i + 16] = self._fill16(u[i:i + 16])
+        if n % 16:
+            out[n - 16:] = self._fill16(self._uniforms(16))
+        return out
+
+
+def torch_randn(seed: int, n: int) -> np.ndarray:
+    """`torch.manual_seed(seed); torch.randn(n)` on the CPU, in numpy."""
+    return TorchRandn(seed).randn(n)
 
 
 class Tokenizer:
@@ -107,6 +117,15 @@ class Tokenizer:
     def __init__(self, folder: Path):
         from tokenizers import Tokenizer as HFTokenizer
         self.tok = HFTokenizer.from_file(str(Path(folder) / "tokenizer.json"))
+
+    def ids(self, text: str) -> list[int]:
+        return self.tok.encode(text, add_special_tokens=False).ids
+
+    def special(self, token: str) -> int:
+        i = self.tok.token_to_id(token)
+        if i is None:
+            raise ValueError(f"the tokenizer has no {token}")
+        return i
 
     def __call__(self, prompt: str) -> tuple[np.ndarray, bool]:
         ids = self.tok.encode(prompt, add_special_tokens=False).ids
@@ -177,15 +196,54 @@ class H3ImagePipeline:
                 "vae": W.part_bytes(self.vae_c, lambda n: True)}
 
     # ---- prompt encoder, one layer at a time
-    def encode(self, prompt: str):
-        """(1, n, 5120) bfloat16: the output of text layer 50, before the final norm."""
+    def has_refs_weights(self) -> bool:
+        return (self.dir / "vision").is_dir() and (self.dir / "vae_encoder").is_dir()
+
+    def encode(self, prompt: str, vision_images: Optional[list] = None):
+        """(1, n, 5120) bfloat16: the output of text layer 50, before the final norm. With reference pictures the
+        presentation is `Picture i: <vision block>` per picture, then the prompt (diffusers
+        MiniMaxH3ImageEditTextEncoderStep); returns (states, truncated, row tags or None)."""
         import mlx.core as mx
         from shutter.families.zimage.model import EncoderLayer, te_causal_mask, te_rotary
         tok = Tokenizer(self.dir / "tokenizer")
         ids, truncated = tok(prompt)
-        n = len(ids)
-        h = read_rows(self.te, "embed_tokens.weight", ids)[None].astype(mx.bfloat16)
-        pos = te_rotary(self.te_cfg["head_dim"], self.te_cfg["rope_theta"], n, mx.bfloat16)
+        if not vision_images:
+            n = len(ids)
+            h = read_rows(self.te, "embed_tokens.weight", ids)[None].astype(mx.bfloat16)
+            pos = te_rotary(self.te_cfg["head_dim"], self.te_cfg["rope_theta"], n, mx.bfloat16)
+            tags, vis_rows, deep = None, None, None
+        else:
+            from shutter.families.h3image import refs as R
+            feats, deeps, grids = self.vision(vision_images)
+            merge = R.VISION_CONFIG["spatial_merge_size"]
+            start, pad, end = tok.special(R.VISION_START), tok.special(R.IMAGE_PAD), tok.special(R.VISION_END)
+            all_ids: list[int] = []
+            tags = []
+            blocks = []
+            for i, (f, (_, gh, gw)) in enumerate(zip(feats, grids)):
+                label = tok.ids(f"Picture {i + 1}: ")[:MAX_TOKENS]
+                all_ids += label
+                tags += [1] * len(label)
+                k = (gh // merge) * (gw // merge)
+                if f.shape[0] != k:
+                    raise RuntimeError(f"vision tower gave {f.shape[0]} rows for a {k}-row block")
+                all_ids.append(start)
+                blocks.append((len(all_ids), gh // merge, gw // merge))
+                all_ids += [pad] * k + [end]
+                tags += [0] * (k + 2)
+            all_ids += [int(i) for i in ids]
+            tags += [1] * len(ids)
+            n = len(all_ids)
+            arr = np.array(all_ids, dtype=np.int32)
+            h = read_rows(self.te, "embed_tokens.weight", arr).astype(mx.bfloat16)
+            vis_rows = np.concatenate([np.arange(b, b + gh * gw) for b, gh, gw in blocks])
+            vr = mx.array(vis_rows.astype(np.int32))
+            h[vr] = mx.concatenate(feats, axis=0).astype(mx.bfloat16)
+            h = h[None]
+            deep = [mx.concatenate([d[j] for d in deeps], axis=0).astype(mx.bfloat16) for j in range(len(deeps[0]))]
+            pos = R.mrope_cos_sin(R.mrope_positions(all_ids, blocks), self.te_cfg["head_dim"],
+                                  self.te_cfg["rope_theta"], mx.bfloat16)
+            del feats, deeps
         mask = te_causal_mask(None, 1, n, mx.bfloat16)
         mx.eval(h, *pos, mask)
         for i in range(self.te_layers):
@@ -193,12 +251,59 @@ class H3ImagePipeline:
             layer = EncoderLayer(**self.te_cfg)
             W.load_into(layer, W.strip(self.te.load(self.te.names(f"layers.{i}."), nocache=True), f"layers.{i}."))
             h = layer(h, attention_mask=mask, position_embeddings=pos)
+            if deep is not None and i < len(deep):           # DeepStack: vision features added after layers 1-3
+                h[:, vr] = h[:, vr] + deep[i][None]
             mx.eval(h)
             del layer
             self.report(0.005 * (i + 1) / self.te_layers * 8, f"reading the prompt ({i + 1}/{self.te_layers})")
+        deep = None
         gc.collect()
         mx.clear_cache()
+        if vision_images:
+            return h, truncated, tags
         return h, truncated
+
+    # ---- reference pictures
+    def vision(self, images: list):
+        """Qwen3-VL vision tower over each picture (one at a time, full attention within a picture): per picture
+        (merged rows (k, 5120), [3 DeepStack rows], (1, gh, gw) patch grid)."""
+        import mlx.core as mx
+        from shutter.families.h3image import refs as R
+        comp = W.Component(self.dir / "vision")
+        tower = R.VisionTower()
+        raw = comp.load(list(comp.weight_map), nocache=True)
+        tower.load_weights([R.VisionTower.remap(k, v) for k, v in raw.items()], strict=True)
+        mx.eval(tower.parameters())
+        del raw
+        feats, deeps, grids = [], [], []
+        for img in images:
+            self.check()
+            patches, grid = R.vision_patches(img)
+            f, d = tower(mx.array(patches), grid)
+            mx.eval(f, *d)
+            feats.append(f)
+            deeps.append(d)
+            grids.append(grid)
+        del tower
+        gc.collect()
+        mx.clear_cache()
+        return feats, deeps, grids
+
+    def ref_moments(self, images: list) -> list[np.ndarray]:
+        """VAE encoder moments (48, h, w) of each reference picture."""
+        import mlx.core as mx
+        from shutter.families.h3image import refs as R
+        comp = W.Component(self.dir / "vae_encoder")
+        enc = R.VAEEncoder()
+        raw = comp.load(list(comp.weight_map), nocache=True)
+        enc.load_weights([R.VAEEncoder.remap(k, v) for k, v in raw.items()], strict=True)
+        mx.eval(enc.parameters())
+        del raw
+        out = [R.encode_moments(enc, img, check=self.check) for img in images]
+        del enc
+        gc.collect()
+        mx.clear_cache()
+        return out
 
     # ---- DiT
     def _dit_key(self) -> str:
@@ -323,8 +428,23 @@ class H3ImagePipeline:
         s = align(s)
         seeds = s.seeds
         self.meter.mark("encode")
+        tags, moments, vis = None, [], None
+        if s.images:
+            from shutter.families.h3image import refs as R
+            if not self.has_refs_weights():
+                raise RuntimeError("this MiniMax-H3-Image download has no picture reader yet: download the model again "
+                                   "to add it (about 1.5 GB)")
+            pics = [R.load_reference(p) for p in s.images]
+            self.report(0.0, "reading the reference pictures")
+            vis = [R.resized(p, R.VISION_MIN_SHORT, R.VISION_MAX_SHORT) for p in pics]
+            moments = self.ref_moments([R.resized(p, R.VAE_MIN_SHORT, R.VAE_MAX_SHORT) for p in pics])
+            del pics
         self.report(0.0, "reading the prompt")
-        text, truncated = self.encode(s.prompt)
+        if vis:
+            text, truncated, tags = self.encode(s.prompt, vis)
+        else:
+            text, truncated = self.encode(s.prompt)
+        del vis
         if truncated:
             s.notes.append(f"the prompt is longer than {MAX_TOKENS} tokens: the end was cut off")
         self.check()
@@ -341,12 +461,24 @@ class H3ImagePipeline:
             mx.eval(text_rows)
             del text
             for seed in seeds:
-                lat = mx.array(torch_randn(seed, 24 * lh * lw).reshape(24, lh, lw))
+                refs = None
+                if moments:
+                    # one generator per request, in the released order: the posterior sample of every reference,
+                    # the noise of the generated image, then each reference's t = 0.999 noise
+                    from shutter.families.h3image import refs as R
+                    g = TorchRandn(seed)
+                    zs = [R.reference_latents(m, g.randn(24 * m.shape[1] * m.shape[2])) for m in moments]
+                    lat = mx.array(g.randn(24 * lh * lw).reshape(24, lh, lw))
+                    sig_r = np.float32(1.0) - np.float32(R.REFERENCE_T)
+                    refs = [mx.array(((np.float32(1.0) - sig_r) * z + sig_r * g.randn(z.size).reshape(z.shape))
+                                     .astype(np.float32)) for z in zs]
+                else:
+                    lat = mx.array(torch_randn(seed, 24 * lh * lw).reshape(24, lh, lw))
                 for k in range(steps):
                     self.check()
                     self.meter.mark(f"denoise:{seed}:{k}")
                     sig, nxt = PDD_SIGMAS[k], PDD_SIGMAS[k + 1]
-                    v = dit.velocity(lat, text_rows, sig, nxt, blocks=blocks)
+                    v = dit.velocity(lat, text_rows, sig, nxt, blocks=blocks, refs=refs, text_tags=tags)
                     lat = lat + v * (nxt - sig)
                     mx.eval(lat)
                     done += 1

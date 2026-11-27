@@ -1,4 +1,4 @@
-"""MiniMax-H3-Image (text to image) on Shuttrr.
+"""MiniMax-H3-Image (text to image, and edits from up to 3 reference pictures) on Shuttrr.
 
 Configure a model with the folder `python -m shutter.families.h3image.convert` built:
 
@@ -6,6 +6,10 @@ Configure a model with the folder `python -m shutter.families.h3image.convert` b
 
 Request fields: prompt, width / height (multiples of 32, 256..2048, default 1024x1024), seed. The model always runs
 its own six steps without guidance, so `steps`, `guidance` and `negative_prompt` are not used (a note says so).
+Reference pictures: inputs "image", "image_2", "image_3" or params "images" (paths on this Mac), referred to in the
+prompt as <Picture 1>, <Picture 2>, <Picture 3> (shutter/families/h3image/refs.py; needs the build's vision/ and
+vae_encoder/ folders).
+
 Params:
 
   count         images in this request (1..8), seeds seed, seed + 1, ...; they share one prompt encoding
@@ -25,6 +29,7 @@ not cover the US, the EU, the UK and South Korea (§I.5).
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -41,17 +46,58 @@ DEFAULT_PARTS = {"te_embed_row": 10_240, "te_layer": 372_000_000, "te_layers": 5
                  "dit_block": 433_000_000, "dit_blocks": 50, "dit_shell": 950_000_000, "vae": 810_000_000}
 
 
+MAX_REFERENCES = 3
+
+
+def reference_paths(request: JobRequest) -> list[str]:
+    """Reference pictures, in <Picture i> order: inputs "image", "image_2", "image_3" (or params "images")."""
+    p = request.params or {}
+    ins = request.inputs or {}
+    paths = [ins[k] for k in sorted((k for k in ins if k == "image" or re.fullmatch(r"image_\d+", k)),
+                                    key=lambda k: 1 if k == "image" else int(k.split("_")[1]))]
+    paths += [str(x) for x in (p.get("images") or [])]
+    if len(paths) > MAX_REFERENCES:
+        raise ValueError(f"MiniMax-H3-Image takes at most {MAX_REFERENCES} reference pictures")
+    for x in paths:
+        if not Path(x).is_file():
+            raise ValueError(f"reference picture not found: {x}")
+    return paths
+
+
 def image_tokens(h: int, w: int) -> int:
     return (h // 32) * (w // 32)
 
 
-def stage_needs(h: int, w: int, text_tokens: int = 256) -> P.StageNeeds:
-    """Working memory per stage (bytes), rounded up."""
-    seq = image_tokens(h, w) + text_tokens
+def reference_sizes(paths: list[str]) -> list[tuple[int, int]]:
+    """(width, height) each reference picture is resized to (the VAE copy; the vision copy has the same bounds)."""
+    from PIL import Image
+    from shutter.families.h3image import refs as R
+    out = []
+    for x in paths:
+        with Image.open(x) as im:
+            w, h = im.size
+            if (im.getexif() or {}).get(274) in (5, 6, 7, 8):       # EXIF rotated: sides swap
+                w, h = h, w
+        out.append(R.bound_short_edge(w, h, R.VAE_MIN_SHORT, R.VAE_MAX_SHORT))
+    return out
+
+
+def stage_needs(h: int, w: int, text_tokens: int = 256, refs: tuple = ()) -> P.StageNeeds:
+    """Working memory per stage (bytes), rounded up. `refs`: (width, height) of each reference picture: each adds
+    its latent rows to the denoiser's sequence and a 1024-short-edge vision block to the prompt, and the encode stage
+    also runs the vision tower (1.2 GB + activations) and the tiled VAE encoder (~0.9 GB)."""
+    from shutter.families.h3image import refs as R
+    ref_rows = sum(image_tokens(rh, rw) for rw, rh in refs)
+    vis = [R.bound_short_edge(rw, rh, R.VISION_MIN_SHORT, R.VISION_MAX_SHORT) for rw, rh in refs]
+    text_tokens += sum(image_tokens(vh, vw) for vw, vh in vis) + 16 * len(refs)
+    seq = image_tokens(h, w) + text_tokens + ref_rows
     denoise = int(seq * 520_000)                       # one block's activations at float32 residuals (+ modulation)
     vae_tokens = (h // 16) * (w // 16)
     decode = int(810_000_000 + vae_tokens * 1024 * 4 * 24)   # float32 copy of the decoder + its activations
     encode = int(text_tokens * 25600 * 4 * 4)          # one layer's activations
+    if refs:
+        mp = max(vw * vh for vw, vh in vis) / 1048576
+        encode = max(encode + int(text_tokens * text_tokens * 2 * 2), int(2.4 * GB + 0.6 * GB * mp))
     return P.StageNeeds(encode=encode, denoise=denoise, decode=decode, carried=int(text_tokens * 5376 * 4 * 2))
 
 
@@ -87,7 +133,7 @@ class H3ImageAdapter(ZImageAdapter):
 
     def describe(self) -> dict[str, Any]:
         d = super().describe()
-        d.update(label="MiniMax-H3-Image", variant="minimax-h3-image", task="t2i",
+        d.update(label="MiniMax-H3-Image", variant="minimax-h3-image", task="t2i", references=MAX_REFERENCES,
                  licence="MiniMax-H3-Image Community License Agreement")
         return d
 
@@ -117,6 +163,7 @@ class H3ImageAdapter(ZImageAdapter):
             s.notes.append("negative prompt not used: MiniMax-H3-Image runs without guidance")
         if p.get("loras"):
             raise ValueError("LoRAs are not supported for MiniMax-H3-Image yet")
+        s.images = reference_paths(request)
         return align(s)
 
     # ---- memory
@@ -132,7 +179,8 @@ class H3ImageAdapter(ZImageAdapter):
 
     def rung_estimates(self, request: JobRequest, s=None) -> dict[str, MemoryEstimate]:
         s = s or self.settings_for(request)
-        needs = stage_needs(s.height, s.width)
+        refs = tuple(reference_sizes(s.images)) if s.images else ()
+        needs = stage_needs(s.height, s.width, refs=refs)
         ps = self.part_sizes()
         data = M.load_measured(self._opt("measured_path", None))
         size = M.size_key(s.height, s.width)
@@ -141,7 +189,7 @@ class H3ImageAdapter(ZImageAdapter):
             e = P.estimate(ps, needs, rid)
             peak = int(e["peak"])
             note = f"h3-image {rid}: worst stage {e['worst']} ~{peak / GB:.1f} GB"
-            m = M.measured_for(self.model_id, size, rid, data) or self._checked(size, rid)
+            m = None if refs else (M.measured_for(self.model_id, size, rid, data) or self._checked(size, rid))
             if m:
                 peak = int(m["peak_bytes"])
                 note = f"h3-image {rid}: measured {peak / GB:.1f} GB at {size}"
@@ -221,8 +269,11 @@ class H3ImageAdapter(ZImageAdapter):
                   "peak_bytes": summ["peak_bytes"], "mode": pick["choice"].mode,
                   "efficiency": pick["choice"].efficiency, "rung": rid, "identical": True,
                   "estimate_peak_bytes": pick["estimates"][rid].peak, "budget_bytes": pick["budget"],
-                  "stages": meter.records, **summ, "size_key": f"{s.height}x{s.width}",
+                  "stages": meter.records, **summ,
+                  "size_key": f"{s.height}x{s.width}" + (f"+{len(s.images)}ref" if s.images else ""),
                   "variant": "minimax-h3-image", "notes": s.notes}
+        if s.images:
+            result["references"] = len(s.images)
         if pipe.stream_stats:
             result["stream"] = {**pipe.stream_stats, "io": pipe.stream_io}
         if pick["stepped_down_from"]:

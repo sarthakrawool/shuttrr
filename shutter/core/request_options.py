@@ -81,6 +81,8 @@ def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int)
             "limits": LIMITS_IMAGE,
             "styles": [{"id": k, "label": v["label"]} for k, v in IMAGE_STYLES.items()],
             "lora": spec.get("adapter") == "z-image",
+            # reference pictures the model reads (<Picture 1>, ...): 0 = text to image only
+            "references": 3 if spec.get("adapter") == "h3-image" else 0,
             "fixed_steps": FIXED_STEP_IMAGE.get(spec.get("adapter") or ""),
             "estimate": estimate(cfg, model_id, defaults, total_bytes=total, _defaults=defaults)}
 

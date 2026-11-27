@@ -33,6 +33,8 @@ struct NewJobSheet: View {
     @State private var style = ""
     @State private var loraPath = ""
     @State private var loraStrength = 1.0
+    /// Reference pictures for models that read them (MiniMax-H3-Image), referred to as <Picture 1>, <Picture 2>, …
+    @State private var refPaths: [String] = ["", "", ""]
     @State private var submitting = false
     @State private var error: String?
 
@@ -237,6 +239,7 @@ struct NewJobSheet: View {
                     .kitField(height: nil)
                     .frame(minHeight: Theme.Metric.promptHeight, alignment: .top)
             }
+            referenceFields
             HStack(alignment: .top, spacing: Theme.Space.s4) {
                 LabeledField("Style") {
                     Picker("Style", selection: $style) {
@@ -266,6 +269,36 @@ struct NewJobSheet: View {
                     .kitField()
             }
         }
+    }
+
+    /// Reference picture paths: the first always, each next one once the one before is filled.
+    @ViewBuilder
+    private var referenceFields: some View {
+        let maxRefs = min(options?.references ?? 0, refPaths.count)
+        if maxRefs > 0 {
+            VStack(alignment: .leading, spacing: Theme.Space.s2) {
+                ForEach(0..<maxRefs, id: \.self) { i in
+                    if i == 0 || !refPaths[i - 1].isEmpty {
+                        LabeledField(i == 0 ? "Reference pictures (optional)" : "Picture \(i + 1)") {
+                            PathField(path: $refPaths[i], placeholder: "~/Pictures/picture-\(i + 1).jpg",
+                                      types: [.image], title: "reference picture")
+                        }
+                    }
+                }
+                Text("Refer to them in the prompt as <Picture 1>, <Picture 2>, e.g. \"Put the woman from <Picture 1> in a rainy street\".")
+                    .font(Theme.Fonts.meta)
+                    .foregroundStyle(Theme.Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var referencePaths: [String] {
+        let maxRefs = min(options?.references ?? 0, refPaths.count)
+        return refPaths.prefix(maxRefs)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { ($0 as NSString).expandingTildeInPath }
     }
 
     @ViewBuilder
@@ -440,6 +473,10 @@ struct NewJobSheet: View {
                 error = "Write what the picture should show."
                 return
             }
+            if let missing = referencePaths.first(where: { !FileManager.default.fileExists(atPath: $0) }) {
+                error = "Reference picture not found: \((missing as NSString).lastPathComponent)"
+                return
+            }
             if !loraPath.isEmpty && !FileManager.default.fileExists(atPath: (loraPath as NSString).expandingTildeInPath) {
                 error = "The LoRA file was not found."
                 advancedOpen = true
@@ -484,6 +521,8 @@ struct NewJobSheet: View {
             if !neg.isEmpty { req.negativePrompt = neg }
             if imageCount > 1 { params["count"] = .number(Double(imageCount)) }
             if !style.isEmpty { params["style"] = .string(style) }
+            let refs = referencePaths
+            if !refs.isEmpty { params["images"] = .array(refs.map { .string($0) }) }
             if !loraPath.isEmpty && loraStrength != 0 {
                 params["loras"] = .array([.object(["path": .string((loraPath as NSString).expandingTildeInPath),
                                                    "strength": .number(loraStrength)])])

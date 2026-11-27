@@ -278,41 +278,64 @@ class MiniMaxH3ImageDiT(nn.Module):
         return x.reshape(c, h, w)
 
     @staticmethod
-    def layout(text_len: int, lat_h: int, lat_w: int) -> tuple[mx.array, int]:
-        """Positions for [text | image] (sd.cpp `build_layout`, no references): text row i at (i, 0, 0), image rows
-        at time text_len over the aspect-normalized grid. Returns ((S, 3) float32 positions, number of image rows)."""
+    def layout(text_len: int, lat_h: int, lat_w: int, refs: tuple = ()) -> tuple[mx.array, int]:
+        """Positions for [text | reference pictures | image] (diffusers `build_image_packed_sequence`, sd.cpp
+        `build_layout`): text row i at (i, 0, 0); each reference at the next integer time from text_len on, over its own
+        aspect-normalized grid; the generated image one time step after the last reference. `refs` = latent (h, w) of
+        each reference. Returns ((S, 3) float32 positions, number of generated-image rows)."""
         import numpy as np
+        pos = [(float(i), 0.0, 0.0) for i in range(text_len)]
+        t = float(text_len)
+        for rh, rw in refs:
+            sq = math.sqrt(rh * rw)
+            pos += [(t, hv, wv) for hv in spatial_axis(rh, sq) for wv in spatial_axis(rw, sq)]
+            t += 1.0
         sq = math.sqrt(lat_h * lat_w)
         ha, wa = spatial_axis(lat_h, sq), spatial_axis(lat_w, sq)
-        pos = [(float(i), 0.0, 0.0) for i in range(text_len)]
-        pos += [(float(text_len), hv, wv) for hv in ha for wv in wa]
+        pos += [(t, hv, wv) for hv in ha for wv in wa]
         return mx.array(np.array(pos, dtype=np.float32)), len(ha) * len(wa)
 
     # ---- one forward
     def velocity(self, latents: mx.array, text_rows: mx.array, sigma: float, sigma_next: float,
-                 blocks=None) -> mx.array:
+                 blocks=None, refs: Optional[list] = None, text_tags: Optional[list] = None,
+                 ref_t: float = 0.999) -> mx.array:
         """d(latents)/d(sigma) for the Euler step sigma -> sigma_next. latents (24, H, W) float32; text_rows the
         refined text (1, L, hidden). `blocks` runs the 50-block stack: None = this model's own blocks, else a
-        callable (x, temb, rows, rope) -> x (the SSD streamed stack)."""
+        callable (x, temb, rows, rope) -> x (the SSD streamed stack). `refs`: noised reference latents (24, h, w)
+        held at model timestep `ref_t`; `text_tags`: the modality tag of every text row (vision-block rows are
+        image rows; default all text)."""
         c = self.c
         _, lh, lw = latents.shape
         L = text_rows.shape[1]
-        pos, n_img = self.layout(L, lh, lw)
+        refs = refs or []
+        pos, n_img = self.layout(L, lh, lw, tuple((r.shape[1], r.shape[2]) for r in refs))
         rope = self.rope(pos)
+        parts = [text_rows.astype(mx.float32)]
+        n_ref = 0
+        for r in refs:
+            pr = self.patchify(r)
+            n_ref += pr.shape[0]
+            parts.append(lin(self.video_patch_proj, pr).astype(mx.float32)[None])
         img = lin(self.video_patch_proj, self.patchify(latents)).astype(mx.float32)
         # the residual stream stays float32 (sd.cpp computes in float32); matmuls run at the weights' precision
-        x = mx.concatenate([text_rows.astype(mx.float32), img[None]], axis=1)
+        x = mx.concatenate(parts + [img[None]], axis=1)
         t = 1.0 - min(max(sigma, 1e-6), 1.0)
-        temb = self.time_embedding(mx.array([t], dtype=mx.float32))
-        rows = mx.array([TAG_TEXT] * L + [TAG_IMAGE] * n_img, dtype=mx.int32)   # timestep row 0: row = tag
+        tags = list(text_tags) if text_tags is not None else [TAG_TEXT] * L
+        if n_ref:
+            # timestep row 0: the step's t (text and generated rows), row 1: the references' t
+            temb = self.time_embedding(mx.array([t, ref_t], dtype=mx.float32))
+            rows = mx.array(tags + [MODALITIES + TAG_IMAGE] * n_ref + [TAG_IMAGE] * n_img, dtype=mx.int32)
+        else:
+            temb = self.time_embedding(mx.array([t], dtype=mx.float32))
+            rows = mx.array(tags + [TAG_IMAGE] * n_img, dtype=mx.int32)   # timestep row 0: row = tag
         if blocks is None:
             for b in self.blocks:
                 x = b(x, temb, rows, rope)
         else:
             x = blocks(x, temb, rows, rope)
-        # final layer on the image rows: x + x * scale + shift
-        fm = lin(self.final_layer.adaln_proj.linear, temb).astype(mx.float32).reshape(2, c["hidden_size"])
-        h = self.final_layer.norm(x[0, L:]).astype(mx.float32)
+        # final layer on the generated rows: x + x * scale + shift
+        fm = lin(self.final_layer.adaln_proj.linear, temb[:1]).astype(mx.float32).reshape(2, c["hidden_size"])
+        h = self.final_layer.norm(x[0, L + n_ref:]).astype(mx.float32)
         h = h + h * fm[1] + fm[0]
         out = lin(self.final_layer.video_out, h)                    # (n_img, 6 * 96)
         dim = out.shape[-1] // c["pdd_heads"]
