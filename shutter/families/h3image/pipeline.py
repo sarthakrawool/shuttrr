@@ -161,6 +161,8 @@ class H3ImagePipeline:
                               for m in [re.match(r"^layers\.(\d+)\.", n)] if m})
         self.n_blocks = len({int(m.group(1)) for n in self.dit_c.weight_map for m in [_BLOCK.match(n)] if m})
         self.stream_stats: dict[str, Any] = {}
+        self.stream_io = "direct"      # "direct": SSD reads straight into reusable MLX buffers; "copy": numpy + copy
+        self.stream_window: Optional[int] = None   # blocks held while streaming (None: the memory step's own)
 
     # ---- sizes (for estimates)
     def part_sizes(self) -> dict[str, int]:
@@ -231,7 +233,7 @@ class H3ImagePipeline:
         window = r["window"] or (RUNGS["stream_wide"]["window"] if shell_pooled and not r["keep_dit"] else 0)
         if window:
             dit = self.load_shell() if shell_pooled else self._load_dit(False)
-            stack = self._streamed_blocks(window)
+            stack = self._streamed_blocks(int(self.stream_window or window))
             return dit, stack, stack.close
         size = self.dit_c.total_bytes()
         if self.pool is not None and r["keep_dit"]:
@@ -248,12 +250,17 @@ class H3ImagePipeline:
         import mlx.core as mx
         import mlx.nn as nn
         from mlx.utils import tree_flatten, tree_unflatten
-        from shutter.core.stream import BlockStreamer, group_names_by_block
+        from shutter.core.stream import BlockStreamer, SlotStreamer, group_names_by_block
         from shutter.families.h3image.model import TransformerBlock
         index = self.dit_c.tensor_index()
         groups, _ = group_names_by_block(index.names(), pattern=r"^(blocks)\.(\d+)\.")
-        streamer = BlockStreamer(index, groups, window=window, readahead=max(1, window - 1), cyclic=True,
-                                 nocache=True)        # ~22 GB per step, read in a loop: the file cache never helps
+        # ~22 GB per step, read in a loop: the file cache never helps
+        if self.stream_io == "direct":
+            streamer = SlotStreamer(index, groups, window=window, readahead=max(1, window - 1), cyclic=True,
+                                    nocache=True)
+        else:
+            streamer = BlockStreamer(index, groups, window=window, readahead=max(1, window - 1), cyclic=True,
+                                     nocache=True)
         index.set_nocache(True)
         shells: dict[tuple, Any] = {}
         empty = mx.zeros((0,), dtype=mx.float32)

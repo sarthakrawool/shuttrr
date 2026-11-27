@@ -42,6 +42,7 @@ __all__ = [
     "TensorEntry",
     "SafetensorsIndex",
     "BlockStreamer",
+    "SlotStreamer",
     "StreamError",
     "group_names_by_block",
     "default_strip_prefix",
@@ -297,7 +298,7 @@ class BlockStreamer:
             index.set_nocache(True)
 
         self._cond = threading.Condition()
-        self._cache: Dict[int, Dict[str, np.ndarray]] = {}  # prefetched, ready
+        self._cache: Dict[int, Dict[str, np.ndarray]] = self._new_cache()  # prefetched, ready
         self._inflight: Optional[int] = None  # group the reader is reading now
         self._in_use: Dict[int, int] = {}  # groups handed out (or loading sync)
         self._cursor = -1  # last requested group
@@ -323,6 +324,12 @@ class BlockStreamer:
 
     def __len__(self) -> int:
         return len(self.groups)
+
+    def _new_cache(self) -> dict:
+        return {}
+
+    def _discard(self, data) -> None:
+        """A group read after close(): nothing to give back for plain host buffers."""
 
     # -- residency bookkeeping (call with self._cond held) -------------------
     def _resident_ids(self) -> set:
@@ -393,6 +400,8 @@ class BlockStreamer:
                     if not self._closed:
                         self._cache[target] = data
                         self._note_resident()
+                    else:
+                        self._discard(data)
                     self._cond.notify_all()
         except BaseException as exc:  # surface on the caller
             with self._cond:
@@ -521,6 +530,160 @@ class BlockStreamer:
 
     def __exit__(self, *exc):
         self.close()
+
+
+class _SlotCache(dict):
+    """``BlockStreamer._cache`` for :class:`SlotStreamer`: dropping a prefetched group (``del`` / ``clear``) gives its
+    slot back; ``pop`` (the caller taking the group) keeps it."""
+
+    def __init__(self, owner: "SlotStreamer"):
+        super().__init__()
+        self._owner = owner
+
+    def __delitem__(self, key):
+        slot = super().pop(key)
+        self._owner._free_slot(slot)
+
+    def clear(self):
+        for slot in list(self.values()):
+            self._owner._free_slot(slot)
+        super().clear()
+
+
+_MX_DTYPES = {"F32": "float32", "F16": "float16", "BF16": "bfloat16", "I64": "int64", "I32": "int32",
+              "I16": "int16", "I8": "int8", "U8": "uint8", "U16": "uint16", "U32": "uint32", "U64": "uint64",
+              "BOOL": "bool_"}
+
+
+class SlotStreamer(BlockStreamer):
+    """BlockStreamer that reads every block straight into memory MLX already owns.
+
+    ``window`` reusable slots are allocated once, on the caller's thread: one flat uint8 MLX buffer each, the size of
+    the largest block (tensors packed at 256-byte boundaries). The reader thread fills a free slot with ``preadv`` (no
+    MLX call off the caller's thread, no numpy copy, no page faults on fresh memory each block); ``block(i)`` hands out
+    zero-copy views (``slab[off:off + n].view(dtype).reshape(shape)``). Same bytes, same ops: results are
+    bit-identical to :class:`BlockStreamer`.
+
+    The views are only valid inside ``with streamer.block(i)``: the slot is refilled with another block afterwards, so
+    the caller must finish (``mx.eval``) the work that reads them before leaving the block and keep no reference.
+    """
+
+    _ALIGN = 256
+
+    def __init__(self, index: SafetensorsIndex, groups: Sequence[Sequence[str]], window: int = 2,
+                 readahead: int = 1, cyclic: bool = True, nocache: bool = False, **kw):
+        import mlx.core as mx
+
+        if kw.get("to_device") is False or kw.get("read_fn") is not None:
+            raise ValueError("SlotStreamer always reads straight into MLX buffers")
+        groups = [list(g) for g in groups]
+        a = self._ALIGN
+        self._layout: List[List[Tuple[str, int, int]]] = []      # per group: (name, offset in slab, nbytes)
+        size = 1
+        for g in groups:
+            off, lay = 0, []
+            for n in g:
+                nb = index.entries[n].nbytes
+                lay.append((n, off, nb))
+                off += -(-nb // a) * a
+            self._layout.append(lay)
+            size = max(size, off)
+        self._slot_lock = threading.Lock()
+        self._bufs: List[object] = []
+        self._host: List[np.ndarray] = []
+        for _ in range(max(1, int(window))):
+            slab = mx.zeros((size,), dtype=mx.uint8)
+            mx.eval(slab)
+            self._bufs.append(slab)
+            self._host.append(np.array(slab, copy=False))
+        self._free: List[int] = list(range(len(self._bufs)))
+        self._slot_of: Dict[int, int] = {}
+        self._slot_bytes = size
+        super().__init__(index, groups, window=window, readahead=readahead, cyclic=cyclic, to_device=True,
+                         nocache=nocache, **kw)
+
+    def _new_cache(self) -> dict:
+        return _SlotCache(self)
+
+    def _discard(self, slot) -> None:
+        self._free_slot(slot)
+
+    # -- slots ---------------------------------------------------------------
+    def _take_slot(self) -> int:
+        with self._slot_lock:
+            if not self._free:
+                raise RuntimeError("SlotStreamer: no free slot (window accounting broken)")
+            return self._free.pop()
+
+    def _free_slot(self, slot: int) -> None:
+        with self._slot_lock:
+            if slot not in self._free:
+                self._free.append(slot)
+
+    @property
+    def slot_bytes(self) -> int:
+        """Bytes one slot holds (all slots: ``slot_bytes * window``)."""
+        return self._slot_bytes
+
+    # -- reading into a slot (reader thread, or the caller on a miss) ---------
+    def _read_group(self, i: int):
+        slot = self._take_slot()
+        try:
+            t0 = time.perf_counter()
+            host = self._host[slot]
+            for name, off, nb in self._layout[i]:
+                if nb:
+                    e = self.index.entries[name]
+                    _pread_into(self.index._fd(e.file), memoryview(host[off: off + nb]), e.offset, name)
+            dt = time.perf_counter() - t0
+        except BaseException:
+            self._free_slot(slot)
+            raise
+        with self._cond:
+            self._read_seconds += dt
+            self._bytes_read += self._group_bytes[i]
+        return slot
+
+    def _release(self, i: int) -> None:
+        with self._cond:
+            self._in_use.pop(i, None)
+            slot = self._slot_of.pop(i, None)
+            if slot is not None:
+                self._free_slot(slot)
+            self._note_resident()
+            self._cond.notify_all()
+
+    @contextmanager
+    def block(self, i: int) -> Iterator[Dict[str, object]]:
+        """Yield ``{name: mx.array}`` views of group ``i`` in its slot (valid only inside the ``with``)."""
+        import mlx.core as mx
+
+        if not 0 <= i < len(self.groups):
+            raise IndexError(f"block {i} out of range (0..{len(self.groups) - 1})")
+        slot = self._acquire(i)
+        with self._cond:
+            self._slot_of[i] = slot
+        try:
+            t0 = time.perf_counter()
+            slab = self._bufs[slot]
+            tensors: Dict[str, object] = {}
+            for name, off, nb in self._layout[i]:
+                e = self.index.entries[name]
+                tensors[name] = slab[off: off + nb].view(getattr(mx, _MX_DTYPES[e.dtype])).reshape(e.shape)
+            self._convert_seconds += time.perf_counter() - t0
+        except BaseException:
+            self._release(i)
+            raise
+        try:
+            yield tensors
+        finally:
+            tensors = None
+            self._release(i)
+
+    def close(self) -> None:
+        super().close()
+        self._bufs = []
+        self._host = []
 
 
 # ---------------------------------------------------------------------------

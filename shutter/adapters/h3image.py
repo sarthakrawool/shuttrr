@@ -197,6 +197,13 @@ class H3ImageAdapter(ZImageAdapter):
         keep = _truthy(self._opt("keep_warm", True))
         pipe = H3ImagePipeline(self.model_dir, self.model_id, pool=ctx.models if keep else None, report=ctx.report,
                                check_cancelled=ctx.check_cancelled, meter=meter)
+        p = req.params or {}
+        io = p.get("stream_io") or self._opt("stream_io", None)
+        if io in ("direct", "copy"):          # test switch: "copy" = the 0.3.3 path (numpy read + copy into MLX)
+            pipe.stream_io = io
+        sw = p.get("stream_window") or self._opt("stream_window", None)
+        if sw:
+            pipe.stream_window = max(1, min(8, int(sw)))
         seeds = s.seeds
         outputs: list[str] = []
 
@@ -217,7 +224,7 @@ class H3ImageAdapter(ZImageAdapter):
                   "stages": meter.records, **summ, "size_key": f"{s.height}x{s.width}",
                   "variant": "minimax-h3-image", "notes": s.notes}
         if pipe.stream_stats:
-            result["stream"] = pipe.stream_stats
+            result["stream"] = {**pipe.stream_stats, "io": pipe.stream_io}
         if pick["stepped_down_from"]:
             result["stepped_down_from"] = pick["stepped_down_from"]
         return result

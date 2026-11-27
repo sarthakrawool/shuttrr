@@ -169,6 +169,7 @@ class ZImagePipeline:
         self.dit_c = W.Component(self.dir / "transformer")
         self.vae_c = W.Component(self.dir / "vae")
         self.stream_stats: dict[str, Any] = {}
+        self.stream_io = "direct"      # "direct": SSD reads straight into reusable MLX buffers; "copy": numpy + copy
         # optional zimage.json in the build: {"dit": {...}, "te": {...}} config overrides (smaller test models)
         import json
         cfg_file = self.dir / "zimage.json"
@@ -280,14 +281,15 @@ class ZImagePipeline:
     def _streamed_main(self, dit, window: int, loras: Optional[dict] = None):
         """The 30-block main stack read from the SSD: two reusable block shells, `window` blocks in memory."""
         import re
-        from shutter.core.stream import BlockStreamer, StreamedStack, group_names_by_block
+        from shutter.core.stream import BlockStreamer, SlotStreamer, StreamedStack, group_names_by_block
         from shutter.families.zimage import lora as L
         from shutter.families.zimage.model import ZImageTransformerBlock
         loras = loras or {}
         index = self.dit_c.tensor_index()
         groups, _ = group_names_by_block(index.names(), pattern=r"^(layers)\.(\d+)\.")
-        streamer = BlockStreamer(index, groups, window=window, readahead=max(1, window - 1), cyclic=True,
-                                 nocache=True)    # 5.7 GB per step, read in a loop: the file cache never helps
+        # 5.7 GB per step, read in a loop: the file cache never helps
+        cls = SlotStreamer if self.stream_io == "direct" else BlockStreamer
+        streamer = cls(index, groups, window=window, readahead=max(1, window - 1), cyclic=True, nocache=True)
         index.set_nocache(True)
         sample = {k: v for k, v in self.dit_c.load(groups[0], nocache=True).items()}
         shells = []

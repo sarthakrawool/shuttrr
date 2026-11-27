@@ -318,6 +318,9 @@ class ZImageAdapter(Adapter):
         keep = _truthy(self._opt("keep_warm", True))
         pipe = ZImagePipeline(self.model_dir, self.model_id, pool=ctx.models if keep else None, report=ctx.report,
                               check_cancelled=ctx.check_cancelled, meter=meter)
+        io = (req.params or {}).get("stream_io") or self._opt("stream_io", None)
+        if io in ("direct", "copy"):          # test switch: "copy" = the 0.3.3 path (numpy read + copy into MLX)
+            pipe.stream_io = io
         seeds = s.seeds
         outputs: list[str] = []
 
@@ -338,7 +341,7 @@ class ZImageAdapter(Adapter):
                   "stages": meter.records, **summ, "size_key": M.size_key(s.height, s.width),
                   "variant": "z-image-turbo", "notes": s.notes}
         if pipe.stream_stats:
-            result["stream"] = pipe.stream_stats
+            result["stream"] = {**pipe.stream_stats, "io": pipe.stream_io}
         if pipe.lora_info:
             result["loras"] = pipe.lora_info
         if pick["stepped_down_from"]:

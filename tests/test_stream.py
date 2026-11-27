@@ -11,7 +11,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
-from mlx.utils import tree_flatten  # noqa: E402
+from mlx.utils import tree_flatten, tree_unflatten  # noqa: E402
 
 from shutter.core.stream import (  # noqa: E402
     BlockStreamer,
@@ -554,4 +554,58 @@ def test_nocache_flag_is_harmless(tmp_path):
         with s.block(2) as t:
             n = groups[2][0]
             assert mx.array_equal(t[n], flat[n]).item()
+    idx.close()
+
+
+# ---------------------------------------------------------------------------
+# SlotStreamer: reads straight into reusable MLX buffers
+# ---------------------------------------------------------------------------
+
+from shutter.core.stream import SlotStreamer  # noqa: E402
+
+
+@pytest.mark.parametrize("dtype", [mx.float32, mx.bfloat16, mx.float16])
+@pytest.mark.parametrize("quantized", [False, True])
+@pytest.mark.parametrize("window", [1, 2, 3])
+def test_slot_streamer_bit_identical(tmp_path, dtype, quantized, window):
+    m = _make_model(dtype, quantized)
+    paths = _save(m, tmp_path, shards=2)
+    idx = SafetensorsIndex(paths)
+    groups, _ = group_names_by_block(idx.names())
+    shell = _make_shell(dtype, quantized)
+    x = _input(dtype)
+    ref = m.embed(x)
+    got = ref
+    for b in m.blocks:
+        ref = b(ref)
+    with SlotStreamer(idx, groups, window=window, readahead=max(1, window - 1)) as s:
+        for _ in range(2):              # second pass reuses slots filled by other blocks
+            y = got
+            for i in range(len(s)):
+                with s.block(i) as t:
+                    shell.update(tree_unflatten([(default_strip_prefix(n), a) for n, a in t.items()]), strict=False)
+                    y = shell(y)
+                    mx.eval(y)
+            assert mx.array_equal(y.view(mx.uint8), ref.view(mx.uint8))
+        st = s.stats()
+    assert st["misses"] == 0 or window == 1
+    idx.close()
+
+
+def test_slot_streamer_window_and_slots(tmp_path):
+    idx, groups, _ = _tiny_store(tmp_path, n=10)
+    rng = np.random.default_rng(1)
+    for window, readahead in [(1, 1), (2, 1), (2, 3), (3, 2)]:
+        counts = []
+        with SlotStreamer(idx, groups, window=window, readahead=readahead,
+                          on_resident=lambda g, b: counts.append(g)) as s:
+            for i in list(range(10)) * 2 + list(rng.integers(0, 10, size=15)):
+                with s.block(int(i)) as t:
+                    for n, a in t.items():          # each view holds exactly that tensor's bytes
+                        assert mx.array_equal(a, idx.to_mlx(n))
+            with s._cond:                           # free + prefetched (+ being read) = every slot
+                busy = len(s._cache) + (s._inflight is not None)
+                assert len(s._free) + len(s._cache) <= window and len(s._free) + busy >= window - 1
+        assert len(s._free) == window              # closed: every slot back
+        assert max(counts) <= window
     idx.close()
