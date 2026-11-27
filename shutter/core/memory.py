@@ -599,7 +599,8 @@ class Watchdog:
     * `grace_s` later it stops the request only if the Mac is still getting worse: pressure is still critical, or
       swap grew by another `swap_soft_bytes / 2` since the relief. Swap that grew once and then holds steady is
       not a reason (macOS does not give swap back quickly).
-    * Swap grown past `swap_hard_bytes` since the start: ACTION_STOP at once.
+    * Swap grown past `swap_hard_bytes` (default 3x `swap_soft_bytes`, 768 MB with the 256 MB default) since the
+      start: ACTION_STOP at once, even if it then holds steady.
     * Calm again (no critical pressure, swap no longer growing): back to normal; a later spike relieves first.
     """
 
@@ -607,7 +608,7 @@ class Watchdog:
                  grace_s: float = 10.0):
         self.swap_soft_bytes = int(swap_soft_bytes)
         self.swap_hard_bytes = int(swap_hard_bytes if swap_hard_bytes is not None
-                                   else self.swap_soft_bytes + 1 * GiB)
+                                   else 3 * self.swap_soft_bytes)
         self.grace_s = float(grace_s)
         self.swap_baseline: Optional[int] = None
         self.relieved_at: Optional[float] = None

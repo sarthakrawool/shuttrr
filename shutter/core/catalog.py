@@ -286,6 +286,10 @@ def preset_for(model_id: str, total_bytes: int) -> dict[str, Any]:
             "This Mac has under 24 GB of memory, so Shuttrr uses Lowest memory and the half-size final decode.",
             "The half-size decode is not bit-identical to the full one (a 46.6 dB match).",
         ]
+    elif entry.get("kind") == "image" and 0 < total_bytes < SMALL_MAC_BYTES:
+        out["notes"] = [f"This Mac has under {SMALL_MAC_BYTES // GB} GB of memory, so in Fast mode pictures use the "
+                        "lowest memory step (the model is read from the SSD as it runs; the same picture, a little "
+                        "slower), which leaves room for your other apps."]
     elif entry["adapter"] == "wan" and _base_chip_big_mac(entry, total_bytes):
         h, w, f, steps = entry["base_chip_defaults"]
         out["options"] = {"default_size": [h, w], "default_frames": f, "default_steps": steps,

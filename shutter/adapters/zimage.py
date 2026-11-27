@@ -38,6 +38,11 @@ from shutter.core import parts as P
 from shutter.types import GB, Job, JobRequest, MemoryEstimate
 
 MAX_COUNT = 8
+#: Macs with less memory than this start Fast mode at the lowest memory step (0.3.0): on a 16 GB Mac with everyday
+#: apps open the higher steps made swap grow even when their estimate fit what macOS called available
+SMALL_MAC_BYTES = 24 * GB
+#: Fast mode picks a step only if its peak plus this margin fits (the app, macOS and other apps keep moving)
+FAST_MARGIN_BYTES = int(1.5 * GB)
 #: build part sizes (bytes on disk) of mflux-community/z-image-turbo-mflux-q8, used when the folder is not here
 DEFAULT_PARTS = {"te_embed": 414_868_480, "te_layer": 112_486_400, "te_layers": 35, "dit": 6_540_000_000,
                  "dit_block": 190_000_000, "dit_blocks": 30, "vae": 98_000_000}
@@ -222,15 +227,43 @@ class ZImageAdapter(Adapter):
         except Exception:
             return 0
 
+    def total_bytes(self, request: JobRequest, ctx: Optional[RunContext] = None) -> int:
+        p = request.params or {}
+        if p.get("total_bytes") is not None:          # tests stand in another Mac
+            return int(p["total_bytes"])
+        try:
+            if ctx is not None:
+                smp = ctx.memory_sample()
+                if isinstance(smp, dict) and smp.get("total"):
+                    return int(smp["total"])
+            from shutter.core.memory import default_probe
+            return int(default_probe().sample().total)
+        except Exception:
+            return 0
+
     def choose_rung(self, request: JobRequest, ctx: Optional[RunContext] = None, s=None) -> dict[str, Any]:
+        """The memory step for this request. Fast mode: on a Mac under SMALL_MAC_BYTES the lowest step; elsewhere
+        the fastest step whose peak plus FAST_MARGIN_BYTES fits the budget, else the lowest. Low memory: the slider's
+        step, stepping further down only if it does not fit. A pinned `rung` is used as is. `fits` (whether it may
+        start now) compares the chosen step's peak with the budget itself, without the margin."""
         choice = M.resolve_mode(request.params, self.mode_defaults(ctx))
         ests = self.rung_estimates(request, s)
         budget = self.budget_for(request, ctx)
         if budget is not None and ctx is not None and (request.params or {}).get("budget_bytes") is None:
             budget += self._own_pool_bytes(ctx)     # our own warm DiT is reused, not free memory to find
-        rid = M.fit_to_budget(ests, budget, choice.rung) if choice.step_down else choice.rung
+        lowest = M.RUNG_IDS[-1]
+        small = 0 < self.total_bytes(request, ctx) < SMALL_MAC_BYTES
+        why = ""
+        if choice.explicit_rung or not choice.step_down:
+            rid = choice.rung
+        elif choice.mode == "fast" and small:
+            rid, why = lowest, "small Mac"
+        elif choice.mode == "fast":
+            rid = M.fit_to_budget(ests, None if budget is None else budget - FAST_MARGIN_BYTES, choice.rung)
+        else:
+            rid = M.fit_to_budget(ests, budget, choice.rung)
         return {"choice": choice, "rung": rid, "estimates": ests, "budget": budget,
-                "stepped_down_from": choice.rung if rid != choice.rung else None,
+                "stepped_down_from": choice.rung if rid != choice.rung else None, "why": why,
                 "fits": budget is None or ests[rid].peak <= budget}
 
     def pool_keys(self, request: JobRequest) -> list[str]:
@@ -271,7 +304,9 @@ class ZImageAdapter(Adapter):
             from shutter.types import MemoryRefused
             raise MemoryRefused(f"{rid} needs ~{pick['estimates'][rid].peak / GB:.1f} GB, budget "
                                 f"{pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
-        if pick["stepped_down_from"]:
+        if pick["why"] == "small Mac":
+            s.notes.append(f"{rid}: Macs under {SMALL_MAC_BYTES // GB} GB use the lowest memory step in Fast mode")
+        elif pick["stepped_down_from"]:
             s.notes.append(f"stepped down from {pick['stepped_down_from']} to {rid} to fit memory")
         meter = Meter()
         keep = _truthy(self._opt("keep_warm", True))

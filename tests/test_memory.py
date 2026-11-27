@@ -355,18 +355,18 @@ def test_watch_swap_that_grew_once_and_holds_does_not_stop():
         assert g.watch_step(now=t)[0] is None
     p.set(swap_used=int(3.4 * GB))                          # a little more later: under the next 1 GB, fine
     assert g.watch_step(now=70.0)[0] is None
-    p.set(swap_used=int(4.2 * GB))                          # 2.2 GB over the start: past the hard limit, stop
+    p.set(swap_used=int(5.2 * GB))                          # 3.2 GB over the start: past the hard limit, stop
     a, why = g.watch_step(now=80.0)
-    assert a == m.ACTION_STOP and "limit 2.0 GB" in why
+    assert a == m.ACTION_STOP and "limit 3.0 GB" in why
 
 
 def test_watch_swap_jump_past_hard_limit_stops_at_once():
     p = FakeProbe(swap_used=0)
     g = MemoryGuard(p, swap_growth_bytes=1 * GB)
     g.begin_run()
-    p.set(swap_used=int(2.5 * GB))
+    p.set(swap_used=int(3.5 * GB))                          # hard limit = 3 x the soft one (0.3.0)
     a, why = g.watch_step(now=1.0)
-    assert a == m.ACTION_STOP and "limit 2.0 GB" in why
+    assert a == m.ACTION_STOP and "limit 3.0 GB" in why
 
 
 def test_watch_relief_that_works_does_not_stop():

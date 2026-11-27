@@ -636,7 +636,7 @@ pub enum WatchAction {
 /// critical memory pressure, or swap grew by more than `swap_soft` ("warn" pressure never acts).
 /// First trouble: Relieve. `grace_s` later: Stop only if pressure is still critical or swap grew by
 /// another `swap_soft / 2` since the relief (swap that grew once and holds steady is fine).
-/// Swap grown past `swap_hard` since the start: Stop at once.
+/// Swap grown past `swap_hard` (3x `swap_soft`: 768 MB with the 256 MB default) since the start: Stop at once.
 #[derive(Debug, Clone)]
 pub struct Watchdog {
     pub swap_soft: u64,
@@ -655,7 +655,7 @@ impl Watchdog {
     pub fn new(swap_soft: u64, grace_s: f64, start: &MemorySample) -> Watchdog {
         Watchdog {
             swap_soft,
-            swap_hard: swap_soft.saturating_add(1 << 30),
+            swap_hard: swap_soft.saturating_mul(3),
             grace_s,
             swap_baseline: start.swap_used,
             relieved_at: None,
@@ -966,8 +966,13 @@ Swapouts:                                     0.
         // a jump past the hard limit stops at once
         let mut w = Watchdog::new(GB, 10.0, &start);
         let mut s = start.clone();
-        s.swap_used = start.swap_used + 3 * GB;
-        assert!(matches!(w.step(&s, 0.0), WatchAction::Stop(r) if r.contains("limit 2.0 GB")));
+        s.swap_used = start.swap_used + 4 * GB;      // hard limit = 3x the soft one (0.3.0)
+        assert!(matches!(w.step(&s, 0.0), WatchAction::Stop(r) if r.contains("limit 3.0 GB")));
+        // 0.3.0 default: 256 MB soft, so a run that grows swap by 1.1 GB and then holds is stopped
+        let mut w = Watchdog::new(256 * 1024 * 1024, 10.0, &start);
+        let mut s = start.clone();
+        s.swap_used = start.swap_used + 1100 * 1024 * 1024;
+        assert!(matches!(w.step(&s, 0.0), WatchAction::Stop(_)));
     }
 
     #[test]

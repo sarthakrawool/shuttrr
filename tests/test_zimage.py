@@ -271,3 +271,60 @@ def test_request_options_for_image(tmp_path, monkeypatch):
 def test_registry_knows_the_family():
     from shutter.core.registry import BUILTIN_FAMILIES
     assert BUILTIN_FAMILIES["z-image"] == "shutter.adapters.zimage:ZImageAdapter"
+
+
+def _req(**params):
+    from shutter.types import JobRequest
+    return JobRequest(model="tiny", prompt="x", width=1024, height=1024, params=params)
+
+
+def test_small_mac_fast_mode_uses_the_lowest_step(tiny):
+    from shutter.adapters.zimage import ZImageAdapter
+    a = ZImageAdapter("tiny", tiny, {})
+    pick = a.choose_rung(_req(mode="fast", total_bytes=16 * GB, budget_bytes=40 * GB))
+    assert pick["rung"] == "stream_tight" and pick["why"] == "small Mac" and pick["fits"]
+    # a pinned step or the Low memory slider is the person's choice and is kept
+    assert a.choose_rung(_req(rung="staged", total_bytes=16 * GB, budget_bytes=40 * GB))["rung"] == "staged"
+    assert a.choose_rung(_req(mode="low_memory", efficiency=0.5, total_bytes=16 * GB,
+                              budget_bytes=40 * GB))["rung"] == "staged"
+
+
+def test_fast_mode_keeps_a_margin_on_big_macs(tiny):
+    from shutter.adapters.zimage import FAST_MARGIN_BYTES, ZImageAdapter
+    a = ZImageAdapter("tiny", tiny, {})
+    ests = a.rung_estimates(_req())
+    wide = ests["stream_wide"].peak
+    # the budget just covers stream_wide: without room for the margin, Fast takes the next step down
+    pick = a.choose_rung(_req(mode="fast", total_bytes=64 * GB, budget_bytes=wide + FAST_MARGIN_BYTES // 2))
+    assert pick["rung"] == "stream_tight" and pick["fits"]
+    from shutter.core import modes as M
+    budget = wide + FAST_MARGIN_BYTES
+    pick = a.choose_rung(_req(mode="fast", total_bytes=64 * GB, budget_bytes=budget))
+    assert pick["rung"] == next(r for r in M.RUNG_IDS if ests[r].peak + FAST_MARGIN_BYTES <= budget)
+    assert ests[pick["rung"]].peak <= wide
+    pick = a.choose_rung(_req(mode="fast", total_bytes=64 * GB, budget_bytes=100 * GB))
+    assert pick["rung"] == "resident"
+    # nothing fits with the margin: the lowest step, and it may still start if it fits without the margin
+    tight = ests["stream_tight"].peak
+    pick = a.choose_rung(_req(mode="fast", total_bytes=64 * GB, budget_bytes=tight + 1))
+    assert pick["rung"] == "stream_tight" and pick["fits"]
+
+
+def test_watchdog_stops_a_request_that_grows_swap():
+    """0.2.14 let a run through that grew swap by 1.1 GB once and then held (16 GB M5, stream_wide at 1024)."""
+    from shutter.core import memory as m
+    from shutter.core.config import Config
+    from shutter.core.memory import FakeProbe, MemoryGuard
+    cfg = Config()
+    assert cfg.swap_growth_bytes == 256 * 1024**2
+    cfg.swap_growth_mb = 1024.0                 # the default 0.2.3 - 0.2.14 wrote into config.json
+    assert cfg.swap_growth_bytes == 256 * 1024**2
+    p = FakeProbe(swap_used=3 * GB)
+    g = MemoryGuard(p, swap_growth_bytes=Config().swap_growth_bytes, grace_s=10)
+    g.begin_run()
+    p.set(swap_used=3 * GB + 300 * 1024**2)
+    a, _ = g.watch_step(now=0)
+    assert a == m.ACTION_RELIEVE
+    p.set(swap_used=int(4.1 * GB))              # +1.1 GB, then holding: stopped at once (over 3 x 256 MB)
+    a, why = g.watch_step(now=1)
+    assert a == m.ACTION_STOP and "swap grew by" in why

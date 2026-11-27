@@ -51,7 +51,9 @@ def _machine_total() -> int:
         return 0
 
 
-LEGACY_SWAP_GROWTH_MB = 256.0
+#: the 0.2.3 - 0.2.14 default, written into config.json by those versions; read as the 0.3.0 default
+LEGACY_SWAP_GROWTH_MB = 1024.0
+SWAP_GROWTH_DEFAULT_MB = 256.0
 
 # Fields whose default is derived from `home` (stored as "" = derive).
 _DERIVED = {
@@ -83,9 +85,11 @@ class Config:
     headroom_gb: Optional[float] = None
     # {model id: {"licence": name, "at": ISO time}}: licences the person accepted before a download (Fish Drama 3)
     accepted_licences: dict = field(default_factory=dict)
-    # The watchdog frees caches when swap grows by this much during a request, and stops the request if swap keeps
-    # growing (another 1 GB) or does not ease within 10 s.
-    swap_growth_mb: float = 1024.0
+    # The watchdog frees caches when swap grows by this much during a request, stops the request if swap keeps
+    # growing (another half of this) within 10 s, and stops it at once when swap has grown 3x this (0.3.0: 256 MB,
+    # so a request that pushes the Mac into swap is stopped at 768 MB; before it was 1 GB / 2 GB and a run that grew
+    # swap by 1.1 GB was let through).
+    swap_growth_mb: float = 256.0
     max_fraction: Optional[float] = None
     memory_poll_s: float = 15.0
     idle_unload_s: float = 900.0
@@ -141,8 +145,8 @@ class Config:
     @property
     def swap_growth_bytes(self) -> int:
         mb = float(self.swap_growth_mb)
-        if mb == LEGACY_SWAP_GROWTH_MB:  # the old default, written into every config.json before 0.2.3
-            mb = 1024.0
+        if mb == LEGACY_SWAP_GROWTH_MB:  # the old default, saved by 0.2.3 - 0.2.14
+            mb = SWAP_GROWTH_DEFAULT_MB
         return int(mb * 1024**2)
 
     @property

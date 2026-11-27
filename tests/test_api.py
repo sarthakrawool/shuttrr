@@ -161,7 +161,7 @@ def test_no_reserve_by_default(tmp_path):
                  watch_interval_s=0, sample_interval_s=0.01)
     s = TestClient(create_app(eng)).get("/v1/system").json()
     assert s["guard"]["headroom_bytes"] == 0 and s["guard"]["headroom_auto"] is True
-    assert s["guard"]["swap_growth_bytes"] == 1 * GB
+    assert s["guard"]["swap_growth_bytes"] == 256 * 1024**2      # 0.3.0: stops at 768 MB of swap growth
     assert eng.guard.check(4 * GB, "a 4 GB job").ok
     assert not eng.guard.check(int(4.1 * GB), "a 4.1 GB job").ok
     # an explicit number still wins

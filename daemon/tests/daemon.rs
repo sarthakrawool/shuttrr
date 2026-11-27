@@ -220,7 +220,7 @@ fn swap_growth_mid_run_kills_worker_and_releases_locks() {
     assert_eq!(
         j["message"],
         "Stopped to protect your Mac: it was running out of memory. Close other apps or pick a smaller size. \
-         (swap grew by 3.0 GB since the request started (limit 2.0 GB))"
+         (swap grew by 3.0 GB since the request started (limit 0.8 GB))"
     );
     assert_eq!(j["result"]["watchdog"]["events"][0]["action"], "stop");
     assert!(j["result"]["log_tail"].is_string());
@@ -517,7 +517,7 @@ fn api_system_models_submit_list_pool() {
         assert!(s["memory"].get(k).is_some(), "{k}");
     }
     assert_eq!(s["guard"]["headroom_bytes"], 0);
-    assert_eq!(s["guard"]["swap_growth_bytes"], GB);
+    assert_eq!(s["guard"]["swap_growth_bytes"], 256 * 1024 * 1024);
     assert_eq!(s["guard"]["protected"], json!([]));
     assert!(s["pool"].get("total_bytes").is_some() && s["pool"]["entries"].is_array());
     for k in ["queued", "running", "waiting_memory", "done", "failed", "cancelled", "paused"] {

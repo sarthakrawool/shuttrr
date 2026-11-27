@@ -34,7 +34,8 @@ and the video that comes out is **identical, bit for bit**. It costs about 5% mo
   right now (free plus memory it can reclaim, nothing held back). If it does not fit at the size you asked for,
   Fast mode picks a lower memory step that does fit and says so. While it runs, MLX is capped at what was free,
   and a watchdog checks memory every second: at the first sign of trouble (critical memory pressure, or swap
-  growing by 1 GB) it frees caches; if that does not help, it stops the request, frees the memory and tells you:
+  growing by 256 MB) it frees caches; if swap keeps growing it stops the request (at once once swap has grown by
+  768 MB), frees the memory and tells you:
   "Stopped to protect your Mac: it was running out of memory. Close other apps or pick a smaller size."
 - **One app, no Terminal.** Download the app, open it, pick a model. It installs its own engine and
   downloads the weights for you.
@@ -174,6 +175,7 @@ turn it on, and it matches the full decode at 46.6 dB.
 | --- | --- | --- | --- |
 | [LongCat-Video-Avatar 1.6, 8-bit low-memory](https://huggingface.co/SarthakRawool/LongCat-Video-Avatar-1.6-MLX-8bit-LowMem) | talking video from image + audio | 37.5 GB | supported |
 | [Wan 2.1 T2V 1.3B, 8-bit low-memory](https://huggingface.co/SarthakRawool/Wan2.1-T2V-1.3B-MLX-8bit-LowMem) | text to video | 7.9 GB (7.3 GiB), one click (`shutter download wan2.1-t2v-1.3b-8bit`) | supported, starter model on 16 GB Macs |
+| [Z-Image Turbo, 8-bit](https://huggingface.co/mflux-community/z-image-turbo-mflux-q8) (Tongyi-MAI, Apache 2.0) | pictures from text, LoRAs | 11.0 GB, one click (`shutter download z-image-turbo-8bit`) | supported; 1024x1024 in about 1 min on a 16 GB M5 |
 | Wan 2.1 family (other 2.1 checkpoints and fine-tunes) | text to video | your own checkpoint, converted to 8-bit low-memory with `shutter convert` | early support |
 
 Shuttrr accepts Wan 2.1 checkpoints in the official, diffusers and ComfyUI layouts, bare fine-tune files, and
