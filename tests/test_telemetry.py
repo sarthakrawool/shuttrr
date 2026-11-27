@@ -45,6 +45,22 @@ def test_off_by_default_and_nothing_is_collected_or_sent(tmp_path):
     assert sink.sent == [] and t.state.get("usage", {}) == {} and not t.state.get("issues")
 
 
+def test_updated_install_without_the_setting_sends_nothing(tmp_path):
+    # a config.json written by an older Shuttrr has no telemetry keys at all: it must load as off and not asked
+    import json
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(json.dumps({"port": 8484, "models": {}}))
+    cfg = Config.load(str(home / "config.json"))
+    assert cfg.telemetry_enabled is False and cfg.telemetry_asked is False
+    sink = Sink()
+    t = T.Telemetry(cfg, engine_version="0.3.3", post=sink)
+    t.record_job("z-image-turbo-8bit", True)
+    t.record_issue("request_failed", "ValueError", "boom")
+    t.engine_started()
+    assert t.send_now(force=True)["sent"] is False and sink.sent == []
+
+
 def test_usage_is_weekly_and_custom_models_are_anonymous(tmp_path):
     now = [1_000_000.0]
     sink = Sink()

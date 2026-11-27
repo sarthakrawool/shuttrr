@@ -98,6 +98,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <false/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
+    <key>SUEnableSystemProfiling</key>
+    <false/>
     <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
     <key>NSAppTransportSecurity</key>

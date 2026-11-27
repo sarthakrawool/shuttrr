@@ -100,6 +100,11 @@ struct SettingsView: View {
                                         .buttonStyle(.kit(.line, small: true))
                                 }
                             }
+                            KVRow(label: "Update checks") {
+                                Text("Not tracking: when \"Check for updates automatically\" is on, Shuttrr asks GitHub every few hours whether a newer version exists. The request carries no data about you or how you use Shuttrr, and you can switch it off above.")
+                                    .foregroundStyle(Theme.Palette.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }

@@ -489,40 +489,19 @@ private struct ModelPage: View {
 private struct ImprovePage: View {
     @EnvironmentObject private var store: EngineStore
     let onContinue: () -> Void
-    @State private var on = false
     @State private var saving = false
 
     var body: some View {
         PageLayout {
-            OnboardTitle(title: "Help The Dev Improve", text: TelemetryCopy.explanation)
-            TelemetryLists(info: store.telemetry)
-                .padding(.top, Theme.Space.s5)
-            HStack(spacing: Theme.Space.s3) {
-                Text(TelemetryCopy.toggle)
-                    .font(Brand.sans(14, weight: 600))
-                    .foregroundStyle(Theme.Palette.ink)
-                Spacer(minLength: Theme.Space.s3)
-                Toggle(TelemetryCopy.toggle, isOn: $on)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .tint(Theme.Palette.violet)
-            }
-            .padding(.horizontal, Theme.Space.s5)
-            .padding(.vertical, Theme.Space.s4)
-            .background(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
-                .fill(Theme.Palette.white.opacity(0.7)))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
-                .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metric.hairline))
-            .padding(.top, Theme.Space.s6)
+            HelpTheDevCard(busy: saving) { yes in save(yes) }
+                .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Sunny.background))
+                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(Sunny.orange.opacity(0.18), lineWidth: 1))
+                .environment(\.colorScheme, .light)
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
         } footer: {
-            Footer {
-                EmptyView()
-            } trailing: {
-                Button("Continue", action: save)
-                    .buttonStyle(.kit(.ink))
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(saving)
-            }
+            EmptyView()
         }
         .onAppear {
             if store.telemetrySupport == .unsupported && OnboardingFlow.startPage != .improve { onContinue() }
@@ -533,7 +512,7 @@ private struct ImprovePage: View {
         }
     }
 
-    private func save() {
+    private func save(_ on: Bool) {
         saving = true
         Task { @MainActor in
             // an engine that is not answering yet gets the choice once it does
