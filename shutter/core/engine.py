@@ -433,6 +433,9 @@ class Engine:
             raise SubmitError("model is required")
         if request.model not in self.registry:
             raise SubmitError(str(UnknownModel(request.model, self.registry.model_ids())))
+        if self.registry.files_missing(request.model):
+            raise SubmitError(f"{model_name(request.model)}'s files are no longer on this Mac (the folder was deleted "
+                              "or its drive is not connected). Download it again from Download a Model.")
         if not isinstance(request.inputs, dict):
             raise SubmitError("inputs must be an object: {\"image\": path, \"audio\": path, ...}")
         resolved = {}
@@ -713,11 +716,15 @@ class Engine:
     def models(self) -> list[dict[str, Any]]:
         """GET /v1/models: the registry rows plus state (not_loaded, loading, waiting_for_memory, loaded), loaded_gb
         and, while a load waits, the guard's sentence (`waiting`)."""
-        rows = self.registry.list()
         entries = self.pool.stats()["entries"]
         with self._lock:
             run = self._copy(self._running) if self._running is not None else None
             run_step = dict(self._step_info.get(run.id) or {}) if run is not None else {}
+        # a model whose files were deleted is not listed (unless it is still loaded or running, so it can be unloaded
+        # or followed); its config entry stays, so a re-download keeps the person's saved defaults
+        rows = [r for r in self.registry.list()
+                if not r.get("missing") or any(self._model_of_key(e["key"]) == r["id"] for e in entries)
+                or (run is not None and run.request.model == r["id"])]
         for row in rows:
             mid = row["id"]
             mine = [e for e in entries if self._model_of_key(e["key"]) == mid]

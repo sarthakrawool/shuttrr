@@ -654,6 +654,10 @@ impl Engine {
                     }
                 }
             }
+            // a model whose folder was deleted (or whose drive is unplugged) is not listed; its config entry stays
+            if !row["installed"].as_bool().unwrap_or(true) {
+                continue;
+            }
             out.push(row);
         }
         json!({"models": out})

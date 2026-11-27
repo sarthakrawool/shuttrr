@@ -158,6 +158,14 @@ final class EngineStore: ObservableObject {
         eventsTask = nil
     }
 
+    /// Re-read the installed models and the catalog now (the Models page opened, or the window came to the front):
+    /// a model whose files were deleted disappears, a re-downloaded one shows up.
+    func rescanModels() {
+        lastModelsFetch = .distantPast
+        lastCatalogFetch = .distantPast
+        refreshNow()
+    }
+
     /// Poll again right away (after an action, or when the engine was just started).
     func refreshNow() {
         failures = 0

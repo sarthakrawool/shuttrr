@@ -115,6 +115,16 @@ class Registry:
     def model_ids(self) -> list[str]:
         return list(self._specs())
 
+    def files_missing(self, model_id: str) -> bool:
+        """True when the model's folder is gone (deleted, or on a drive that is not plugged in). Checked on every
+        call, so a model whose files come back (re-downloaded, drive plugged in) shows up again by itself."""
+        try:
+            spec = self.spec(model_id)
+            cls = self.adapter_class(spec["adapter"])
+        except Exception:
+            return False
+        return bool(getattr(cls, "needs_model_dir", True)) and not os.path.isdir(spec["dir"])
+
     def spec(self, model_id: str) -> dict[str, Any]:
         specs = self._specs()
         if model_id not in specs:
@@ -165,6 +175,8 @@ class Registry:
                 row["kind"] = getattr(cls, "kind", "")
                 needs_dir = getattr(cls, "needs_model_dir", True)
                 row["installed"] = os.path.isdir(spec["dir"]) or not needs_dir
+                # the folder was deleted (or its drive is unplugged): the engine hides the row and refuses requests
+                row["missing"] = not row["installed"]
             except AdapterUnavailable as e:
                 row["error"] = str(e)
             out.append(row)

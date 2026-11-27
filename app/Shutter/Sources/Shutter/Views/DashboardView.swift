@@ -168,6 +168,12 @@ struct DashboardView: View {
         // Opening Requests clears the red failed badge; failures that land while it is open count as seen too.
         .onChange(of: section) { _, s in store.requestsOpen = s == .queue }
         .onAppear { store.requestsOpen = section == .queue }
+        // files deleted (or re-downloaded) while Shuttrr was in the background: re-scan when it comes back, and
+        // whenever the Models page opens
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            store.rescanModels()
+        }
+        .onChange(of: section) { _, s in if s == .models { store.rescanModels() } }
     }
 
     /// Skeleton placeholders while the engine starts (until it first answers, it exits, or 90 s pass).
