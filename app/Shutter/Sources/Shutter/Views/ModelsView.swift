@@ -251,6 +251,11 @@ private struct AvailableRow: View {
                 Circle().fill(Theme.Palette.good).frame(width: 6, height: 6)
                 statusLine(loadedText, color: Theme.Palette.ink2)
             }
+        } else if model.isInUse {
+            HStack(spacing: Theme.Space.s1) {
+                Circle().fill(Theme.Palette.good).frame(width: 6, height: 6)
+                statusLine(model.inUseText, color: Theme.Palette.ink2)
+            }
         } else if model.isLoading {
             statusLine("Loading into memory…", color: Theme.Palette.ink2)
         } else if model.isWaiting {
@@ -286,6 +291,15 @@ private struct AvailableRow: View {
     @ViewBuilder private var primary: some View {
         if !model.installed || !model.supportsLoad {
             EmptyView()
+        } else if model.isInUse {
+            HStack(spacing: Theme.Space.s2) {
+                ProgressView().controlSize(.small)
+                Text("In use")
+                    .font(Theme.Fonts.button)
+                    .foregroundStyle(Theme.Palette.ink2)
+            }
+            .frame(height: Theme.Metric.buttonHeight)
+            .help("A request is running on this model. Load and Unload work again when it is done.")
         } else if model.isLoading {
             HStack(spacing: Theme.Space.s2) {
                 ProgressView().controlSize(.small)

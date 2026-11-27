@@ -358,7 +358,8 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
     var kind: String = ""
     var dir: String = ""
     var installed: Bool = false
-    /// not_loaded, loading, waiting_for_memory, loaded ("" from an engine without load support)
+    /// not_loaded, loading, waiting_for_memory, loaded, in_use (a request runs on it now; 0.3.1)
+    /// ("" from an engine without load support)
     var state: String = ""
     var loadedBytes: Int = 0
     /// The memory guard's sentence while a load waits.
@@ -374,6 +375,14 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
     var loadHint: String = ""
     /// "resident", "streamed" (most of it is read from the SSD during a request) or "mixed"; "" when not loaded.
     var loadedResidency: String = ""
+    /// While a request runs on this model: the memory step it uses and whether most of it streams from the SSD.
+    var inUseRung: String = ""
+    var inUseResidency: String = ""
+
+    struct InUse: Decodable {
+        var rung: String?
+        var residency: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, family, kind, dir, installed, state, waiting, name
@@ -383,6 +392,7 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
         case canLoad = "can_load"
         case loadHint = "load_hint"
         case loadedResidency = "loaded_residency"
+        case inUse = "in_use"
     }
 
     init(from decoder: Decoder) throws {
@@ -401,6 +411,10 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
         canLoad = c.value(.canLoad, true)
         loadHint = c.value(.loadHint, "")
         loadedResidency = c.value(.loadedResidency, "")
+        if let u = try? c.decodeIfPresent(InUse.self, forKey: .inUse) {
+            inUseRung = u.rung ?? ""
+            inUseResidency = u.residency ?? ""
+        }
     }
 
     var supportsLoad: Bool { !state.isEmpty }
@@ -408,6 +422,15 @@ struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
     var isLoaded: Bool { state == "loaded" }
     var isLoading: Bool { state == "loading" }
     var isWaiting: Bool { state == "waiting_for_memory" }
+    var isInUse: Bool { state == "in_use" }
+    /// "In use by a request · streams from SSD" (lowest memory steps) or "In use by a request · in memory".
+    var inUseText: String {
+        switch inUseResidency {
+        case "streamed": return "In use by a request · streams from SSD"
+        case "resident": return "In use by a request · in memory"
+        default: return "In use by a request"
+        }
+    }
     /// A name for people: "dummy" is the built-in test model.
     var displayName: String { !name.isEmpty ? name : (family == "dummy" ? "Test model" : id) }
 }

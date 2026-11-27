@@ -72,6 +72,23 @@ def _mlx_active() -> int:
         except Exception:
             continue
     return 0
+def _mlx_held() -> Optional[int]:
+    """Memory MLX holds in this process (active + cache), or None without MLX."""
+    mx = _mlx()
+    if mx is None:
+        return None
+    total = 0
+    for fn in ("get_active_memory", "get_cache_memory"):
+        f = getattr(mx, fn, None)
+        if not callable(f):
+            return None
+        try:
+            total += int(f())
+        except Exception:
+            return None
+    return total
+
+
 RENDER_BUSY_MESSAGE = "another render is running"
 MAX_MIDRUN_REFUSALS = 3
 
@@ -360,6 +377,7 @@ class Engine:
         self._paused = False
         self._thread: Optional[threading.Thread] = None
         self._running: Optional[Job] = None
+        self._step_info: dict[str, dict[str, Any]] = {}   # job id -> {"rung", "residency"} (adapter's on_step)
         self._cancel = threading.Event()
         self._abort_reason: Optional[str] = None
         self._wait_reasons: dict[str, str] = {}
@@ -697,6 +715,9 @@ class Engine:
         and, while a load waits, the guard's sentence (`waiting`)."""
         rows = self.registry.list()
         entries = self.pool.stats()["entries"]
+        with self._lock:
+            run = self._copy(self._running) if self._running is not None else None
+            run_step = dict(self._step_info.get(run.id) or {}) if run is not None else {}
         for row in rows:
             mid = row["id"]
             mine = [e for e in entries if self._model_of_key(e["key"]) == mid]
@@ -712,10 +733,16 @@ class Engine:
                 row["waiting"] = pending.message
             elif pending is not None:
                 row["state"] = "loading"
+            elif run is not None and run.request.model == mid and not is_load(run.request):
+                row["state"] = "in_use"
             elif mine:
                 row["state"] = "loaded"
             else:
                 row["state"] = "not_loaded"
+            # in_use: a request runs on this model now, with the memory step it uses (residency streamed = most of
+            # the model is read from the SSD during the request); loaded_* still describe what stays afterwards
+            row["in_use"] = ({"request": run.id, "rung": run_step.get("rung"),
+                              "residency": run_step.get("residency")} if row["state"] == "in_use" else None)
             row["load_request"] = pending.id if pending is not None else None
             row["name"] = model_name(mid, row.get("family", ""))
             row["load_error"] = self._load_errors.get(mid) if row["state"] == "not_loaded" else None
@@ -1159,6 +1186,7 @@ class Engine:
         finally:
             with self._lock:
                 self._running = None
+                self._step_info.pop(job.id, None)
             self.dir_locks.release()
             self.gpu_lock.release()
             if self.config.idle_unload_s <= 0:
@@ -1179,7 +1207,7 @@ class Engine:
 
         base = self.guard.begin_run()
         peak = {"used": base.used, "swap": base.swap_used, "avail_min": base.available,
-                "base_used": base.used}
+                "base_used": base.used, "own": 0}
         self._publish("job.started", job, estimate_peak=int(est.peak), model=req.model)
 
         stop_sampler = threading.Event()
@@ -1189,6 +1217,10 @@ class Engine:
             peak["used"] = max(peak["used"], s.used)
             peak["swap"] = max(peak["swap"], s.swap_used)
             peak["avail_min"] = min(peak["avail_min"], s.available)
+            if getattr(adapter, "family", "") != "dummy":
+                v = _mlx_held()
+                if v is not None:
+                    peak["own"] = max(peak["own"], v)
             d = s.to_dict()
             if publish:
                 self.bus.publish(Event("memory.sample", job_id=job.id, data={
@@ -1252,9 +1284,18 @@ class Engine:
             except Exception:
                 pass
 
+        def own_now() -> Optional[int]:
+            if getattr(adapter, "family", "") == "dummy":
+                return None
+            v = _mlx_held()
+            if v is not None:
+                peak["own"] = max(peak["own"], v)
+            return v
+
         def watch_once() -> None:
+            own = own_now()
             with wd["lock"]:
-                action, why = self.guard.watch_step()
+                action, why = self.guard.watch_step(own_bytes=own)
             if action == ACTION_RELIEVE and not wd["relieve"]:
                 wd["relieve"] = True
                 wd["events"].append({"t": round(self.clock() - t_start, 1), "action": "relieve", "why": why})
@@ -1335,6 +1376,7 @@ class Engine:
             settings={"job_id": job.id, "output": req.output, "home": self.config.home,
                       "headroom_bytes": self.guard.headroom_bytes,
                       "sleep": self._sleep},
+            on_step=lambda info: self._step_info.update({job.id: dict(info)}),
         )
         t0 = time.perf_counter()
         outcome = None
@@ -1418,9 +1460,14 @@ class Engine:
         result.setdefault("seconds", round(seconds, 3))
         adapter_peak = result.get("peak_bytes", result.get("peak_memory_bytes"))
         try:
-            result["peak_bytes"] = int(adapter_peak) if adapter_peak is not None else int(peak["used"])
+            # the request's own peak: the adapter's figure, else (a failed or stopped run) the most MLX held
+            # while it ran, else the Mac's growth; never the whole Mac's used memory (0.3.0 showed 12.8 GB)
+            own_peak = peak["own"] if peak["own"] > 0 else max(0, peak["used"] - peak["base_used"])
+            result["peak_bytes"] = int(adapter_peak) if adapter_peak is not None else int(own_peak)
         except (TypeError, ValueError):
-            result["peak_bytes"] = int(peak["used"])
+            result["peak_bytes"] = int(max(0, peak["used"] - peak["base_used"]))
+        if peak["own"] > 0:
+            result["peak_memory_own_bytes"] = int(peak["own"])
         result["peak_memory"] = {"used_bytes": int(peak["used"]),
                                  "delta_bytes": int(peak["used"] - peak["base_used"]),
                                  "available_min": int(peak["avail_min"]),

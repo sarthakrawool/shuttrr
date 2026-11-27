@@ -98,6 +98,9 @@ class Pool:
     def release(self, key):
         self.d.pop(key, None)
 
+    def __contains__(self, key):
+        return key in self.d
+
 
 def _run(d: Path, rung: str, pool=None, **kw) -> list:
     s = Settings(prompt="w1 w2 w3 hello", width=256, height=256, steps=3, seed=5, **kw)
@@ -328,3 +331,75 @@ def test_watchdog_stops_a_request_that_grows_swap():
     p.set(swap_used=int(4.1 * GB))              # +1.1 GB, then holding: stopped at once (over 3 x 256 MB)
     a, why = g.watch_step(now=1)
     assert a == m.ACTION_STOP and "swap grew by" in why
+
+
+def test_nocache_read_equals_the_lazy_read(tiny):
+    from shutter.families.zimage import weights as W
+    c = W.Component(tiny / "text_encoder")
+    names = c.names("layers.0.")
+    lazy, direct = c.load(names), c.load(names, nocache=True)
+    assert set(lazy) == set(direct)
+    for n in names:
+        assert lazy[n].dtype == direct[n].dtype and mx.array_equal(lazy[n], direct[n]).item(), n
+
+
+def test_loaded_shell_is_reused_on_streamed_steps_and_stays(tiny):
+    import numpy as np
+    ref = _run(tiny, "resident", Pool())
+    pool = Pool()
+    pipe = ZImagePipeline(tiny, "tiny", pool=pool)
+    shell = pipe.load_shell()
+    assert list(pool.d) == ["zimage/tiny/shell"]
+    for rung in ("stream_tight", "stream_wide", "staged"):   # staged streams the main stack from the loaded shell
+        out = _run(tiny, rung, pool)
+        assert np.array_equal(out[0], ref[0]), rung
+        assert list(pool.d) == ["zimage/tiny/shell"] and pool.d["zimage/tiny/shell"] is shell, rung
+
+
+def test_streamed_request_without_a_loaded_shell_keeps_nothing(tiny):
+    pool = Pool()
+    _run(tiny, "stream_tight", pool)
+    assert pool.d == {}
+
+
+def test_warm_whole_dit_is_used_on_every_step(tiny):
+    import numpy as np
+    pool = Pool()
+    ref = _run(tiny, "resident", pool)
+    dit = pool.d["zimage/tiny/dit"]
+    for rung in ("staged", "stream_tight"):
+        assert np.array_equal(_run(tiny, rung, pool)[0], ref[0]), rung
+        assert pool.d == {"zimage/tiny/dit": dit}, rung
+
+
+def _ctx(tmp_path, pool, steps=None):
+    from shutter.adapters.base import RunContext
+    return RunContext(models=pool, cache=None, work_dir=tmp_path, report=lambda p, s: None,
+                      check_cancelled=lambda: None, memory_sample=lambda: {},
+                      on_step=(steps.append if steps is not None else (lambda i: None)))
+
+
+def test_load_on_a_small_mac_keeps_the_small_part(tiny, tmp_path):
+    from shutter.adapters.zimage import ZImageAdapter
+    from shutter.types import Job, JobRequest
+    a = ZImageAdapter("tiny", tiny, {})
+    pool = Pool()
+    res = a.warm(Job(request=JobRequest(model="tiny", params={"total_bytes": 16 * GB, "budget_bytes": 8 * GB})),
+                 _ctx(tmp_path, pool))
+    assert res["rung"] == "stream_tight" and res["residency"] == "streamed"
+    assert list(pool.d) == ["zimage/tiny/shell"]
+    pool2 = Pool()
+    res = a.warm(Job(request=JobRequest(model="tiny", params={"total_bytes": 64 * GB, "budget_bytes": 60 * GB})),
+                 _ctx(tmp_path, pool2))
+    assert res["residency"] == "resident" and list(pool2.d) == ["zimage/tiny/dit"]
+
+
+def test_run_reports_the_step_it_uses(tiny, tmp_path):
+    from shutter.adapters.zimage import ZImageAdapter
+    from shutter.types import Job, JobRequest
+    a = ZImageAdapter("tiny", tiny, {})
+    steps = []
+    req = JobRequest(model="tiny", prompt="w1", width=256, height=256, steps=2, seed=3,
+                     output=str(tmp_path / "o.png"), params={"total_bytes": 16 * GB, "budget_bytes": 8 * GB})
+    a.run(Job(request=req), _ctx(tmp_path, Pool(), steps))
+    assert steps == [{"rung": "stream_tight", "residency": "streamed"}]

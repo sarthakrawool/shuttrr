@@ -49,10 +49,16 @@ class Component:
     def names(self, prefix: str = "") -> list[str]:
         return [n for n in self.weight_map if n.startswith(prefix)]
 
-    def load(self, names) -> dict[str, Any]:
+    def load(self, names, nocache: bool = False) -> dict[str, Any]:
         """{name: mx.array} for `names`, read lazily (a fresh map of the shards each call, so nothing outlives the
-        caller's references)."""
+        caller's references). nocache=True reads the bytes now with F_NOCACHE instead, so they do not pass through
+        macOS's file cache: reading the 4 GB prompt encoder in about a second through the cache made macOS push
+        other apps' memory to swap on a busy 16 GB Mac (0.3.0 requests stopped by the swap watchdog at 2 s)."""
         import mlx.core as mx
+        if nocache:
+            from shutter.core.stream import SafetensorsIndex, to_mlx_array
+            with SafetensorsIndex([str(p) for p in self.files], nocache=True) as ix:
+                return {n: to_mlx_array(ix.read(n), ix.entries[n].dtype) for n in names}
         by_file: dict[str, list[str]] = {}
         for n in names:
             by_file.setdefault(self.weight_map[n], []).append(n)

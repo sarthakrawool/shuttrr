@@ -198,14 +198,14 @@ class ZImagePipeline:
         ids, mask, truncated = tok(prompt, pad=pad)
         n_valid = int(mask.sum())
         te = TextEncoder(build_layers=False, **self.te_cfg)
-        W.load_into(te, self.te.load(self.te.names("embed_tokens.")))
+        W.load_into(te, self.te.load(self.te.names("embed_tokens."), nocache=True))
         h, cmask, pos = te.embed(mx.array(ids), mx.array(mask))
         mx.eval(h, cmask, *pos)
         del te
         for i in range(self.te_layers_used):
             self.check()
             layer = EncoderLayer(**self.te_cfg)
-            W.load_into(layer, W.strip(self.te.load(self.te.names(f"layers.{i}.")), f"layers.{i}."))
+            W.load_into(layer, W.strip(self.te.load(self.te.names(f"layers.{i}."), nocache=True), f"layers.{i}."))
             h = layer(h, attention_mask=cmask, position_embeddings=pos)
             mx.eval(h)
             del layer
@@ -225,20 +225,47 @@ class ZImagePipeline:
         from shutter.families.zimage.model import ZImageTransformer
         dit = ZImageTransformer(build_main=build_main, **self.dit_cfg)
         names = [n for n in self.dit_c.weight_map if build_main or W.layer_of(n) is None]
-        W.load_into(dit, self.dit_c.load(names))
+        W.load_into(dit, self.dit_c.load(names, nocache=True))
         mx.eval(dit.parameters())
         return dit
 
+    def _shell_key(self) -> str:
+        return f"zimage/{self.model_id}/shell"
+
+    def shell_bytes(self) -> int:
+        """The DiT without its 30-block main stack: what the streamed steps keep in memory."""
+        return W.part_bytes(self.dit_c, lambda n: W.layer_of(n) is None)
+
+    def load_shell(self):
+        """POST /v1/models/<id>/load on a streamed step: the small always-loaded part of the DiT, kept in the pool
+        (residency streamed) so the next request reuses it; the main stack still streams from the SSD."""
+        return self.pool.get(self._shell_key(), lambda: self._load_dit(build_main=False), self.shell_bytes(),
+                             residency="streamed")
+
     def dit(self, rung: str, loras: Optional[dict] = None):
         """(transformer, main_stack or None, release()) for this memory step, with `loras` (read by
-        lora.load_loras) set on it; none clears any a warm model had from an earlier request."""
+        lora.load_loras) set on it; none clears any a warm model had from an earlier request.
+
+        A whole DiT already in the pool (loaded on purpose, or warm from a resident request) is used on every step:
+        it is the same weights, so the image is the same, and it costs no new memory. On the streamed steps a shell
+        in the pool (loaded on purpose) is reused; a request never adds one, so nothing stays behind after it."""
         from shutter.families.zimage import lora as L
         loras = loras or {}
         r = RUNGS[rung]
-        if r["window"]:
-            dit = self._load_dit(build_main=False)
+        if self.pool is not None and self._dit_key() in self.pool:
+            dit = self.pool.get(self._dit_key(), lambda: self._load_dit(True), self.dit_c.total_bytes())
+            L.apply_resident(dit, loras)
+            return dit, None, (lambda: None)
+        shell_pooled = self.pool is not None and self._shell_key() in self.pool
+        window = r["window"] or (RUNGS["stream_wide"]["window"] if shell_pooled and not r["keep_dit"] else 0)
+        if window:
+            if shell_pooled:
+                dit = self.pool.get(self._shell_key(), lambda: self._load_dit(build_main=False), self.shell_bytes(),
+                                    residency="streamed")
+            else:
+                dit = self._load_dit(build_main=False)
             L.apply_resident(dit, loras, include_main=False)
-            stack = self._streamed_main(dit, r["window"], loras)
+            stack = self._streamed_main(dit, window, loras)
             return dit, stack, (lambda: stack.close())
         size = self.dit_c.total_bytes()
         if self.pool is not None and r["keep_dit"]:
@@ -260,8 +287,9 @@ class ZImagePipeline:
         index = self.dit_c.tensor_index()
         groups, _ = group_names_by_block(index.names(), pattern=r"^(layers)\.(\d+)\.")
         streamer = BlockStreamer(index, groups, window=window, readahead=max(1, window - 1), cyclic=True,
-                                 nocache=False)
-        sample = {k: v for k, v in self.dit_c.load(groups[0]).items()}
+                                 nocache=True)    # 5.7 GB per step, read in a loop: the file cache never helps
+        index.set_nocache(True)
+        sample = {k: v for k, v in self.dit_c.load(groups[0], nocache=True).items()}
         shells = []
         for _ in range(2 if window > 1 else 1):
             c = self.dit_cfg
@@ -297,7 +325,7 @@ class ZImagePipeline:
         import mlx.core as mx
         from shutter.families.zimage.model import VAE
         vae = VAE()
-        W.load_into(vae, self.vae_c.load(self.vae_c.names("decoder.")))
+        W.load_into(vae, self.vae_c.load(self.vae_c.names("decoder."), nocache=True))
         mx.eval(vae.parameters())
         return vae
 
@@ -355,11 +383,10 @@ class ZImagePipeline:
                 latents_out.append(lat)
         finally:
             release()
-        if not RUNGS[rung]["keep_dit"] or self.pool is None:
-            del dit
-            main = None
-            gc.collect()
-            mx.clear_cache()
+        del dit          # a pooled copy stays in the pool; an unpooled one is freed before the decode
+        main = None
+        gc.collect()
+        mx.clear_cache()
         del cap, neg
         self.meter.mark("decode")
         self.report(0.93, "decoding")

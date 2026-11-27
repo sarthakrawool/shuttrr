@@ -684,3 +684,40 @@ def test_gpulock_holder_with_foreign_format(tmp_path):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def test_watch_swap_from_other_apps_does_not_stop_a_small_request():
+    """0.3.0 on the 16 GB MacBook: an image request holding 0.4 GB was stopped 2 s in because swap grew 1 GB
+    (other apps and macOS moving pages). With the request's own memory known, only the growth it can have caused
+    counts toward the stop."""
+    p = FakeProbe(swap_used=int(3.6 * GB))
+    g = MemoryGuard(p, swap_growth_bytes=256 * MiB, grace_s=10)
+    g.begin_run()
+    assert g.watch_step(now=0.0, own_bytes=100 * MiB)[0] is None
+    p.set(swap_used=int(4.6 * GB))                          # +1 GB, but the request grew only 300 MB
+    a, why = g.watch_step(now=2.0, own_bytes=400 * MiB)
+    assert a == m.ACTION_RELIEVE                            # caches are still freed
+    p.set(swap_used=int(4.9 * GB))                          # still growing, not because of us
+    assert g.watch_step(now=13.0, own_bytes=400 * MiB)[0] is None
+    # a request whose own memory climbs while swap climbs is stopped as before
+    p.set(swap_used=int(5.7 * GB))
+    a, why = g.watch_step(now=30.0, own_bytes=int(1.3 * GB))
+    assert a == m.ACTION_STOP and "limit 0.8 GB" in why
+
+
+def test_watch_swap_past_total_limit_stops_whoever_caused_it():
+    p = FakeProbe(swap_used=0)
+    g = MemoryGuard(p, swap_growth_bytes=256 * MiB)
+    g.begin_run()
+    g.watch_step(now=0.0, own_bytes=100 * MiB)
+    p.set(swap_used=int(2.2 * GB))
+    a, why = g.watch_step(now=1.0, own_bytes=100 * MiB)
+    assert a == m.ACTION_STOP and "from any app" in why
+
+
+def test_watch_without_own_memory_is_unchanged():
+    p = FakeProbe(swap_used=0)
+    g = MemoryGuard(p, swap_growth_bytes=256 * MiB)
+    g.begin_run()
+    p.set(swap_used=900 * MiB)
+    assert g.watch_step(now=1.0)[0] == m.ACTION_STOP

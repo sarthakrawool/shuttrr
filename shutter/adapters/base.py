@@ -52,6 +52,8 @@ class RunContext:
     check_cancelled: Callable[[], None]             # raises types.Cancelled
     memory_sample: Callable[[], dict[str, Any]]     # current memory numbers, for logging
     settings: dict[str, Any] = field(default_factory=dict)  # engine-level settings
+    # on_step({"rung", "residency"}): the memory step this request runs on (Models shows it while in use)
+    on_step: Callable[[dict[str, Any]], None] = field(default=lambda info: None)
 
 
 class Adapter(abc.ABC):

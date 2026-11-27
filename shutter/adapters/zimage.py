@@ -19,7 +19,7 @@ Request fields: prompt, negative_prompt (used only with guidance > 1), width / h
 Memory steps (every one gives the same image, bit for bit; see shutter/families/zimage/pipeline.py):
 resident / split keep the DiT warm between requests, staged frees it before the decode, stream_wide / stream_tight
 read the DiT's 30-block main stack from the SSD with 8 / 2 blocks in memory. The prompt encoder always runs one
-layer at a time. Options: default_size [h, w], default_steps, default_guidance, keep_warm (true), cache_limit_gb (1),
+layer at a time. Options: default_size [h, w], default_steps, default_guidance, keep_warm (true), cache_limit_gb (1; 0.25 on Macs under 24 GB),
 default_mode / default_efficiency.
 
 Output: an 8-bit RGB PNG per image.
@@ -43,6 +43,8 @@ MAX_COUNT = 8
 SMALL_MAC_BYTES = 24 * GB
 #: Fast mode picks a step only if its peak plus this margin fits (the app, macOS and other apps keep moving)
 FAST_MARGIN_BYTES = int(1.5 * GB)
+#: MLX buffer cache kept during a request on Macs under SMALL_MAC_BYTES (GB); 1 GB elsewhere
+SMALL_CACHE_GB = 0.25
 #: build part sizes (bytes on disk) of mflux-community/z-image-turbo-mflux-q8, used when the folder is not here
 DEFAULT_PARTS = {"te_embed": 414_868_480, "te_layer": 112_486_400, "te_layers": 35, "dit": 6_540_000_000,
                  "dit_block": 190_000_000, "dit_blocks": 30, "vae": 98_000_000}
@@ -295,7 +297,10 @@ class ZImageAdapter(Adapter):
         work.mkdir(parents=True, exist_ok=True)
         out_path = Path(req.output) if req.output else work / f"{job.id}.png"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        lim = self._opt("cache_limit_gb", 1.0)
+        # MLX keeps freed buffers up to this much for reuse; it counts as this request's memory. Macs under 24 GB
+        # keep 0.25 GB (0.3.1): with other apps open, every extra GB the request holds is pushed out to swap
+        small = 0 < self.total_bytes(req, ctx) < SMALL_MAC_BYTES
+        lim = self._opt("cache_limit_gb", SMALL_CACHE_GB if small else 1.0)
         if lim is not None and hasattr(mx, "set_cache_limit"):
             mx.set_cache_limit(int(float(lim) * GB))
         pick = self.choose_rung(req, ctx, s)
@@ -308,6 +313,7 @@ class ZImageAdapter(Adapter):
             s.notes.append(f"{rid}: Macs under {SMALL_MAC_BYTES // GB} GB use the lowest memory step in Fast mode")
         elif pick["stepped_down_from"]:
             s.notes.append(f"stepped down from {pick['stepped_down_from']} to {rid} to fit memory")
+        _step_used(ctx, rid)
         meter = Meter()
         keep = _truthy(self._opt("keep_warm", True))
         pipe = ZImagePipeline(self.model_dir, self.model_id, pool=ctx.models if keep else None, report=ctx.report,
@@ -341,8 +347,10 @@ class ZImageAdapter(Adapter):
 
     # ---- POST /v1/models/<id>/load
     def warm(self, job: Job, ctx: RunContext) -> dict[str, Any]:
-        """Load the DiT the way the default request would (Fast picks the step). On resident / split it stays in the
-        pool for the next request; on the lower steps nothing is kept between requests, so there is nothing to load."""
+        """Load the DiT the way the default request would (Fast picks the step), through the pool keys a request
+        reuses. resident / split / staged: the whole DiT. stream_wide / stream_tight (Fast on Macs under 24 GB):
+        the small always-loaded part of the DiT; its 30-block main stack still streams from the SSD during a
+        request, so "loaded" there means that small part."""
         from shutter.families.zimage.pipeline import RUNGS, ZImagePipeline
         req = job.request
         s = self.settings_for(req)
@@ -353,13 +361,31 @@ class ZImageAdapter(Adapter):
             from shutter.types import MemoryRefused
             raise MemoryRefused(f"{rid} needs ~{pick['estimates'][rid].peak / GB:.1f} GB, budget "
                                 f"{pick['budget'] / GB:.1f} GB (what macOS can give right now): waiting for memory")
-        if not RUNGS[rid]["keep_dit"]:
-            ctx.report(1.0, "ready")
-            return {"rung": rid, "residency": "streamed" if RUNGS[rid]["window"] else "resident",
-                    "note": "On this memory step the model loads for each request and is freed after it, so there "
-                            "is nothing to keep loaded."}
+        _step_used(ctx, rid)
         ctx.report(0.1, "loading model")
         pipe = ZImagePipeline(self.model_dir, self.model_id, pool=ctx.models, check_cancelled=ctx.check_cancelled)
-        pipe.dit(rid)
+        # staged frees the whole DiT before the decode; keep it loaded only if the resident step fits right now,
+        # otherwise keep the small part (a request then streams the main stack, same image)
+        res = pick["estimates"].get("resident")
+        whole = not RUNGS[rid]["window"] and (rid != "staged" or pick["budget"] is None
+                                              or (res is not None and res.peak <= pick["budget"]))
+        if not whole:
+            pipe.load_shell()
+            ctx.report(1.0, "loaded")
+            return {"rung": rid, "residency": "streamed",
+                    "note": "The small always-loaded part of the image model is in memory; the rest streams from "
+                            "the SSD during a request."}
+        pipe.dit("resident")
         ctx.report(1.0, "loaded")
         return {"rung": rid, "residency": "resident", "note": "The image model is in memory."}
+
+
+def _step_used(ctx: RunContext, rung: str) -> None:
+    """Tell the engine which memory step this request runs on (Models shows it while the model is in use)."""
+    from shutter.families.zimage.pipeline import RUNGS
+    fn = getattr(ctx, "on_step", None)
+    if callable(fn):
+        try:
+            fn({"rung": rung, "residency": "streamed" if RUNGS[rung]["window"] else "resident"})
+        except Exception:
+            pass

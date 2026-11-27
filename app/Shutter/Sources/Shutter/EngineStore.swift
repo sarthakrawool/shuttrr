@@ -191,12 +191,15 @@ final class EngineStore: ObservableObject {
                 lastModelsFetch = .distantPast
             }
             appendHistory(sys.memory)
-            let modelsEvery: Double = models.contains { $0.isLoading || $0.isWaiting } || !modelPending.isEmpty
-                || !loadsStarted.isEmpty ? 1.5 : 30
-            // the In memory section and the model rows come from the same pool: refetch the rows when it changes
+            let modelsEvery: Double = models.contains { $0.isLoading || $0.isWaiting || $0.isInUse }
+                || !modelPending.isEmpty || !loadsStarted.isEmpty ? 1.5 : 30
+            // the In memory section and the model rows come from the same pool: refetch the rows when it changes,
+            // and when a request starts or ends (the row shows "In use" while one runs on it)
             let poolKeys = sys.pool.entries.map(\.key).sorted()
-            let poolChanged = poolKeys != lastPoolKeys
+            let running = runningJob?.id ?? ""
+            let poolChanged = poolKeys != lastPoolKeys || running != lastRunningID
             lastPoolKeys = poolKeys
+            lastRunningID = running
             if poolChanged || Date().timeIntervalSince(lastModelsFetch) > modelsEvery {
                 lastModelsFetch = Date()
                 if let m = try? await api.models() { setModels(m) }
@@ -451,6 +454,7 @@ final class EngineStore: ObservableObject {
     /// Models this app asked to load: a failure reported for them opens the popup.
     private var loadsStarted: Set<String> = []
     private var lastPoolKeys: [String] = []
+    private var lastRunningID = ""
 
     func loadModel(_ id: String, wait: Bool = false) {
         loadFailure = nil

@@ -602,17 +602,28 @@ class Watchdog:
     * Swap grown past `swap_hard_bytes` (default 3x `swap_soft_bytes`, 768 MB with the 256 MB default) since the
       start: ACTION_STOP at once, even if it then holds steady.
     * Calm again (no critical pressure, swap no longer growing): back to normal; a later spike relieves first.
+
+    Whose swap (0.3.1): when the engine passes the request's own memory (`own_bytes`, MLX active + cache), the stop
+    rules count only the swap growth the request can have caused: at most what its own memory grew by since the
+    start. On a busy Mac other apps and macOS move pages to swap on their own; 0.3.0 stopped 2 s old image requests
+    holding 0.4 GB because swap grew 1 GB. Relief (freeing caches) still reacts to any growth, and past
+    `swap_total_bytes` (2 GB by default) of growth from any cause it stops anyway: the Mac is in trouble.
     """
 
     def __init__(self, swap_soft_bytes: int = 1 * GiB, swap_hard_bytes: Optional[int] = None,
-                 grace_s: float = 10.0):
+                 grace_s: float = 10.0, swap_total_bytes: Optional[int] = None):
         self.swap_soft_bytes = int(swap_soft_bytes)
         self.swap_hard_bytes = int(swap_hard_bytes if swap_hard_bytes is not None
                                    else 3 * self.swap_soft_bytes)
+        self.swap_total_bytes = int(swap_total_bytes if swap_total_bytes is not None
+                                    else max(2 * GiB, 2 * self.swap_hard_bytes))
+        self.own_start: Optional[int] = None
+        self.own_max = 0
         self.grace_s = float(grace_s)
         self.swap_baseline: Optional[int] = None
         self.relieved_at: Optional[float] = None
         self.relieved_swap = 0
+        self.relieved_own = 0
         self.calm_swap: Optional[int] = None   # swap level that counts as "not growing" after a relief
         self.stopped: Optional[str] = None
         self.max_pressure = PRESSURE_NORMAL
@@ -625,6 +636,19 @@ class Watchdog:
         self.stopped = None
         self.max_pressure = sample.pressure
         self.max_swap_growth = 0
+        self.own_start = None
+        self.own_max = 0
+
+    def _ours(self, grown: int, own_bytes: Optional[int]) -> int:
+        """The part of `grown` swap this request can have caused: all of it when its own memory is unknown,
+        otherwise at most what its own memory grew by since the first reading."""
+        if own_bytes is None:
+            return grown
+        own = int(own_bytes)
+        if self.own_start is None:
+            self.own_start = own
+        self.own_max = max(self.own_max, own)
+        return min(grown, max(0, self.own_max - self.own_start))
 
     def trouble(self, s: MemorySample) -> Optional[str]:
         base = self.swap_baseline if self.swap_baseline is not None else s.swap_used
@@ -637,20 +661,26 @@ class Watchdog:
             return f"swap grew by {fmt_gb(grown)}"
         return None
 
-    def step(self, s: MemorySample, now: Optional[float] = None) -> tuple[Optional[str], str]:
-        """(None | ACTION_RELIEVE | ACTION_STOP, reason)."""
+    def step(self, s: MemorySample, now: Optional[float] = None,
+             own_bytes: Optional[int] = None) -> tuple[Optional[str], str]:
+        """(None | ACTION_RELIEVE | ACTION_STOP, reason). `own_bytes`: the request's own memory now, if known."""
         now = time.time() if now is None else now
         if self.swap_baseline is None:
             self.start(s)
         grown = s.swap_used - int(self.swap_baseline or 0)
+        ours = self._ours(grown, own_bytes)
         self.max_swap_growth = max(self.max_swap_growth, grown)
         order = {PRESSURE_NORMAL: 0, PRESSURE_WARN: 1, PRESSURE_CRITICAL: 2}
         if order.get(s.pressure, 0) > order.get(self.max_pressure, 0):
             self.max_pressure = s.pressure
         if self.stopped:
             return ACTION_STOP, self.stopped
-        if grown > self.swap_hard_bytes:
+        if ours > self.swap_hard_bytes:
             self.stopped = f"swap grew by {fmt_gb(grown)} since the request started (limit {fmt_gb(self.swap_hard_bytes)})"
+            return ACTION_STOP, self.stopped
+        if grown > self.swap_total_bytes:
+            self.stopped = (f"swap grew by {fmt_gb(grown)} since the request started (limit "
+                            f"{fmt_gb(self.swap_total_bytes)} from any app)")
             return ACTION_STOP, self.stopped
         if self.relieved_at is not None:
             if now - self.relieved_at < self.grace_s:
@@ -659,6 +689,8 @@ class Watchdog:
             if s.pressure == PRESSURE_CRITICAL:
                 worse.append("memory pressure is still critical")
             more = s.swap_used - self.relieved_swap
+            if own_bytes is not None:
+                more = min(more, max(0, self.own_max - self.relieved_own))
             if more > self.swap_soft_bytes // 2:
                 worse.append(f"swap kept growing (another {fmt_gb(more)})")
             if worse:
@@ -673,6 +705,7 @@ class Watchdog:
             return None, ""
         self.relieved_at = now
         self.relieved_swap = int(s.swap_used)
+        self.relieved_own = self.own_max
         return ACTION_RELIEVE, f"{why}; freeing caches"
 
 
@@ -794,14 +827,15 @@ class MemoryGuard:
         self.swap_baseline = None
         self.run_started_at = None
 
-    def watch_step(self, now: Optional[float] = None) -> tuple[Optional[str], str]:
-        """One watchdog reading: (None | "relieve" | "stop", reason)."""
+    def watch_step(self, now: Optional[float] = None,
+                   own_bytes: Optional[int] = None) -> tuple[Optional[str], str]:
+        """One watchdog reading: (None | "relieve" | "stop", reason). `own_bytes`: the request's own memory."""
         s = self._sample()
         if self.swap_baseline is None:  # not inside begin_run/end_run: judge pressure only
             if s.pressure == PRESSURE_CRITICAL:
                 return ACTION_STOP, "macOS reports critical memory pressure"
             return None, ""
-        return self.watchdog.step(s, now)
+        return self.watchdog.step(s, now, own_bytes)
 
     def watch(self) -> Optional[str]:
         """The stop reason (as a plain sentence) when the watchdog says stop, else None."""

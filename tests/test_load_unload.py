@@ -223,3 +223,32 @@ def test_plain_error_never_shows_python_text():
         msg = plain_error(e, "Wan 2.1", loading=True)
         assert msg == "Something inside the engine failed while loading it. Copy Diagnostics has the details."
         assert type(e).__name__ not in plain_error(e)
+
+
+def test_model_shows_in_use_while_a_request_runs(tmp_path, gated):
+    eng = make_engine(tmp_path)
+    try:
+        j = eng.submit(req("gated"))
+        wait_until(lambda: gated.entered.is_set())
+        r = row(eng, "gated")
+        assert r["state"] == "in_use" and r["in_use"]["request"] == j.id
+        assert row(eng)["state"] == "not_loaded" and row(eng)["in_use"] is None
+        gated.gate.set()
+        wait_until(lambda: eng.get(j.id).state == JobState.DONE)
+        assert row(eng, "gated")["state"] in ("loaded", "not_loaded") and row(eng, "gated")["in_use"] is None
+    finally:
+        eng.stop(timeout=5)
+
+
+def test_in_use_carries_the_step_the_adapter_reports(tmp_path, gated):
+    gated.step_hook = lambda job, step, ctx: ctx.on_step({"rung": "stream_tight", "residency": "streamed"})
+    eng = make_engine(tmp_path)
+    try:
+        j = eng.submit(req("gated"))
+        wait_until(lambda: (row(eng, "gated")["in_use"] or {}).get("rung") == "stream_tight")
+        assert row(eng, "gated")["in_use"]["residency"] == "streamed"
+        gated.gate.set()
+        wait_until(lambda: eng.get(j.id).state == JobState.DONE)
+        assert eng._step_info == {}
+    finally:
+        eng.stop(timeout=5)
