@@ -394,6 +394,9 @@ class Engine:
         self._settings = {"mode": mode, "efficiency": eff}
         self.worker_errors: list[str] = []
         self.clients = ClientTracker()
+        from shutter.core.telemetry import Telemetry
+        self.telemetry = Telemetry(self.config, engine_version=version())
+        self.telemetry.app_version_fn = version   # the app updates its engine to its own version
         self._steprate = StepRate(clock=clock)
 
     # ------------------------------------------------------------------ lifecycle
@@ -404,6 +407,11 @@ class Engine:
         self._stopping.clear()
         self._thread = threading.Thread(target=self._worker, name="shutter-gpu-worker", daemon=True)
         self._thread.start()
+        try:
+            self.telemetry.engine_started()
+            self.telemetry.start()
+        except Exception:
+            pass
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stopping.set()
@@ -413,6 +421,11 @@ class Engine:
         if self._thread is not None:
             self._thread.join(timeout)
         self._thread = None
+        try:
+            self.telemetry.stop()
+            self.telemetry.engine_stopped()     # a clean stop: the next start does not report a crash
+        except Exception:
+            pass
 
     def close(self) -> None:
         self.stop()
@@ -1066,7 +1079,24 @@ class Engine:
         data: dict[str, Any] = {}
         if state == JobState.DONE:
             data["result"] = job.result
+        self._telemetry_job(job, state, message)
         self._publish(kind or f"job.{state.value}", job, **data)
+
+    def _telemetry_job(self, job: Job, state: JobState, message: str) -> None:
+        """Count the request and report a failure (only while Help The Dev Improve is on; never raises)."""
+        try:
+            tel = self.telemetry
+            if not tel.enabled or is_load(job.request) or state not in (JobState.DONE, JobState.FAILED):
+                return
+            tel.record_job(job.request.model, state == JobState.DONE)
+            if state == JobState.FAILED:
+                res = job.result or {}
+                detail = str(res.get("error_detail") or "")
+                etype = detail.split(":", 1)[0] if ":" in detail[:80] else ""
+                tel.record_issue("request_failed", etype, message or detail, str(res.get("traceback") or ""),
+                                 model_id=job.request.model)
+        except Exception:
+            pass
 
     def _idle_maintenance(self, force: bool = False) -> None:
         now = self.clock()

@@ -75,6 +75,11 @@ struct DashboardView: View {
                 LicenceSheet(model: m).environmentObject(store)
             }
             .background(Theme.Palette.sidebarVeil)
+            // Help The Dev Improve, asked once of people who set up Shuttrr before it existed (own view: one sheet each)
+            .background(EmptyView().sheet(isPresented: Binding(get: { askTelemetry },
+                                                               set: { if !$0 && askTelemetry { store.closeTelemetryAsk(nil) } })) {
+                TelemetryAskSheet().environmentObject(store)
+            })
 
             Hairline(vertical: true).ignoresSafeArea()
 
@@ -174,6 +179,21 @@ struct DashboardView: View {
             store.rescanModels()
         }
         .onChange(of: section) { _, s in if s == .models { store.rescanModels() } }
+    }
+
+    /// The one-time Help The Dev Improve question: only after set-up, never while the first-run window is open,
+    /// and only when the engine has the endpoint. Testing: SHUTTER_TEST_TELEMETRY_ASK=1 shows it on any engine
+    /// that has the endpoint, even when already asked.
+    private var askTelemetry: Bool {
+        guard !starting, !quit.asking, !showingNewJob, store.loadFailure == nil else { return false }
+        let onboardingOpen = NSApp.windows.contains {
+            $0.isVisible && ($0.identifier?.rawValue ?? "").hasPrefix(OnboardingFlow.windowID)
+        }
+        if onboardingOpen { return false }
+        if ProcessInfo.processInfo.environment["SHUTTER_TEST_TELEMETRY_ASK"] != nil {
+            return store.telemetrySupport == .supported && !store.telemetryAskClosed
+        }
+        return store.shouldAskTelemetry
     }
 
     /// Skeleton placeholders while the engine starts (until it first answers, it exits, or 90 s pass).

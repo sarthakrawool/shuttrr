@@ -11,6 +11,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import re
 import os
 import time
 from pathlib import Path
@@ -305,6 +306,49 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         except (OSError, ValueError) as e:
             return _err(500, f"could not save the settings: {e}")
 
+    async def get_telemetry(request: Request) -> Response:
+        return JSONResponse(await asyncio.to_thread(engine.telemetry.status))
+
+    async def post_telemetry(request: Request) -> Response:
+        """{"enabled": bool} turns Help The Dev Improve on or off (and marks it asked); {"asked": true} only marks
+        the question as seen. {"send_now": true} sends what is collected now (tests and "Send Now")."""
+        body = await request.body()
+        try:
+            data = json.loads(body) if body.strip() else {}
+        except (ValueError, UnicodeDecodeError):
+            return _err(400, "body must be JSON")
+        if not isinstance(data, dict):
+            return _err(400, 'body must be a JSON object: {"enabled"?, "asked"?}')
+        enabled = data.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            return _err(400, "enabled must be true or false")
+        try:
+            out = await asyncio.to_thread(engine.telemetry.set, enabled, bool(data.get("asked")))
+        except (OSError, ValueError) as e:
+            return _err(500, f"could not save the setting: {e}")
+        if data.get("send_now"):
+            out = dict(out, send=await asyncio.to_thread(engine.telemetry.send_now, True))
+            out.update(last_payload=engine.telemetry.status()["last_payload"],
+                       last_sent_at=engine.telemetry.status()["last_sent_at"])
+        return JSONResponse(out)
+
+    async def post_app_crash(request: Request) -> Response:
+        """The app reports its own crash (already scrubbed; scrubbed again here). Kept only while it is on."""
+        body = await request.body()
+        try:
+            data = json.loads(body) if body.strip() else {}
+        except (ValueError, UnicodeDecodeError):
+            return _err(400, "body must be JSON")
+        if not isinstance(data, dict):
+            return _err(400, "body must be a JSON object")
+        frames = data.get("frames") if isinstance(data.get("frames"), list) else []
+        queued = await asyncio.to_thread(
+            engine.telemetry.record_issue, "app_crash", str(data.get("exception") or "")[:120],
+            str(data.get("signal") or "")[:120], "\n".join(str(f)[:200] for f in frames[:16]),
+            "", {"app_version": str(data.get("app_version") or "")[:20], "macos_reported": str(data.get("macos") or "")[:20],
+                  "build_uuid": re.sub(r"[^0-9A-Fa-f-]", "", str(data.get("build_uuid") or ""))[:36]})
+        return JSONResponse({"queued": bool(queued)})
+
     async def release(request: Request) -> Response:
         key = None
         body = await request.body()
@@ -517,6 +561,9 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         Route("/v1/catalog/{model_id}/download", stop_download, methods=["DELETE"]),
         Route("/v1/settings", get_settings, methods=["GET"]),
         Route("/v1/settings", post_settings, methods=["POST"]),
+        Route("/v1/telemetry", get_telemetry, methods=["GET"]),
+        Route("/v1/telemetry", post_telemetry, methods=["POST"]),
+        Route("/v1/telemetry/app-crash", post_app_crash, methods=["POST"]),
         Route("/v1/jobs", list_jobs, methods=["GET"]),
         Route("/v1/jobs", submit, methods=["POST"]),
         Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),

@@ -197,6 +197,8 @@ final class EngineStore: ObservableObject {
                 connection = .connected
                 everConnected = true
                 lastModelsFetch = .distantPast
+                lastTelemetryFetch = .distantPast       // it may be another engine now: ask again
+                telemetrySupport = .unknown
             }
             appendHistory(sys.memory)
             let modelsEvery: Double = models.contains { $0.isLoading || $0.isWaiting || $0.isInUse }
@@ -230,6 +232,11 @@ final class EngineStore: ObservableObject {
             if Date().timeIntervalSince(lastClientsFetch) > 6 {
                 lastClientsFetch = Date()
                 clients = (try? await api.clients()) ?? []
+            }
+            if telemetrySupport != .unsupported,
+               Date().timeIntervalSince(lastTelemetryFetch) > (telemetry == nil ? 15 : 300) {
+                lastTelemetryFetch = Date()
+                await fetchTelemetry(api)
             }
             startEventsIfNeeded()
             return cancelling.isEmpty ? 2 : 0.3
@@ -584,6 +591,93 @@ final class EngineStore: ObservableObject {
             catalogPending.remove(id)
             lastCatalogFetch = Date()
             refreshNow()
+        }
+    }
+
+    // MARK: Help The Dev Improve (opt-in, anonymous usage and crash reports; the engine sends them)
+
+    enum TelemetrySupport: Sendable { case unknown, supported, unsupported }
+
+    /// Nil until the engine answers GET /v1/telemetry, and on engines without it (the feature then stays hidden).
+    @Published private(set) var telemetry: TelemetryInfo?
+    @Published private(set) var telemetrySupport: TelemetrySupport = .unknown
+    @Published private(set) var telemetryBusy = false
+    private var lastTelemetryFetch = Date.distantPast
+    /// The one-time question was answered or closed in this session (it never comes back, even if saving failed).
+    @Published private(set) var telemetryAskClosed = false
+    /// A choice made during set-up while the engine was not answering yet: "on" or "off", sent when it answers.
+    static let telemetryPendingKey = "telemetryPendingChoice"
+
+    /// The one-time question for people who already finished set-up before this feature existed.
+    var shouldAskTelemetry: Bool {
+        telemetrySupport == .supported && telemetry?.asked == false && !telemetryAskClosed
+            && UserDefaults.standard.bool(forKey: SetupRunner.onboardingDoneKey)
+            && UserDefaults.standard.string(forKey: Self.telemetryPendingKey) == nil
+    }
+
+    nonisolated static func isUnsupported(_ error: Error) -> Bool {
+        if case APIError.http(let code, _) = error { return [404, 405, 501].contains(code) }
+        return false
+    }
+
+    func refreshTelemetry() {
+        Task { await fetchTelemetry(APIClient.current()) }
+    }
+
+    private func fetchTelemetry(_ api: APIClient) async {
+        do {
+            var t = try await api.telemetry()
+            telemetrySupport = .supported
+            if let pending = UserDefaults.standard.string(forKey: Self.telemetryPendingKey) {
+                if !t.asked, let sent = try? await api.setTelemetry(enabled: pending == "on") { t = sent }
+                UserDefaults.standard.removeObject(forKey: Self.telemetryPendingKey)
+            }
+            telemetry = t
+        } catch {
+            if Self.isUnsupported(error) {
+                telemetrySupport = .unsupported
+                telemetry = nil
+            }
+        }
+    }
+
+    /// Switch "Help The Dev Improve" on or off. `keepIfUnreachable` (set-up): when the engine does not answer yet,
+    /// the choice is kept and sent once it does. Returns false when it could not be saved.
+    @discardableResult
+    func setTelemetry(_ on: Bool, keepIfUnreachable: Bool = false) async -> Bool {
+        telemetryBusy = true
+        defer { telemetryBusy = false }
+        if var t = telemetry { t.enabled = on; t.asked = true; telemetry = t }
+        do {
+            telemetry = try await APIClient.current().setTelemetry(enabled: on)
+            telemetrySupport = .supported
+            UserDefaults.standard.removeObject(forKey: Self.telemetryPendingKey)
+            return true
+        } catch {
+            if Self.isUnsupported(error) {
+                telemetrySupport = .unsupported
+                telemetry = nil
+                UserDefaults.standard.removeObject(forKey: Self.telemetryPendingKey)
+            } else if keepIfUnreachable {
+                UserDefaults.standard.set(on ? "on" : "off", forKey: Self.telemetryPendingKey)
+            } else {
+                lastError = error.localizedDescription
+                lastTelemetryFetch = .distantPast         // read the engine's value again
+                refreshNow()
+            }
+            return false
+        }
+    }
+
+    /// The one-time question was answered (`on` given) or closed (`on` nil): it never shows again.
+    func closeTelemetryAsk(_ on: Bool?) {
+        telemetryAskClosed = true
+        Task {
+            if let on {
+                await setTelemetry(on)
+            } else if let t = try? await APIClient.current().markTelemetryAsked() {
+                telemetry = t
+            }
         }
     }
 

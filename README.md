@@ -212,7 +212,15 @@ To expose it on your network, set an `api_key` in `~/.shutter/config.json`. Clie
 ## Privacy
 
 Everything runs on your Mac. Shuttrr only goes online to download models from Hugging Face and, at launch
-and once a day, to check GitHub for a new version and download it (turn it off in Settings). No analytics.
+and once a day, to check GitHub for a new version and download it (turn it off in Settings).
+
+**Help The Dev Improve** is off unless you turn it on (in set-up, or in Settings > Privacy). When it is on,
+Shuttrr sends, anonymously: which models you use (requests and finished requests per model, at most once a
+week), and crashes or failed requests (error type, short message and where in Shuttrr's code it happened, with
+file names, folder names and your user name removed), plus the Shuttrr and macOS version, chip family and
+memory size. It never sends prompts, pictures, videos, audio, file or folder names, your Mac's name or serial,
+or any ID: reports cannot be linked to each other or to you, and the receiving end does not store IP addresses.
+Settings > Privacy > See What's Sent shows the last report exactly. Details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Uninstall
 

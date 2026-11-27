@@ -241,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         store.start()
+        AppCrashReporter.scheduleLaunchCheck()   // only sends while Help The Dev Improve is on; silent, after a few s
         UpdateChecker.shared.start()      // Sparkle: checks now and daily, only when "Check for updates" is on
         let needsOnboarding = SetupRunner.needsOnboarding
             || ProcessInfo.processInfo.environment["SHUTTER_ONBOARDING_PAGE"] != nil

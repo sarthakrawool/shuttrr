@@ -181,6 +181,28 @@ struct APIClient: Sendable {
         try await send("DELETE", "/v1/models/\(escape(model))/defaults")
     }
 
+    // MARK: Help The Dev Improve (opt-in, anonymous). Older engines and the Rust daemon answer 404/501.
+
+    /// GET /v1/telemetry.
+    func telemetry() async throws -> TelemetryInfo {
+        try TelemetryInfo.decode(try await raw("GET", "/v1/telemetry"))
+    }
+
+    /// POST /v1/telemetry {"enabled": x}; also marks the question as asked.
+    func setTelemetry(enabled: Bool) async throws -> TelemetryInfo {
+        try TelemetryInfo.decode(try await raw("POST", "/v1/telemetry", body: Data("{\"enabled\": \(enabled)}".utf8)))
+    }
+
+    /// POST /v1/telemetry {"asked": true}: the one-time question was closed without changing the setting.
+    func markTelemetryAsked() async throws -> TelemetryInfo {
+        try TelemetryInfo.decode(try await raw("POST", "/v1/telemetry", body: Data("{\"asked\": true}".utf8)))
+    }
+
+    /// POST /v1/telemetry/app-crash: an already scrubbed crash report of the app. The engine sends it only when on.
+    func sendAppCrash(_ report: AppCrashReport) async throws {
+        _ = try await raw("POST", "/v1/telemetry/app-crash", body: try JSONEncoder().encode(report))
+    }
+
     func eventsURL() throws -> URL { try url("/v1/events") }
 
     // MARK: Plumbing
@@ -230,6 +252,23 @@ struct APIClient: Sendable {
         } catch {
             throw APIError.badResponse
         }
+    }
+
+    /// Like `send`, but returns the body as it came.
+    private func raw(_ method: String, _ path: String, body: Data? = nil) async throws -> Data {
+        var req = URLRequest(url: try url(path))
+        req.httpMethod = method
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let (data, response) = try await Self.session.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.http(http.statusCode, Self.errorMessage(data))
+        }
+        return data
     }
 
     /// Pulls a readable message out of {"detail": ...} / {"error": ...} bodies.

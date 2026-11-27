@@ -5,16 +5,17 @@ import SwiftUI
 /// reopen the window at the start.
 @MainActor
 final class OnboardingFlow: ObservableObject {
-    enum Page: Int, CaseIterable, Sendable { case welcome, setup, model, ready }
+    enum Page: Int, CaseIterable, Sendable { case welcome, setup, model, improve, ready }
     static let windowID = "onboarding"
 
     nonisolated static let startPage: Page? = {
-        let names: [String: Page] = ["welcome": .welcome, "setup": .setup, "model": .model, "ready": .ready]
+        let names: [String: Page] = ["welcome": .welcome, "setup": .setup, "model": .model, "improve": .improve,
+                                      "ready": .ready]
         return names[ProcessInfo.processInfo.environment["SHUTTER_ONBOARDING_PAGE"] ?? ""]
     }()
 
     @Published var page: Page = OnboardingFlow.startPage ?? .welcome
-    /// Testing: SHUTTER_ONBOARDING_PAGE=welcome|setup|model|ready opens the window on that page
+    /// Testing: SHUTTER_ONBOARDING_PAGE=welcome|setup|model|improve|ready opens the window on that page
     /// (setup also starts the installer), so every page can be checked without clicking through.
     let autoRunSetup: Bool
 
@@ -25,7 +26,7 @@ final class OnboardingFlow: ObservableObject {
     func reset() { page = .welcome }
 }
 
-/// The first-run window: Welcome → Setting up → Choose a model → Ready. One primary button per page.
+/// The first-run window: Welcome → Setting up → Choose a model → Help The Dev Improve → Ready. One primary button per page.
 struct OnboardingView: View {
     @EnvironmentObject private var store: EngineStore
     @EnvironmentObject private var engine: EngineProcess
@@ -56,7 +57,8 @@ struct OnboardingView: View {
                 switch flow.page {
                 case .welcome: WelcomePage(onSetUp: startSetup, onSkip: { go(.model) })
                 case .setup: SetupPage(onRetry: startSetup)
-                case .model: ModelPage(onContinue: { go(.ready) })
+                case .model: ModelPage(onContinue: { go(.improve) })
+                case .improve: ImprovePage(onContinue: { go(.ready) })
                 case .ready: ReadyPage(onClose: close, onOpen: openDashboard)
                 }
             }
@@ -478,6 +480,66 @@ private struct ModelPage: View {
             Text(text)
                 .font(Theme.Fonts.row)
                 .foregroundStyle(Theme.Palette.ink2)
+        }
+    }
+}
+
+/// Help The Dev Improve: asks once whether anonymous usage and crash reports may be sent. Off by default.
+/// On an engine without /v1/telemetry (the Rust daemon, older engines) the page is skipped.
+private struct ImprovePage: View {
+    @EnvironmentObject private var store: EngineStore
+    let onContinue: () -> Void
+    @State private var on = false
+    @State private var saving = false
+
+    var body: some View {
+        PageLayout {
+            OnboardTitle(title: "Help The Dev Improve", text: TelemetryCopy.explanation)
+            TelemetryLists(info: store.telemetry)
+                .padding(.top, Theme.Space.s5)
+            HStack(spacing: Theme.Space.s3) {
+                Text(TelemetryCopy.toggle)
+                    .font(Brand.sans(14, weight: 600))
+                    .foregroundStyle(Theme.Palette.ink)
+                Spacer(minLength: Theme.Space.s3)
+                Toggle(TelemetryCopy.toggle, isOn: $on)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(Theme.Palette.violet)
+            }
+            .padding(.horizontal, Theme.Space.s5)
+            .padding(.vertical, Theme.Space.s4)
+            .background(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
+                .fill(Theme.Palette.white.opacity(0.7)))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous)
+                .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metric.hairline))
+            .padding(.top, Theme.Space.s6)
+        } footer: {
+            Footer {
+                EmptyView()
+            } trailing: {
+                Button("Continue", action: save)
+                    .buttonStyle(.kit(.ink))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saving)
+            }
+        }
+        .onAppear {
+            if store.telemetrySupport == .unsupported && OnboardingFlow.startPage != .improve { onContinue() }
+            store.refreshTelemetry()
+        }
+        .onChange(of: store.telemetrySupport) { _, support in
+            if support == .unsupported && OnboardingFlow.startPage != .improve { onContinue() }
+        }
+    }
+
+    private func save() {
+        saving = true
+        Task { @MainActor in
+            // an engine that is not answering yet gets the choice once it does
+            await store.setTelemetry(on, keepIfUnreachable: true)
+            saving = false
+            onContinue()
         }
     }
 }

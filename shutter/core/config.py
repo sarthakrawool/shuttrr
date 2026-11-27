@@ -85,6 +85,10 @@ class Config:
     headroom_gb: Optional[float] = None
     # {model id: {"licence": name, "at": ISO time}}: licences the person accepted before a download (Fish Drama 3)
     accepted_licences: dict = field(default_factory=dict)
+    # "Help The Dev Improve" (0.3.3): anonymous usage + crash reports, off until the person turns them on
+    # (shutter/core/telemetry.py); asked = the person has seen the question (first-run window or after an update)
+    telemetry_enabled: bool = False
+    telemetry_asked: bool = False
     # The watchdog frees caches when swap grows by this much during a request, stops the request if swap keeps
     # growing (another half of this) within 10 s, and stops it at once when swap has grown 3x this (0.3.0: 256 MB,
     # so a request that pushes the Mac into swap is stopped at 768 MB; before it was 1 GB / 2 GB and a run that grew

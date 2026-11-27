@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var keepModels = true
     @State private var uninstalling = false
     @State private var uninstallResult: (ok: Bool, message: String)?
+    @State private var showTelemetry = false
 
     var body: some View {
         ScrollView {
@@ -62,6 +63,37 @@ struct SettingsView: View {
                     UpdateAvailableRow()
                 }
 
+                if let t = store.telemetry {
+                    section("Privacy") {
+                        KVGroup {
+                            KVRow(label: "Help The Dev Improve", first: true) {
+                                HStack {
+                                    Text("Send anonymous usage and crash reports: which model you use the most, and what went wrong when something crashes. Never your prompts, files or name.")
+                                        .foregroundStyle(Theme.Palette.ink2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: Theme.Space.s3)
+                                    Toggle("", isOn: Binding(get: { t.enabled },
+                                                             set: { on in Task { await store.setTelemetry(on) } }))
+                                        .labelsHidden()
+                                        .toggleStyle(.switch)
+                                        .tint(Theme.Palette.violet)
+                                        .disabled(store.telemetryBusy)
+                                }
+                            }
+                            KVRow(label: "What is sent") {
+                                HStack {
+                                    Text(t.lastSentAt.map { "Last sent \(TelemetryDetailsSheet.relative($0))." }
+                                         ?? "Nothing has been sent yet.")
+                                        .foregroundStyle(Theme.Palette.ink2)
+                                    Spacer(minLength: Theme.Space.s3)
+                                    Button("See What's Sent") { showTelemetry = true }
+                                        .buttonStyle(.kit(.line, small: true))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 section("Keyboard") {
                     KVGroup {
                         KVRow(label: "New request", first: true) { keys(["⌘", "N"]) }
@@ -96,6 +128,9 @@ struct SettingsView: View {
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
         .sheet(isPresented: $showUninstall) { uninstallSheet }
+        .background(EmptyView().sheet(isPresented: $showTelemetry) {
+            TelemetryDetailsSheet().environmentObject(store)
+        })
     }
 
     @ViewBuilder private var uninstallSheet: some View {
