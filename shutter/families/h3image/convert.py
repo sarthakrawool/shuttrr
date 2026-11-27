@@ -409,6 +409,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     import mlx.core as mx
     mx.set_default_device(mx.cpu)            # conversion never touches the GPU
+    mx.set_cache_limit(64 * 1024**2)         # freed buffers go back to macOS (16 GB Macs: no swap from this)
     build(a.dit, a.te, a.vae, a.tokenizer, Path(a.out), a.dit_bits, a.te_bits,
           [p.strip() for p in a.parts.split(",") if p.strip()])
     return 0
