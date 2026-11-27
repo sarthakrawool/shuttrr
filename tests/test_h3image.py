@@ -260,3 +260,12 @@ def test_registry_and_request_options(tmp_path):
     cfg.models = {"minimax-h3-image": {"adapter": "h3-image", "dir": str(tmp_path / "h3"), "options": {}}}
     o = R.request_options(cfg, "minimax-h3-image", total_bytes=16 * GB)
     assert o["kind"] == "image" and o["lora"] is False and o["fixed_steps"] == 6 and o["defaults"]["steps"] == 6
+
+
+def test_vae_tiles_cover_the_image_with_overlap():
+    V = Mo.VAE
+    assert V.tile_starts(10) == ([0], 10)
+    for n in (17, 32, 40, 64, 128):
+        st, t = V.tile_starts(n)
+        assert st[0] == 0 and st[-1] + t == n and t == 16
+        assert all(b - a <= t - V.MIN_OVERLAP for a, b in zip(st, st[1:]))

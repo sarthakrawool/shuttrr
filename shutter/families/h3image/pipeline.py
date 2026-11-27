@@ -358,7 +358,7 @@ class H3ImagePipeline:
         images = []
         for i, (seed, lat) in enumerate(zip(seeds, latents_out)):
             self.check()
-            img = vae.decode(lat)
+            img = vae.decode(lat, check=self.check)
             img = (np.array(img) * 255).round().astype(np.uint8)
             images.append(img)
             if on_image:

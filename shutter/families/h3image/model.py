@@ -435,10 +435,52 @@ class VAE(nn.Module):
         self.post_quant_conv = nn.Linear(24, 24, bias=True)    # a 1x1 conv, stored [24, 24, 1, 1] -> [24, 24]
         self.decoder = VAEDecoder(dim=dim, layers=layers)
 
-    def decode(self, latents: mx.array) -> mx.array:
-        """Diffusion latents (24, H, W) -> uint8-ready float pixels (H*16, W*16, 3) in [0, 1]."""
+    #: the decoder was trained on 256 px tiles: rotary positions are normalized over a tile's own 16x16 latent grid,
+    #: and diffusers decodes in such tiles with >= 64 px overlap blended linearly (vae_tile_size 256,
+    #: vae_tile_overlap_min 64). Decoding a bigger grid at once leaves 16 px seams.
+    TILE, MIN_OVERLAP = 16, 4
+
+    @staticmethod
+    def tile_starts(n: int, tile: int = 16, min_overlap: int = 4) -> tuple[list[int], int]:
+        if n <= tile:
+            return [0], n
+        k = math.ceil((n - min_overlap) / (tile - min_overlap))
+        return [round(i * (n - tile) / (k - 1)) for i in range(k)], tile
+
+    @staticmethod
+    def _ramp(n: int, lo: int, hi: int):
+        import numpy as np
+        w = np.ones(n, np.float32)
+        if lo > 0:
+            w[:lo] = (np.arange(lo) + 0.5) / lo
+        if hi > 0:
+            w[n - hi:] = np.minimum(w[n - hi:], (np.arange(hi)[::-1] + 0.5) / hi)
+        return w
+
+    def decode(self, latents: mx.array, check=None) -> mx.array:
+        """Diffusion latents (24, H, W) -> float pixels (H*16, W*16, 3) in [0, 1], decoded in 16x16-latent tiles
+        blended over their overlaps (one tile at a time in memory)."""
+        import numpy as np
         mean = mx.array(LATENTS_MEAN, dtype=mx.float32)[:, None, None]
         std = mx.array(LATENTS_STD, dtype=mx.float32)[:, None, None]
         z = (latents.astype(mx.float32) * std + mean).transpose(1, 2, 0)          # (H, W, 24)
         z = lin(self.post_quant_conv, z).astype(mx.float32)
-        return self.decoder(z)
+        mx.eval(z)
+        H, W, _ = z.shape
+        ys, th = self.tile_starts(H, self.TILE, self.MIN_OVERLAP)
+        xs, tw = self.tile_starts(W, self.TILE, self.MIN_OVERLAP)
+        out = np.zeros((H * 16, W * 16, 3), np.float32)
+        wsum = np.zeros((H * 16, W * 16, 1), np.float32)
+        for i, y in enumerate(ys):
+            lo_y = (ys[i - 1] + th - y) * 16 if i > 0 else 0
+            hi_y = (y + th - ys[i + 1]) * 16 if i + 1 < len(ys) else 0
+            for j, x in enumerate(xs):
+                if check is not None:
+                    check()
+                lo_x = (xs[j - 1] + tw - x) * 16 if j > 0 else 0
+                hi_x = (x + tw - xs[j + 1]) * 16 if j + 1 < len(xs) else 0
+                img = np.array(self.decoder(z[y:y + th, x:x + tw]))
+                wt = self._ramp(th * 16, lo_y, hi_y)[:, None, None] * self._ramp(tw * 16, lo_x, hi_x)[None, :, None]
+                out[y * 16:(y + th) * 16, x * 16:(x + tw) * 16] += img * wt
+                wsum[y * 16:(y + th) * 16, x * 16:(x + tw) * 16] += wt
+        return mx.array(np.clip(out / wsum, 0.0, 1.0))
