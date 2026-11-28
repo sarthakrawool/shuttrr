@@ -438,7 +438,8 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
         fit = cat.classify_fit(mid, total) if total else {"level": "unknown"}
         if fit["level"] == "no_fit" and request.query_params.get("force") not in ("1", "true"):
             return _err(409, f"{cat.CATALOG[mid]['name']} does not fit this Mac. {fit['reason']}")
-        if not await asyncio.to_thread(cat.remote_ready, mid):
+        local = await asyncio.to_thread(cat.find_on_disk, engine.config, mid)
+        if local is None and not await asyncio.to_thread(cat.remote_ready, mid):
             return _err(409, f"{cat.CATALOG[mid]['name']} is not ready to download yet: its files are still uploading.")
         # a model under its own licence (Fish Audio Drama 3) downloads only after the person accepts it
         if cat.CATALOG[mid].get("licence") and not cat.licence_accepted(engine.config, mid):
@@ -448,6 +449,13 @@ def create_app(engine: Engine, api_key: Optional[str] = None) -> Starlette:
                                      "detail": f"Accept the {lic['name']} first.", "code": "licence_required",
                                      "licence": lic}, status_code=409)
             await asyncio.to_thread(cat.accept_licence, engine.config, mid)
+        if local is not None:
+            # the files are already on this Mac: register them (linking from another Shuttrr home), no download
+            try:
+                await asyncio.to_thread(cat.use_local, mid, engine.config)
+            except cat.DownloadError as e:
+                return _err(409, str(e))
+            return JSONResponse(await asyncio.to_thread(_catalog), status_code=202)
         st = cat.read_state(engine.config, mid)
         if not (st and st.get("state") in cat.RUNNING):      # downloading, or converting a Wan download
             env = dict(os.environ, SHUTTER_HOME=str(engine.config.home))

@@ -1064,6 +1064,109 @@ def is_complete(folder: Path, entry: dict[str, Any]) -> bool:
     return folder.is_dir() and all(there(f) for f in entry["check_files"])
 
 
+# ---- model files already on this Mac (a complete copy registered nowhere, or kept by another Shuttrr home)
+def complete_copy(folder: Path, entry: dict[str, Any]) -> bool:
+    """`folder` holds a full copy of the model: main files there, no half-downloaded file left, and (when the entry
+    has a pinned file list) every pinned file with its exact size, or a complete earlier revision."""
+    if not is_complete(folder, entry):
+        return False
+    if any(folder.glob(".cache/huggingface/download/**/*.incomplete")):
+        return False
+    files = entry.get("files")
+    if files:
+        # the model's own files must all match; text docs (README, NOTICE, LICENSE) may be from another revision
+        weights = [f for f in files if not _is_doc(str(f.get("path") or ""))]
+        return _sizes_match(folder, weights) or legacy_revision(folder, entry) is not None
+    return True
+
+
+def _is_doc(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].lower()
+    return name.endswith(".md") or name.startswith(("notice", "license", "licence")) or name == ".gitattributes"
+
+
+def _other_homes(cfg: Config) -> list[Path]:
+    """Other Shuttrr homes on this Mac (~/.shutter*, test and branch installs) plus SHUTTER_MODEL_SEARCH folders."""
+    here = Path(cfg.home).expanduser().resolve()
+    homes: list[Path] = []
+    for h in sorted(Path.home().glob(".shutter*")):
+        try:
+            if h.is_dir() and h.resolve() != here:
+                homes.append(h)
+        except OSError:
+            continue
+    for extra in (os.environ.get("SHUTTER_MODEL_SEARCH") or "").split(os.pathsep):
+        if extra.strip():
+            homes.append(Path(extra.strip()).expanduser())
+    return homes
+
+
+def find_on_disk(cfg: Config, model_id: str) -> Optional[Path]:
+    """A complete copy of `model_id` already on this Mac: first this home's models folder, then other Shuttrr
+    homes (their models folder, or the folder their config.json registers). None when there is none."""
+    e = CATALOG[model_id]
+    own = models_home(cfg) / e["folder"]
+    if complete_copy(own, e):
+        return own
+    for home in _other_homes(cfg):
+        cands = [home / "models" / e["folder"], home / e["folder"]]
+        try:
+            spec = (json.loads((home / "config.json").read_text()).get("models") or {}).get(model_id) or {}
+            if spec.get("dir"):
+                cands.insert(0, Path(os.path.expanduser(spec["dir"])))
+        except (OSError, ValueError, AttributeError):
+            pass
+        for c in cands:
+            try:
+                if c.resolve() != own.resolve() and complete_copy(c, e):
+                    return c
+            except OSError:
+                continue
+    return None
+
+
+def _link_tree(src: Path, dest: Path) -> None:
+    """Hard-link every file of `src` into `dest` (same disk: no extra space, and either copy can be deleted later
+    without breaking the other). Raises OSError (EXDEV) when they are on different disks."""
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        if rel.split(os.sep)[0] == ".cache":
+            continue
+        (dest / rel).mkdir(parents=True, exist_ok=True)
+        for name in files:
+            d = dest / rel / name
+            if not d.exists():
+                os.link(os.path.join(root, name), d)
+
+
+def use_local(model_id: str, cfg: Optional[Config] = None) -> dict[str, Any]:
+    """Register a copy already on this Mac instead of downloading it. A copy kept by another Shuttrr home is
+    hard-linked into this home's models folder (falls back to using it where it is when the disks differ)."""
+    cfg = cfg or Config.load()
+    e = CATALOG[model_id]
+    src = find_on_disk(cfg, model_id)
+    if src is None:
+        raise DownloadError(f"no complete copy of {e['name']} on this Mac")
+    dest = models_home(cfg) / e["folder"]
+    linked = False
+    if src.resolve() != dest.resolve():
+        try:
+            _link_tree(src, dest)
+            linked = True
+            if not complete_copy(dest, e):
+                raise OSError("linked copy incomplete")
+        except OSError:
+            dest = src
+    preset = register(cfg, model_id, dest)
+    total = folder_bytes(dest)
+    done = dict(state="done", pid=os.getpid(), dir=str(dest), total_bytes=total, done_bytes=total, started=time.time(),
+                notes=preset["notes"], verified="sizes" if e.get("files") else "files", already=True, local=True,
+                verified_detail=("Found on this Mac: " + str(src) + (" (linked, no extra disk space)" if linked else ""))
+                if src != dest or linked else "Found on this Mac")
+    _write_state(cfg, model_id, **done)
+    return done
+
+
 def folder_bytes(folder: Path) -> int:
     """Bytes on disk under `folder`, partial downloads included; Hugging Face's own bookkeeping is left out of
     nothing on purpose: `.cache/huggingface/download/*.incomplete` is where a file grows before it is moved."""
@@ -1087,6 +1190,7 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
         spec = cfg.models.get(mid) or {}
         folder = Path(os.path.expanduser(spec["dir"])) if spec.get("dir") else models_home(cfg) / e["folder"]
         installed = bool(spec) and is_complete(folder, e)
+        local = None if installed else find_on_disk(cfg, mid)
         st = read_state(cfg, mid)
         if e.get("hidden") and not installed and not (st and st.get("state") in RUNNING):
             continue
@@ -1107,7 +1211,7 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
                 pass
         fit = fit_for(mid, total, cfg.headroom_for(total) if total else 0)
         disk = disk_for(e, free, (st or {}).get("done_bytes", 0) if (st or {}).get("state") != "converting" else 0,
-                        installed)
+                        installed or local is not None)
         update = update_for(folder, e) if installed else None
         rows.append({
             "id": mid, "name": e["name"], "summary": e["summary"], "kind": e["kind"], "source": e["repo"],
@@ -1124,8 +1228,11 @@ def catalog_rows(cfg: Optional[Config] = None) -> list[dict[str, Any]]:
             "checked_on": checked,
             "licence": e.get("licence"),
             "licence_accepted": licence_accepted(cfg, mid),
-            "available": installed or remote_ready(mid),
-            "availability_note": "" if installed or remote_ready(mid) else
+            "available": installed or local is not None or remote_ready(mid),
+            # a complete copy already on this Mac (unregistered, or kept by another Shuttrr home): the app offers
+            # "Use Files on This Mac" and nothing is downloaded
+            "on_disk": None if local is None else {"dir": str(local), "elsewhere": local.parent != models_home(cfg)},
+            "availability_note": "" if installed or local is not None or remote_ready(mid) else
                                  "Coming soon: the model files are still uploading. Check back later.",
             "beta": bool(e.get("beta")),
             # installed, but files a newer Shuttrr needs are missing (e.g. H3-Image's picture reader): Download fetches

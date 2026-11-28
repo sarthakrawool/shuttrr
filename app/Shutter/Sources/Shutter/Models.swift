@@ -651,10 +651,14 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
     var beta = false
     /// Installed, but files this Shuttrr needs are missing (MiniMax-H3-Image's picture reader): Download fetches them.
     var update: CatalogUpdate?
+    /// A complete copy already on this Mac (not registered yet, or kept by another Shuttrr home): the button says
+    /// "Use Files on This Mac" and nothing is downloaded.
+    var onDisk: CatalogOnDisk?
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary, kind, installed, dir, notes, download, fit, disk, recommended, sample, makes, memory
         case licence, licenceAccepted = "licence_accepted", available, beta, update
+        case onDisk = "on_disk"
         case availabilityNote = "availability_note"
         case sizeBytes = "size_bytes"
         case minMemoryBytes = "min_memory_bytes"
@@ -688,10 +692,25 @@ struct CatalogModel: Decodable, Identifiable, Hashable, Sendable {
         availabilityNote = c.value(.availabilityNote, "")
         beta = c.value(.beta, false)
         update = c.optional(.update)
+        onDisk = c.optional(.onDisk)
     }
 
     var isDownloading: Bool { download?.isRunning ?? false }
     var needsLicence: Bool { licence != nil && !licenceAccepted }
+}
+
+/// Where a not-yet-registered copy of a model sits on this Mac.
+struct CatalogOnDisk: Decodable, Hashable, Sendable {
+    var dir: String = ""
+    var elsewhere: Bool = false
+
+    enum CodingKeys: String, CodingKey { case dir, elsewhere }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        dir = c.value(.dir, "")
+        elsewhere = c.value(.elsewhere, false)
+    }
 }
 
 /// Missing files of an installed model (bytes to fetch and what they are for).

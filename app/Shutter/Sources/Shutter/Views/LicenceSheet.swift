@@ -53,7 +53,7 @@ struct LicenceSheet: View {
                 Button("Cancel") { store.licenceAsk = nil }
                     .buttonStyle(.kit(.line))
                     .keyboardShortcut(.cancelAction)
-                Button("Download") { store.acceptLicenceAndDownload(model.id) }
+                Button(model.onDisk != nil ? "Use Files on This Mac" : "Download") { store.acceptLicenceAndDownload(model.id) }
                     .buttonStyle(.kit(.ink))
                     .disabled(!agreed)
                     .keyboardShortcut(.defaultAction)

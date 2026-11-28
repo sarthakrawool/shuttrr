@@ -89,6 +89,12 @@ struct ModelsView: View {
             ModelDefaultsSheet(model: model) { defaultsModel = nil }
         }
         .task {
+            // Testing: SHUTTER_TEST_SHEET=download opens the Download a Model sheet.
+            if ProcessInfo.processInfo.environment["SHUTTER_TEST_SHEET"] == "download" {
+                for _ in 0..<60 where store.catalog.isEmpty { try? await Task.sleep(nanoseconds: 500_000_000) }
+                showingDownloads = true
+                return
+            }
             // Testing: SHUTTER_TEST_SHEET=defaults:<model id> opens that model's Defaults sheet.
             guard let s = ProcessInfo.processInfo.environment["SHUTTER_TEST_SHEET"], s.hasPrefix("defaults:") else { return }
             let id = String(s.dropFirst("defaults:".count))

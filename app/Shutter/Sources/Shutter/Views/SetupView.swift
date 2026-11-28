@@ -86,6 +86,10 @@ struct ModelDownloadRow: View {
         return model.freeBytes > 0 && model.freeBytes < remaining
     }
     private var noFit: Bool { model.fit.isNoFit }
+    private var downloadTitle: String {
+        if model.onDisk != nil { return "Use Files on This Mac" }
+        return state.isEmpty || state == "done" ? "Download" : "Resume"
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.s4) {
@@ -123,7 +127,13 @@ struct ModelDownloadRow: View {
 
     /// "7.3 GB download", or the disk warning.
     @ViewBuilder private var meta: some View {
-        if diskShort {
+        if let d = model.onDisk, !model.installed {
+            Text("Already on this Mac")
+                .font(Theme.Fonts.meta)
+                .foregroundStyle(Theme.Palette.good)
+                .lineLimit(1)
+                .help(d.dir)
+        } else if diskShort {
             line("Not enough free disk", danger: true)
                 .help(model.disk.label)
         } else if !model.installed && !model.isDownloading {
@@ -210,11 +220,12 @@ struct ModelDownloadRow: View {
                 .foregroundStyle(Theme.Palette.muted)
                 .help(model.availabilityNote)
         } else if !noFit {
-            Button(pending ? "Starting…" : (state.isEmpty || state == "done" ? "Download" : "Resume")) {
+            Button(pending ? "Starting…" : downloadTitle) {
                 store.startDownload(model.id)
             }
             .buttonStyle(.kit(.ink))
-            .disabled(pending || diskShort || !store.connection.isConnected)
+            .disabled(pending || (diskShort && model.onDisk == nil) || !store.connection.isConnected)
+            .help(model.onDisk.map { "Already on this Mac at \($0.dir). Nothing is downloaded." } ?? "")
         }
     }
 
