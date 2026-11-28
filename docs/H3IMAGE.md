@@ -50,6 +50,17 @@ Params: `count` (1..8), `style` (`"3d-animated"`), `mode` / `efficiency` / `rung
 `negative_prompt` are not used (the model runs its own 6 steps, CFG 1); a note in the result says so. The seed gives
 the same starting noise as `sd-cli --rng cpu` (PyTorch's CPU generator).
 
+## Cleaner texture (on by default for text to image)
+
+Plain text to image often settles early on grainy, crusty fine texture (skin, fur, stone). `texture_fix` (default on;
+`false` = the plain six Euler steps, same as `sd-cli`) runs two fixes ported from ComfyUI-H3-Image-EasyFix
+(`shutter/families/h3image/easyfix.py`, Apache-2.0): steering on step 0 (the image rows' mean after blocks 25-44 moved
+the way an empty picture in the prompt would move it, `texture_steer` 0.7) and re-noise steps (`texture_plan`
+`"SSRRRS"`: steps 2-4 re-noise their prediction of the finished image with fresh noise, `texture_noise` 0.95; S steps
+use `texture_sampler` `"euler_ancestral"`). Still six forwards: same time and memory. Edits with reference pictures
+are not changed. The result has `texture_fix` (settings used) and `steer_check` (the measured projection before each
+shift vs the table's value; blocks 25-26 match within 0.5 % on the 8-bit build).
+
 ## Memory steps (all give the same image, bit for bit)
 
 | Step | What is in memory while it denoises |

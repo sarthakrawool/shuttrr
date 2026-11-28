@@ -14,6 +14,10 @@ Params:
 
   count         images in this request (1..8), seeds seed, seed + 1, ...; they share one prompt encoding
   style         a look preset that adds words around the prompt ("3d-animated"; request_options.IMAGE_STYLES)
+  texture_fix   cleaner fine texture for text to image (default on; false = the plain six Euler steps):
+                steering + re-noise steps from ComfyUI-H3-Image-EasyFix (shutter/families/h3image/easyfix.py);
+                fine settings texture_steer (0.7), texture_plan ("SSRRRS"), texture_noise (0.95),
+                texture_sampler ("euler_ancestral" / "euler"), texture_steer_steps ([0])
   mode, efficiency, rung    memory steps (docs/MODES.md)
 
 Memory steps (every one gives the same image, bit for bit; shutter/families/h3image/pipeline.py): resident / split
@@ -166,6 +170,8 @@ class H3ImageAdapter(ZImageAdapter):
         if p.get("loras"):
             raise ValueError("LoRAs are not supported for MiniMax-H3-Image yet")
         s.images = reference_paths(request)
+        from shutter.families.h3image import easyfix as EF
+        s.texture = None if s.images else EF.from_params(p, self._opt)
         return align(s)
 
     # ---- memory
@@ -276,6 +282,11 @@ class H3ImageAdapter(ZImageAdapter):
                   "variant": "minimax-h3-image", "notes": s.notes}
         if s.images:
             result["references"] = len(s.images)
+        result["texture_fix"] = s.texture.describe() if s.texture is not None else None
+        if pipe.steer_stats:
+            # measured mean projection before the shift vs the table's plain-run value: shows the table fits this build
+            result["steer_check"] = [{"block": b, "measured": round(float(m), 1), "table_plain": round(cp, 1),
+                                      "table_target": round(ct, 1)} for b, m, cp, ct in pipe.steer_stats[:20]]
         if pipe.stream_stats:
             result["stream"] = {**pipe.stream_stats, "io": pipe.stream_io}
         if pick["stepped_down_from"]:

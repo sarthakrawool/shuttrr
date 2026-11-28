@@ -58,6 +58,7 @@ class Settings:
     count: int = 1
     images: list[str] = field(default_factory=list)      # reference pictures (paths), referred to as <Picture i>
     notes: list[str] = field(default_factory=list)
+    texture: Any = None              # easyfix.TextureFix for text to image; None = the plain six Euler steps
 
     @property
     def seeds(self) -> list[int]:
@@ -182,6 +183,7 @@ class H3ImagePipeline:
         self.stream_stats: dict[str, Any] = {}
         self.stream_io = "direct"      # "direct": SSD reads straight into reusable MLX buffers; "copy": numpy + copy
         self.stream_window: Optional[int] = None   # blocks held while streaming (None: the memory step's own)
+        self.steer_stats: list = []        # (block, measured projection, c_plain, c_target) from texture steering
 
     # ---- sizes (for estimates)
     def part_sizes(self) -> dict[str, int]:
@@ -388,7 +390,7 @@ class H3ImagePipeline:
             return sh
 
         class Blocks:
-            def __call__(self, x, temb, rows, rope):
+            def __call__(self, x, temb, rows, rope, hook=None):
                 for i in range(len(streamer)):
                     pipe.check()
                     with streamer.block(i) as tensors:
@@ -396,6 +398,8 @@ class H3ImagePipeline:
                         sh = shell_for(local)
                         sh.update(tree_unflatten(list(local.items())), strict=False)
                         x = sh(x, temb, rows, rope)
+                        if hook is not None:
+                            x = hook(i, x)
                         mx.eval(x)
                         sh.update(tree_unflatten([(k, empty) for k, _ in tree_flatten(sh.parameters())]),
                                   strict=False)
@@ -474,12 +478,24 @@ class H3ImagePipeline:
                                      .astype(np.float32)) for z in zs]
                 else:
                     lat = mx.array(torch_randn(seed, 24 * lh * lw).reshape(24, lh, lw))
+                fix = s.texture if (s.texture is not None and s.texture.active and not refs) else None
+                if fix is not None:
+                    from shutter.families.h3image import easyfix as EF
+                    plan = EF.parse_plan(fix.plan, steps)
+                    # its own generator (seed + 1), so the start noise stays the plain run's
+                    gen = TorchRandn(seed + 1)
+                    fresh = lambda: mx.array(gen.randn(24 * lh * lw).reshape(24, lh, lw))   # noqa: E731
                 for k in range(steps):
                     self.check()
                     self.meter.mark(f"denoise:{seed}:{k}")
                     sig, nxt = PDD_SIGMAS[k], PDD_SIGMAS[k + 1]
-                    v = dit.velocity(lat, text_rows, sig, nxt, blocks=blocks, refs=refs, text_tags=tags)
-                    lat = lat + v * (nxt - sig)
+                    hook = EF.steering_hook(fix, k, self.steer_stats) if fix is not None else None
+                    v = dit.velocity(lat, text_rows, sig, nxt, blocks=blocks, refs=refs, text_tags=tags,
+                                     block_hook=hook)
+                    if fix is None:
+                        lat = lat + v * (nxt - sig)
+                    else:
+                        lat = EF.step(lat, v, sig, nxt, plan[k], fix, fresh)
                     mx.eval(lat)
                     done += 1
                     self.report(0.08 + 0.84 * done / total,

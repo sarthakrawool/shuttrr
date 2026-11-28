@@ -338,12 +338,12 @@ class MiniMaxH3ImageDiT(nn.Module):
     # ---- one forward
     def velocity(self, latents: mx.array, text_rows: mx.array, sigma: float, sigma_next: float,
                  blocks=None, refs: Optional[list] = None, text_tags: Optional[list] = None,
-                 ref_t: float = 0.999) -> mx.array:
+                 ref_t: float = 0.999, block_hook=None) -> mx.array:
         """d(latents)/d(sigma) for the Euler step sigma -> sigma_next. latents (24, H, W) float32; text_rows the
         refined text (1, L, hidden). `blocks` runs the 50-block stack: None = this model's own blocks, else a
         callable (x, temb, rows, rope) -> x (the SSD streamed stack). `refs`: noised reference latents (24, h, w)
         held at model timestep `ref_t`; `text_tags`: the modality tag of every text row (vision-block rows are
-        image rows; default all text)."""
+        image rows; default all text). `block_hook(i, x, n_img) -> x` runs after block i (texture steering)."""
         c = self.c
         _, lh, lw = latents.shape
         L = text_rows.shape[1]
@@ -369,8 +369,12 @@ class MiniMaxH3ImageDiT(nn.Module):
             temb = self.time_embedding(mx.array([t], dtype=mx.float32))
             rows = Segments.of(tags + [TAG_IMAGE] * n_img)           # timestep row 0: row = tag
         if blocks is None:
-            for b in self.blocks:
+            for i, b in enumerate(self.blocks):
                 x = b(x, temb, rows, rope)
+                if block_hook is not None:
+                    x = block_hook(i, x, n_img)
+        elif block_hook is not None:
+            x = blocks(x, temb, rows, rope, hook=lambda i, y: block_hook(i, y, n_img))
         else:
             x = blocks(x, temb, rows, rope)
         # final layer on the generated rows: x + x * scale + shift

@@ -16,6 +16,16 @@ PyTorch-compatible CPU noise) follow stable-diffusion.cpp (https://github.com/le
 532d2c1, `src/model/diffusion/minimax_h3.hpp`, `src/model/vae/minimax_h3_vae.hpp`, `src/core/rng_mt19937.hpp`),
 Copyright (c) 2023 leejet, MIT License. The GGUF Q4_K / Q6_K decoders follow ggml (MIT License).
 
+## ComfyUI-H3-Image-EasyFix (Apache License 2.0)
+
+`easyfix.py` ports the Steering and Re-Noise Sampler of **ComfyUI-H3-Image-EasyFix** by PedroMarinhoDev
+(https://github.com/PedroMarinhoDev/ComfyUI-H3-Image-EasyFix, commit a73c535, files `h3fix/steering.py`,
+`h3fix/samplers.py`, `h3fix/common.py`), licensed under the Apache License, Version 2.0 (copy in
+`data/LICENSE-EasyFix.txt`). `data/vmproj_all6.safetensors` (the steering table) is copied unchanged from that
+repository's `data/` folder. Changes: rewritten for MLX and Shuttrr's own block loop (resident and SSD-streamed);
+float32 residual stream, so no bf16 dither; noise from Shuttrr's CPU generator; Euler ancestral written out for the
+rectified-flow case; ComfyUI node and resolution-selector code not used.
+
 ## MiniMax-H3-Image weights
 
 The weights this code runs are not part of Shuttrr. MiniMax-H3-Image is licensed under the MiniMax-H3-Image Community
