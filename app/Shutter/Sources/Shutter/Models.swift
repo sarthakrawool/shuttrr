@@ -1129,6 +1129,9 @@ struct RequestOptions: Decodable, Equatable, Sendable {
     var lora: Bool = false
     /// How many reference pictures the model reads (MiniMax-H3-Image: 3); 0 = text to image only.
     var references: Int = 0
+    /// MiniMax-H3-Image: the "Cleaner texture" switch is offered, and whether it starts on (recommended).
+    var textureFix: Bool = false
+    var textureFixDefault: Bool = false
     var editable: Bool = false
     var defaults = RequestValues()
     var macDefaults = RequestValues()
@@ -1138,7 +1141,7 @@ struct RequestOptions: Decodable, Equatable, Sendable {
     var estimate: RequestEstimate?
 
     enum CodingKeys: String, CodingKey {
-        case model, kind, styles, lora, references, editable, defaults, macDefaults = "mac_defaults", userDefaults = "user_defaults"
+        case model, kind, styles, lora, references, editable, textureFix = "texture_fix", textureFixDefault = "texture_fix_default", defaults, macDefaults = "mac_defaults", userDefaults = "user_defaults"
         case sizes, limits, estimate
     }
 
@@ -1151,6 +1154,8 @@ struct RequestOptions: Decodable, Equatable, Sendable {
         styles = c.value(.styles, [])
         lora = c.value(.lora, false)
         references = c.value(.references, 0)
+        textureFix = c.value(.textureFix, false)
+        textureFixDefault = c.value(.textureFixDefault, false)
         editable = c.value(.editable, false)
         defaults = c.value(.defaults, RequestValues())
         macDefaults = c.value(.macDefaults, RequestValues())

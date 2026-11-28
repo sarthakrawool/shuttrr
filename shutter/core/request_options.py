@@ -66,6 +66,12 @@ def _image_mac(model_id: str, total: int, adapter: str = "z-image") -> dict[str,
     return {"width": int(w), "height": int(h), "steps": steps, "guidance": 0.0}
 
 
+def _truthy_opt(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "off", "no", "")
+    return bool(v)
+
+
 def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int) -> dict[str, Any]:
     mac = _image_mac(model_id, total, spec.get("adapter") or "z-image")
     if model_id in cat.CATALOG:
@@ -84,6 +90,10 @@ def _image_options(cfg: Config, model_id: str, spec: dict[str, Any], total: int)
             # reference pictures the model reads (<Picture 1>, ...): 0 = text to image only
             "references": 3 if spec.get("adapter") == "h3-image" else 0,
             "fixed_steps": FIXED_STEP_IMAGE.get(spec.get("adapter") or ""),
+            # H3-Image: cleaner fine texture (steering + re-noise steps), a recommended switch, on unless the model's
+            # options say texture_fix false; text to image only
+            "texture_fix": spec.get("adapter") == "h3-image",
+            "texture_fix_default": spec.get("adapter") == "h3-image" and _truthy_opt(opts.get("texture_fix", True)),
             "estimate": estimate(cfg, model_id, defaults, total_bytes=total, _defaults=defaults)}
 
 

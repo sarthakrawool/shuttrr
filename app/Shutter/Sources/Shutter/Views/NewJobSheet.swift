@@ -35,6 +35,7 @@ struct NewJobSheet: View {
     @State private var loraStrength = 1.0
     /// Reference pictures for models that read them (MiniMax-H3-Image), referred to as <Picture 1>, <Picture 2>, …
     @State private var refPaths: [String] = ["", "", ""]
+    @State private var cleanTexture = true
     @State private var submitting = false
     @State private var error: String?
 
@@ -264,6 +265,19 @@ struct NewJobSheet: View {
                 }
                 .frame(width: 140)
             }
+            if options?.textureFix == true {
+                VStack(alignment: .leading, spacing: Theme.Space.s1) {
+                    Toggle("Cleaner texture (recommended)", isOn: $cleanTexture)
+                        .disabled(!referencePaths.isEmpty)
+                        .help("Fixes the grainy, crusty look skin, fur and stone can get. Same speed and memory.")
+                    Text(referencePaths.isEmpty
+                         ? "Smoother skin, fur and stone without losing detail. Turn off for the model's plain look."
+                         : "Not used when you add reference pictures.")
+                        .font(Theme.Fonts.meta)
+                        .foregroundStyle(Theme.Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             LabeledField("Negative prompt (optional)") {
                 TextField("", text: $negativePrompt, prompt: Text("Used only when guidance is above 1"))
                     .kitField()
@@ -416,6 +430,7 @@ struct NewJobSheet: View {
         guard !Task.isCancelled, let loaded else { return }
         options = loaded
         draft = RequestDraft(loaded.defaults, image: loaded.isImage)
+        cleanTexture = loaded.textureFixDefault
         estimate = loaded.estimate
         // Testing: SHUTTER_TEST_FRAMES=<n> and SHUTTER_TEST_UNTILED=1 change the fields (for screenshots).
         let env = ProcessInfo.processInfo.environment
@@ -523,6 +538,7 @@ struct NewJobSheet: View {
             if !style.isEmpty { params["style"] = .string(style) }
             let refs = referencePaths
             if !refs.isEmpty { params["images"] = .array(refs.map { .string($0) }) }
+            if options?.textureFix == true && refs.isEmpty { params["texture_fix"] = .bool(cleanTexture) }
             if !loraPath.isEmpty && loraStrength != 0 {
                 params["loras"] = .array([.object(["path": .string((loraPath as NSString).expandingTildeInPath),
                                                    "strength": .number(loraStrength)])])
