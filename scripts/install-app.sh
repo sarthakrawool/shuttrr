@@ -37,7 +37,10 @@ fi
 mkdir -p "$DEST" || die "cannot create $DEST"
 [[ -w "$DEST" ]] || die "$DEST is not writable. Set SHUTTRR_DEST to a folder you own."
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/shuttrr-install.XXXXXX")"
+# A stale TMPDIR (e.g. an installer sandbox folder that is gone) would break mktemp: fall back to /tmp.
+TMP_BASE="${TMPDIR:-/tmp}"
+[[ -d "$TMP_BASE" && -w "$TMP_BASE" ]] || TMP_BASE=/tmp
+WORK="$(mktemp -d "${TMP_BASE%/}/shuttrr-install.XXXXXX")"
 MOUNT=""
 cleanup() {
     if [[ -n "$MOUNT" ]]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi

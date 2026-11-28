@@ -203,6 +203,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let setup = SetupRunner()
     let flow = OnboardingFlow()
 
+    override init() {
+        // Before anything starts a command: a TMPDIR left over from an installer's sandbox breaks every
+        // temporary file the setup and the engine make.
+        TempDir.repair()
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A Shuttrr home set in the app's settings (instead of the SHUTTER_HOME variable) is passed on to every
         // engine command the app runs.

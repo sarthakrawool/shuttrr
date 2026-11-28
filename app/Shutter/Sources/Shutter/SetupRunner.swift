@@ -130,6 +130,9 @@ final class SetupRunner: ObservableObject {
             }
         }
         appendLog("$ bash bootstrap.sh --source \(engineDir.path) --copy")
+        if let bad = TempDir.replaced {
+            appendLog("TMPDIR \(bad) did not exist; using \(ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp/")")
+        }
         do {
             try p.run()
             process = p

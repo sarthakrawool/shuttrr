@@ -35,6 +35,19 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_PROGRESS_BAR=off PYTHONDONTWRITEBYTEC
 # uv (only used on a Mac with no suitable Python) keeps its Pythons and cache inside our folder too
 export UV_PYTHON_INSTALL_DIR="$HOME_DIR/python" UV_CACHE_DIR="$HOME_DIR/cache/uv"
 
+# A TMPDIR that no longer exists (macOS can hand an app the temporary folder of an installer's sandbox,
+# /private/tmp/PKInstallSandbox.*/tmp, which is deleted when the installer ends) breaks mktemp, uv and pip.
+# Use this user's own temporary folder instead, then one inside our folder, then /tmp.
+tmp_ok() { [[ -n "$1" && -d "$1" && -w "$1" ]]; }
+if ! tmp_ok "${TMPDIR:-}"; then
+    BAD_TMP="${TMPDIR:-}"
+    for cand in "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)" "$HOME_DIR/tmp" /tmp; do
+        [[ "$cand" == "$HOME_DIR/tmp" ]] && mkdir -p "$cand" 2>/dev/null || true
+        if tmp_ok "$cand"; then export TMPDIR="$cand"; break; fi
+    done
+    [[ -n "$BAD_TMP" ]] && echo "TMPDIR $BAD_TMP is missing or not writable; using $TMPDIR instead" || true
+fi
+
 STEP=""
 ERR_SENTENCE=""
 progress() { printf '@@ %s %s %s\n' "$1" "$2" "$3"; }
@@ -76,7 +89,7 @@ MEM_NOTE=""
 done_ "$CHIP with ${MEM_GB} GB of memory and ${FREE_GB} GB free.${MEM_NOTE}"
 
 # ------------------------------------------------------------------ python
-begin python "Getting Python ready." "Could not set up Python. Check the internet connection and try again."
+begin python "Getting Python ready." "Could not set up Python. Show the details, then try again."
 if [[ -x "$VENV/bin/python" ]] && py_ok "$VENV/bin/python"; then
     PYV="$("$VENV/bin/python" -c 'import platform; print(platform.python_version())')"
     echo "Reusing $VENV (Python $PYV)"
@@ -103,7 +116,8 @@ else
         UV="$BIN/uv"
         if [[ ! -x "$UV" ]]; then
             echo "No Python 3.11 to 3.13 found; downloading uv"
-            TMP="$(mktemp -d "${TMPDIR:-/tmp}/shuttrr-uv.XXXXXX")"
+            TMP="$(mktemp -d "${TMPDIR%/}/shuttrr-uv.XXXXXX")" \
+                || fail "Could not make a temporary folder in ${TMPDIR}. Show the details, then try again."
             curl -fsSL --retry 3 -o "$TMP/uv.tar.gz" \
                 https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz \
                 || fail "Could not download Python. Check the internet connection and try again."
